@@ -25,7 +25,7 @@ class ReleaseManager:
         artifact=self.repository.artifact(self.repository.encode(manifest).encode())
         identifier=artifact['sha256']
         # Idempotent by immutable manifest digest.
-        try:self.repository.put('release',identifier,manifest)
+        try:self.repository.put_record('release',identifier,manifest)
         except ValueError:
             if self.repository.read('release',identifier)['body']!=manifest:raise
         return identifier
@@ -39,7 +39,7 @@ class ReleaseManager:
             if release['body']['deployment']['body']['model']!=model:
                 raise ValueError('release model mismatch')
         body={'stable':stable_release,'candidate':candidate_release,'weight':weight}
-        return self.repository.put('route',model,body,expected_revision)
+        return self.repository.put_record('route',model,body,expected_revision)
 
     def select(self,model,request_id):
         route=self.repository.read('route',model)['body']
@@ -53,7 +53,7 @@ class ReleaseManager:
         body=record['body']
         if not body['candidate']:raise ValueError('no canary to promote')
         next_body={'stable':body['candidate'],'candidate':None,'weight':0,'previous':body['stable']}
-        return self.repository.put('route',model,next_body,expected_revision)
+        return self.repository.put_record('route',model,next_body,expected_revision)
 
     def rollback(self,model,expected_revision):
         record=self.repository.read('route',model)
@@ -61,4 +61,4 @@ class ReleaseManager:
         body=record['body']
         target=body['stable'] if body['candidate'] else body.get('previous')
         if target is None:raise ValueError('no rollback target')
-        return self.repository.put('route',model,{'stable':target,'candidate':None,'weight':0},expected_revision)
+        return self.repository.put_record('route',model,{'stable':target,'candidate':None,'weight':0,'previous':body.get('previous') if body['candidate'] else None},expected_revision)

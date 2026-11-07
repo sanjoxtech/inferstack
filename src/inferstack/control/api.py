@@ -16,6 +16,10 @@ class Submission(BaseModel):
 class RecordBody(BaseModel):
     body:dict
     expected_revision:int|None=None
+    schema_version:int|None=None
+
+
+PUBLIC_KINDS={'deployment','model','hardware','workload','objective','technique','evidence','feedback'}
 
 
 def create_control_app(repository:Repository,token:str):
@@ -51,22 +55,39 @@ def create_control_app(repository:Repository,token:str):
 
     @app.put('/control/records/{kind}/{identifier}',dependencies=auth)
     def put(kind:str,identifier:str,record:RecordBody):
-        if kind not in {'deployment','model','hardware','workload','objective','technique','evidence'}:
-            raise HTTPException(422,'unsupported public record type')
-        if kind=='deployment':
-            from inferstack.engines.managed import DeploymentSpec
-            try:
-                spec=DeploymentSpec(**record.body)
-                if spec.id != identifier:raise ValueError('deployment id must match record identifier')
-            except (TypeError,ValueError) as exc:raise HTTPException(422,str(exc))
-        try:revision=repository.put(kind,identifier,record.body,record.expected_revision)
+        from pydantic import ValidationError
+        from inferstack.contracts.records import IncompatibleSchema
+        from inferstack.contracts.redaction import SecretInRecord
+        if kind not in PUBLIC_KINDS:raise HTTPException(422,'unsupported public record type')
+        try:revision=repository.put_record(kind,identifier,record.body,record.expected_revision,record.schema_version)
+        except (ValidationError,IncompatibleSchema,SecretInRecord) as exc:raise HTTPException(422,str(exc))
         except ValueError as exc:raise HTTPException(409,str(exc))
         return {'revision':revision}
 
     @app.get('/control/records/{kind}/{identifier}',dependencies=auth)
-    def read(kind:str,identifier:str):
-        try:return repository.read(kind,identifier)
+    def read(kind:str,identifier:str,revision:int|None=None):
+        try:return repository.read(kind,identifier,revision)
         except KeyError:raise HTTPException(404,'unknown record')
+
+    @app.get('/control/records/{kind}/{identifier}/history',dependencies=auth)
+    def history(kind:str,identifier:str):
+        try:return {'history':repository.history(kind,identifier)}
+        except KeyError:raise HTTPException(404,'unknown record')
+
+    @app.get('/control/capabilities',dependencies=auth)
+    def capabilities(engine:str|None=None):
+        from inferstack.engines.capabilities import matrix
+        return {'capabilities':[c.as_dict() for c in matrix() if engine in (None,c.engine)]}
+
+    @app.get('/control/schemas',dependencies=auth)
+    def schemas():
+        from inferstack.contracts.records import CURRENT_VERSIONS
+        from inferstack.contracts.metrics import METRICS,TIMESTAMP_UNIT
+        return {'record_schemas':CURRENT_VERSIONS,'timestamp_unit':TIMESTAMP_UNIT,
+                'metrics':{n:{'unit':m.unit,'definition':m.definition,'source':m.source,'better':m.better,
+                              'aggregation':m.aggregation} for n,m in METRICS.items()},
+                'database_schema_version':repository.schema_version}
+
     from inferstack.releases.manager import ReleaseManager
     releases=ReleaseManager(repository)
 

@@ -28,6 +28,23 @@ class DeploymentSpec:
         if not isinstance(self.command,(list,tuple)) or any(not isinstance(x,str) or not x for x in self.command):
             raise ValueError('command must be an argument list')
 
+    @classmethod
+    def from_record(cls,body:dict)->'DeploymentSpec':
+        """Build the launch spec from a deployment record body.
+
+        Schema v1 deployment records carry identity fields (model_ref, image_digest,
+        plugin_refs, profile...) that the HTTP adapter does not consume.
+        """
+        if not isinstance(body,dict):raise ValueError('deployment body must be an object')
+        names={'id','engine','model','base_url','api_key_env','command'}
+        missing={'id','engine','model','base_url'}-set(body)
+        if missing:raise ValueError('deployment missing '+','.join(sorted(missing)))
+        values={k:body[k] for k in names if k in body}
+        if 'command' in values:
+            if not isinstance(values['command'],(list,tuple)):raise ValueError('command must be an argument list')
+            values['command']=tuple(values['command'])
+        return cls(**values)
+
 
 class ManagedEngine:
     """Attach to an endpoint, or supervise an explicitly configured local process."""

@@ -323,3 +323,55 @@ limitations. Keep the original native engine functional throughout.
 
 Progress at handoff: A–J are planned; partial foundations exist as described in
 section 2. No package is certified complete by this planning document.
+
+## 8. Progress ledger
+
+Each entry records what exists, how it was checked and what remains. Status words:
+implemented, CPU-tested, GPU-tested, provider-tested, cloud-tested.
+
+### Baseline reproduction — 7 November 2026
+
+- Commit `6e306777da6d1a0607d1e6ab277adec96766e581`, Colab A100-SXM4-40GB
+  (`GPU-9f3e5751-d767-8e95-f6e0-6dece69bfc96`), torch 2.14.1+cu130, CUDA 13.0,
+  Triton 3.8.0, transformers 5.x.
+- `pytest`: 57 passed, 0 failed, 0 skipped (count taken from result markers; the
+  doubled `-q` suppressed pytest's summary line).
+- `scripts/v160_kernel_equivalence.py` reported `pass: false` (add_rmsnorm norm
+  max_abs 0.03125 vs 3e-2; silu_mul 0.0625 vs 3e-2). An FP32-oracle diagnostic over
+  three seeds showed the fused kernels at max 0.5 ULP / mean ~0.25 ULP with no
+  element above 1 ULP, while the BF16 references reached ~1.37 ULP max (double
+  rounding). Verdict: kernels correctly rounded; the script's fixed absolute
+  tolerance against a BF16 reference is the defect. Repair belongs to Package G
+  (numerical oracle: FP32 reference, ULP bound). No performance claim was made; the
+  fusion matrix was not run.
+
+### Package A — contracts, schemas, migrations, capabilities
+
+Status: implemented, CPU-tested.
+
+- `contracts/records.py`: versioned pydantic schemas for model, hardware,
+  deployment, workload, objective, evidence, technique, plan, trial, release,
+  route, rollout, allocation and feedback (InferenceIssue). Canonical ID pattern,
+  `id`/`id@N` references, pinned references for plans/trials, immutable model
+  revisions, registered-metric enforcement, `None` for missing metrics.
+- `contracts/metrics.py`: canonical metric definitions (unit, source, aggregation),
+  separating client content timing, engine emission timing and sampled GPU memory.
+- `contracts/redaction.py`: literal-credential rejection, redaction, retention
+  settings contract (TTL enforcement deferred to B/J).
+- `storage/migrations.py`: numbered, transactional migrations with ledger table;
+  v1.6 databases upgrade in place; newer databases fail clearly.
+- `storage/repository.py`: immutable `record_history`, typed `put_record` with
+  reference resolution and `record_refs`, `read(revision=)`, `history`,
+  `read_typed`, `referrers`. Untyped `put` retained for internal callers.
+- `engines/capabilities.py`: supported/unsupported/unknown matrix with basis and
+  evidence per engine/operation; `require()` refuses unknown.
+- Control API: typed record writes (422 invalid/incompatible/secret, 409
+  conflict/dangling), history, capabilities and schemas endpoints.
+- `DeploymentSpec.from_record` so schema-v1 deployment fields do not break
+  existing launch/route consumers. Releases and routes use the typed path.
+- Checks: `pytest` CPU subset 38 passed (27 existing + 11 new in
+  `tests/test_contracts.py`); torch-dependent tests not re-run in this
+  environment (no code they cover was changed).
+- Remaining: PostgreSQL dialect for the same migrations (Package B); TTL
+  enforcement; runtime observations refining the capability matrix (Package C);
+  schema v2 plan as experiment DAG (Package E).

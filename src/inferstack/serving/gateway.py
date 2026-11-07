@@ -25,7 +25,7 @@ def create_gateway(repository,token,engine_factory=ManagedEngine):
         rid=uuid.uuid4().hex
         try:release=manager.select(body['model'],rid)
         except KeyError:raise HTTPException(404,'model has no active release')
-        engine=engine_factory(DeploymentSpec(**release['body']['deployment']['body']))
+        engine=engine_factory(DeploymentSpec.from_record(release['body']['deployment']['body']))
         headers={'X-InferStack-Release':release['id'],'X-Request-Id':rid}
         if body.get('stream'):
             async def generate():

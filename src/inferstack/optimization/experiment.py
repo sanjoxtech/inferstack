@@ -19,7 +19,7 @@ class EndpointExecutor:
     async def execute(self, plan, namespace):
         record=self.repository.read('deployment',plan['candidate_id'])
         if record['revision']!=plan['candidate_revision']:raise ValueError('candidate changed after planning')
-        spec=DeploymentSpec(**record['body'])
+        spec=DeploymentSpec.from_record(record["body"])
         baseline=self.repository.read('deployment',plan['baseline_id'])
         if baseline['body']['base_url'].rstrip('/')==spec.base_url.rstrip('/'):
             raise ValueError('candidate must use a separate endpoint before execution')
@@ -73,8 +73,8 @@ class EndpointVerifier:
         baseline_record=self.repository.read('deployment',self.baseline_id)
         if plan.get('baseline_revision')!=baseline_record['revision']:raise ValueError('baseline changed after planning')
         candidate_record=self.repository.read('deployment',candidate['deployment_id'])
-        baseline_spec=DeploymentSpec(**baseline_record['body'])
-        candidate_spec=DeploymentSpec(**candidate_record['body'])
+        baseline_spec=DeploymentSpec.from_record(baseline_record["body"])
+        candidate_spec=DeploymentSpec.from_record(candidate_record["body"])
         if candidate_record['revision']!=candidate['revision']:raise ValueError('candidate changed during execution')
         if baseline_spec.base_url.rstrip('/')==candidate_spec.base_url.rstrip('/'):
             raise ValueError('baseline and candidate endpoints must be isolated')

@@ -93,6 +93,41 @@ identities and prior experiment history. Do not submit sensitive prompts or logs
 unless your chosen provider is approved to process them. Credentials and launch
 commands are excluded from the planner's deployment context.
 
+## Records, schemas and migrations
+
+Public record kinds written through `PUT /control/records/{kind}/{id}` are validated
+against versioned schemas (`src/inferstack/contracts/records.py`): `deployment`,
+`model`, `hardware`, `workload`, `objective`, `technique`, `evidence`, `feedback`.
+`release`, `route`, `plan`, `trial`, `rollout` and `allocation` are written only by
+the control plane. Pass `schema_version` to target a specific version; an
+unsupported version returns 422.
+
+- Reference fields name another record as `id` or `id@N` (pinned revision). A
+  dangling reference returns 409. Plans and trials must pin revisions.
+- Literal credentials (keys such as `api_key`, `token`, `authorization`, or values
+  that look like `sk-…`, `ghp_…`, `Bearer …`) are rejected with 422. Reference
+  secrets through `*_env` fields holding an environment-variable name.
+- Model artifacts must use immutable revisions: Hugging Face requires a 40-hex
+  commit; `main`, `latest`, `HEAD` and similar are rejected.
+- Every write appends an immutable row to `record_history`. Read an earlier
+  snapshot with `GET /control/records/{kind}/{id}?revision=N` and the full lineage
+  with `GET /control/records/{kind}/{id}/history`.
+- `GET /control/schemas` lists record schema versions, the canonical metric
+  definitions (unit, source, aggregation) and the database schema version.
+  Timestamps are UTC epoch seconds; durations carry `_ms`/`_s` suffixes.
+- `GET /control/capabilities[?engine=…]` returns the engine capability matrix with
+  `supported`/`unsupported`/`unknown` and the basis (`declared`, `tested`,
+  `observed`). Unknown is never treated as supported.
+
+The database migrates automatically on open (`schema_migrations` table). Back up
+`.inferstack/control.db` before upgrading. v1.6 databases keep all jobs, events and
+records; because v1.6 overwrote revisions in place, only the latest revision of
+each record exists and its backfilled history row is labeled
+`migrated_from_v1_6:prior_revisions_unrecoverable`. Records whose body does not
+satisfy the current schema are kept verbatim with `schema_version` NULL; re-write
+them through the API to validate them. Opening a database written by a newer
+InferStack fails with `IncompatibleSchema` rather than downgrading it.
+
 ## Release and route
 
 A kept experiment can create a manifest via

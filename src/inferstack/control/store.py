@@ -21,22 +21,9 @@ class Store:
         self.path = str(Path(path).resolve())
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock
+        from inferstack.storage.migrations import migrate
         with self.connection() as db:
-            db.executescript('''
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL,
-                    payload TEXT NOT NULL, state TEXT NOT NULL,
-                    attempt INTEGER NOT NULL DEFAULT 0,
-                    lease_token TEXT, lease_until REAL, result TEXT,
-                    created REAL NOT NULL, updated REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS events (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id TEXT NOT NULL REFERENCES jobs(id),
-                    kind TEXT NOT NULL, body TEXT NOT NULL, at REAL NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(state, lease_until, created);
-            ''')
+            self.schema_version = migrate(db, self.clock())
 
     @contextmanager
     def connection(self):
