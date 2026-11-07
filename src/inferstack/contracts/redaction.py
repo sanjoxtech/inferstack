@@ -23,7 +23,9 @@ def secret_paths(value, path='$'):
     if isinstance(value, dict):
         for key, item in value.items():
             here = f'{path}.{key}'
-            if isinstance(key, str) and not key.endswith('_env') and _SECRET_KEY.search(key) and item not in (None, ''):
+            # Credentials are strings; numeric fields such as prompt_tokens are counts, not secrets.
+            if isinstance(key, str) and not key.endswith('_env') and _SECRET_KEY.search(key) and isinstance(item, str) \
+                    and item:
                 yield here
             else:
                 yield from secret_paths(item, here)
@@ -54,7 +56,7 @@ def redact(value):
     """Return a deep copy with credential-like keys and values replaced."""
     if isinstance(value, dict):
         return {k: (REDACTED if isinstance(k, str) and not k.endswith('_env') and _SECRET_KEY.search(k)
-                    and v not in (None, '') else redact(v)) for k, v in value.items()}
+                    and isinstance(v, str) and v else redact(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     if isinstance(value, str) and _SECRET_VALUE.match(value.strip()):

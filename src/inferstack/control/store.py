@@ -278,14 +278,27 @@ class Store:
             self.event(db, job_id, 'usage_charged', amounts)
             return usage
 
+    def remaining(self, job_id):
+        """Budget headroom per limited key (never negative), or None when unbudgeted."""
+        job = self.get(job_id)
+        if not job['budget']:
+            return None
+        usage = self._usage(job)
+        return {k: max(0.0, limit - usage.get(k, 0)) for k, limit in job['budget'].items()}
+
     def exhausted(self, job_id):
-        """Budget keys whose usage has reached the limit.
+        job = self.get(job_id)
+        usage = self._usage(job)
+        return sorted(k for k, limit in (job['budget'] or {}).items() if usage.get(k, 0) >= limit)
+
+    def _usage(self, job):
+        """Current usage per budget key.
 
         Wall time counts from job creation. Experiments are derived from succeeded
         experiment steps, so the count cannot drift from the durable step record.
         """
-        job = self.get(job_id)
-        budget, usage = job['budget'] or {}, dict(job['usage'] or {})
+        job_id = job['id']
+        usage = dict(job['usage'] or {})
         usage['wall_seconds'] = self.clock() - job['created']
         usage['experiments'] = sum(1 for s in job['steps']
                                    if s['step_key'].endswith('.experiment') and s['state'] == 'succeeded')
@@ -295,7 +308,7 @@ class Store:
                               'AND active_at IS NOT NULL', (job_id,)).fetchall()
         usage['gpu_seconds'] = usage.get('gpu_seconds', 0) + sum(
             max(0.0, (r['released_at'] or now) - r['active_at']) * r['gpu_count'] for r in rows)
-        return sorted(k for k, limit in budget.items() if usage.get(k, 0) >= limit)
+        return usage
 
     # --- worker registry ------------------------------------------------------
 

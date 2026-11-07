@@ -139,7 +139,14 @@ class OptimizationWorker:
             request['evidence_ids'] += [s['evidence_id'] for s in sources]
         for iteration in range(self.max_iterations):
             async def plan_fn(j, key, iteration=iteration):
-                plan = await self.planner.plan(request, list(history))
+                remaining = self.repository.remaining(job['id'])
+                try:
+                    plan = await self.planner.plan({**request, 'budget_remaining': remaining}, list(history))
+                finally:
+                    usage = getattr(self.planner, 'last_usage', None) or {}
+                    if usage.get('provider_tokens'):
+                        self.repository.charge(job['id'], job['lease_token'],
+                                               {'provider_tokens': usage['provider_tokens']})
                 self.record(job, 'planned', {'iteration': iteration, 'plan': plan})
                 return plan
             try:

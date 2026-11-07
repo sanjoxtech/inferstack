@@ -42,7 +42,13 @@ def main():
             # Resolve resources left by dead workers before taking new work.
             for action in reconcile(repo,provider):print(json.dumps({'reconciled':action}))
             allocations=AllocationManager(repo,worker_id)
-            planner=ProviderPlanner(repo,**config['planner'])
+            if 'provider' in config:
+                # Tool-driven DAG planner with a configured optimizer provider (DeepSeek/OpenRouter/...).
+                from inferstack.optimization.planner import ToolPlanner
+                from inferstack.providers import create_provider
+                planner=ToolPlanner(repo,create_provider(config['provider']),**config['planner'])
+            else:
+                planner=ProviderPlanner(repo,**config['planner'])
             executor=EndpointExecutor(repo,state/'logs',allocations=allocations,provider=provider)
             verifier=EndpointVerifier(repo,executor,**config['verifier'])
             try:

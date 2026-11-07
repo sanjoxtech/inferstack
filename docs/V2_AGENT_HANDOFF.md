@@ -469,3 +469,32 @@ adapter conformance on declared environments remains a J qualification gate.
   vLLM/SGLang versions (GPU); native Prometheus export; per-phase tokenization/
   sampling timing in native; cache isolation proof across native deployments
   (separate processes by design; GPU test in J); confirmed architecture lists.
+
+### Package E — tool-driven planner and provider adapters
+
+Status: implemented, CPU-tested with mock HTTP transports emulating DeepSeek
+(tool calls) and OpenRouter (no tools, errors in 200 bodies). NOT provider-tested:
+the live planning smoke test (`scripts/provider_smoke.py`) needs real keys.
+
+- `providers/base.py`: capability-declared provider contract (tools, JSON mode;
+  tools never assumed), normalized content/tool calls/finish/usage, typed errors
+  (429/5xx/timeouts retryable; rejections and malformed responses not),
+  credential-only-from-environment, https enforcement, redacted transcripts.
+- `optimization/dag.py`: ExperimentPlan schema (no verdict field) and
+  `validate_plan`: acyclic DAG with one terminal measure, mandatory gates,
+  pinned baseline, citation allowlist, candidate registry, production and
+  baseline protection, per-engine profile key allowlist, patch path roots,
+  plugin pinning and compatibility, remaining-budget check, treatment signature
+  for identical-retry refusal.
+- `optimization/tools.py`: seven read-only tools with strict argument schemas,
+  size-capped results, no endpoint/command exposure, path-confined code reading,
+  untrusted evidence snippets.
+- `optimization/planner.py` `ToolPlanner`: bounded rounds/tool calls/tokens,
+  correction loop with validation feedback, works without tool support, audit
+  artifact, usage reporting; worker charges provider tokens and passes budget
+  headroom; CLI selects it when a `provider` block is configured.
+- Fixed: redaction treated numeric `*_tokens` fields as secrets.
+- Checks: 143 CPU tests passed (34 new in `tests/test_planner_dag.py`).
+- Remaining: live DeepSeek/OpenRouter smoke runs; executor support for
+  plugin_install/source_patch (F); telemetry tool wiring to live adapters in the
+  CLI worker (currently reports "not configured").

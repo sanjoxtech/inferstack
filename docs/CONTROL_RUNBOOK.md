@@ -276,6 +276,51 @@ breaker state and counters. `X-Request-Id` (if well-formed) and W3C
 `traceparent` are forwarded upstream and returned. A client disconnect closes the
 upstream stream, which is how vLLM/SGLang cancel generation.
 
+## Tool-driven planner and optimizer providers
+
+Add a `provider` block to the worker config to use the DAG planner (the legacy
+`planner`-only config keeps the candidate-selection planner):
+
+```json
+{
+  "provider": {"kind": "deepseek", "model": "YOUR_MODEL_ID", "api_key_env": "DEEPSEEK_API_KEY"},
+  "planner": {"candidate_ids": ["candidate"], "max_tokens": 60000, "max_tool_calls": 12},
+  "verifier": {"baseline_id": "baseline", "cases": [...], "objectives": [...], "repeats": 3}
+}
+```
+
+`kind` is `deepseek` (tools on by default), `openrouter` (set `"tools": true` only
+if the routed model supports tool calls; errors inside 200 bodies are handled) or
+`openai_compatible` (requires `base_url`). Base URLs must be https. Credentials are
+read from the named environment variable only.
+
+The planner returns an experiment DAG: hypothesis, pinned `baseline_ref`, cited
+`evidence_ids`, actions (`config_change`, `plugin_install`, `source_patch`,
+exactly one terminal `measure`), expected registered metrics, gates (must include
+correctness, quality, health, comparable, complete), estimate and stop rule.
+Validation rejects schema violations, cycles, unknown citations, unregistered
+candidates, any action on the baseline or a production deployment, profile keys
+outside the per-engine allowlist, patches outside `src/inferstack/kernels|runtime`,
+plugins that are incompatible or not pinned, estimates over remaining budget and
+identical retries of a treatment that already failed. Rejections are sent back to
+the model for up to `max_corrections` fixes.
+
+Tools (when the provider supports them) are read-only: deployment summaries
+without endpoints/commands, experiment history, telemetry, source reading under
+fixed roots, evidence search (untrusted snippets), technique listing and
+compatibility. There are no write tools and no verdict field. Rounds, tool calls
+and total provider tokens are capped; tokens are charged to the job's
+`provider_tokens` budget. Each planning transcript (redacted) is stored as an
+artifact referenced from `plan.planner.audit_artifact`.
+
+`plugin_install` and `source_patch` actions validate now but execute only once the
+isolated executor (Package F) is present; until then they fail as unsupported.
+
+**Live provider check:** `python scripts/provider_smoke.py --kind deepseek
+--model <id> --key-env DEEPSEEK_API_KEY` (and the same with `--kind openrouter`)
+runs one real planning call and validation without contacting any serving
+endpoint.
+
 ## Release and route
 
 A kept experiment can create a manifest via
