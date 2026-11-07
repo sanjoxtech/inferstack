@@ -103,15 +103,15 @@ class ManagedEngine:
         self.process=None
         if self.log:self.log.close();self.log=None
 
-    async def complete(self,payload,chat=False):
+    async def complete(self,payload,chat=False,headers=None):
         body=dict(payload);body['model']=self.spec.model;body['stream']=False
-        response=await self.client.post('v1/chat/completions' if chat else 'v1/completions',json=body)
+        response=await self.client.post('v1/chat/completions' if chat else 'v1/completions',json=body,headers=headers)
         response.raise_for_status()
         return response.json()
 
-    async def stream(self,payload,chat=False):
+    async def stream(self,payload,chat=False,headers=None):
         body=dict(payload);body['model']=self.spec.model;body['stream']=True
-        async with self.client.stream('POST','v1/chat/completions' if chat else 'v1/completions',json=body) as response:
+        async with self.client.stream('POST','v1/chat/completions' if chat else 'v1/completions',json=body,headers=headers) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes():yield chunk
 

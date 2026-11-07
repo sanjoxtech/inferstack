@@ -438,3 +438,34 @@ HTTP server with an injected address policy and resolver.
 - Checks: 96 CPU tests passed (21 new in `tests/test_research.py`).
 - Remaining: search adapters (no search provider configured); license detection
   for fetched code repositories; tool-driven research in the planner (E).
+
+### Package C — engine lifecycle, telemetry and model onboarding
+
+Status: implemented, CPU-tested against real processes emulating engine
+endpoints. NOT tested against real vLLM, SGLang or the native engine on GPU;
+adapter conformance on declared environments remains a J qualification gate.
+
+- `engines/adapters.py`: vLLM/SGLang/native adapters — pinned launch plans that
+  refuse mutable revisions, runtime identity probes, observed feature
+  activation with evidence, telemetry, and `attest()` (attested / mismatch /
+  unverified; unknown is never a pass).
+- `telemetry/`: Prometheus parser, histogram deltas with counter-reset
+  detection, bucket-interpolated quantile estimates, per-engine mapping tables
+  with semantics and `declared`/`tested` status, raw scrape hash retention.
+- `infrastructure/inventory.py`: every GPU by UUID from nvidia-smi, topology,
+  CPU/RAM, driver and library versions; missing tools recorded, not invented.
+- `serving/health.py` + gateway: per-deployment circuit breaker, in-flight cap
+  (429 + Retry-After), drain with deadline, upstream error mapping (4xx pass
+  through, 5xx/connect -> 502), primed streams, request-ID/traceparent
+  propagation, client disconnect closes upstream (engine cancellation).
+- `foundry/onboarding.py`: mutable ref resolution to commits, config
+  classification, native support table (qwen3_5), vLLM/SGLang as
+  needs_engine_probe, explicit gaps, ModelArtifact record, reference execution
+  profile, never a fabricated deployment.
+- API: onboard, attestation, telemetry (raw stored as artifact), inventory.
+- Checks: 109 CPU tests passed (13 new in `tests/test_engines.py`, using real
+  subprocess servers, a uvicorn-served gateway and a fake nvidia-smi).
+- Remaining: live adapter conformance and metric-name confirmation on pinned
+  vLLM/SGLang versions (GPU); native Prometheus export; per-phase tokenization/
+  sampling timing in native; cache isolation proof across native deployments
+  (separate processes by design; GPU test in J); confirmed architecture lists.

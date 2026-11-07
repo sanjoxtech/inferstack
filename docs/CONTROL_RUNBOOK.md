@@ -229,6 +229,53 @@ techniques for that deployment as `compatible_proven`, `compatible_claimed` or
 is pinned with `==` and has a license). A claim is a candidate experiment, never
 an accepted optimization; `proven` requires referenced trials.
 
+## Engines, telemetry and onboarding
+
+**Onboard a model** with `POST /control/onboard` (`model_id`, `repo_id`,
+`revision`, optional `config`). A mutable Hugging Face ref (`main`) is resolved
+to a commit and config is read at that commit (requires `.[hf]` and network);
+otherwise pass a 40-hex commit and the config. Outcomes: `supported` (native
+reference path and an execution profile), `needs_engine_probe` (vLLM/SGLang
+may support it; prove it with a launch on the pinned engine version), or
+`unsupported` with the gap (non-generative task, remote code without
+`allow_remote_code`). Onboarding writes a `model` record for usable artifacts and
+never creates a deployment. Foundry manifests that pin `revision: main` must be
+re-pinned to an immutable release.
+
+**Launch plans.** Adapters build pinned commands (`--revision`,
+`--tokenizer-revision`, host, port, dtype); mutable revisions are refused. Use
+them in a deployment record's `command` with a separate port per deployment.
+Declared supported ranges: vLLM `>=0.10,<1.0`, SGLang `>=0.4,<1.0` — not yet
+qualified on hardware.
+
+**Attestation.** `GET /control/deployments/{id}/attestation` asks the running
+server what it is (vLLM `/version`, SGLang `/get_server_info`, native
+`/v1/native/status`) and compares the served model and engine version with the
+record: `attested`, `mismatch`, or `unverified` when something cannot be
+checked. `features` reports observed activation with its evidence (for example
+SGLang radix cache is "enabled_by_config", not proof of hits).
+
+**Telemetry.** `GET /control/deployments/{id}/telemetry` scrapes `/metrics` and
+normalizes it per engine mapping (engine TTFT/TPOT/E2E/queue/prefill/decode as
+means plus bucket-interpolated p50/p99 estimates, running/waiting, KV usage,
+token counters). Absent families are `null` with a reason; counter resets inside
+a window give `null`. The raw scrape is stored as an artifact. Mapping status is
+`declared` until a qualification run marks the engine version `tested`.
+
+**Inventory.** `POST /control/inventory/{hardware_id}` records every GPU from
+`nvidia-smi` (UUID, name, memory, compute capability), topology for multi-GPU
+hosts, CPU, RAM, driver and library versions. Without `nvidia-smi` the GPU list
+is empty and the reason is returned.
+
+**Gateway admission.** Each deployment has its own circuit breaker (default 5
+consecutive upstream failures, 10 s cooldown, one half-open probe), in-flight cap
+(default 64; excess gets 429 with Retry-After) and drain flag (503 while
+draining). Upstream 4xx are passed through; upstream 5xx and connection errors
+return 502 and count against that deployment only. `GET /gateway/status` shows
+breaker state and counters. `X-Request-Id` (if well-formed) and W3C
+`traceparent` are forwarded upstream and returned. A client disconnect closes the
+upstream stream, which is how vLLM/SGLang cancel generation.
+
 ## Release and route
 
 A kept experiment can create a manifest via

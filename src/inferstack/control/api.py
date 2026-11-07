@@ -28,6 +28,16 @@ class UrlEvidence(BaseModel):
     url:str=Field(min_length=1,max_length=2000)
 
 
+class Onboarding(BaseModel):
+    model_id:str=Field(min_length=1,max_length=200)
+    repo_id:str=Field(min_length=1,max_length=300)
+    revision:str=Field(min_length=1,max_length=200)
+    source:str='huggingface'
+    tokenizer_revision:str|None=None
+    config:dict|None=None
+    allow_remote_code:bool=False
+
+
 class Recovery(BaseModel):
     force_note:str|None=Field(default=None,max_length=500)
 
@@ -108,6 +118,51 @@ def create_control_app(repository:Repository,token:str,fetcher=None):
         from inferstack.research import candidates
         try:return {'candidates':candidates(repository,deployment_id)}
         except KeyError:raise HTTPException(404,'unknown deployment')
+
+    @app.post('/control/onboard',dependencies=auth)
+    def onboard_model(body:Onboarding):
+        from inferstack.foundry.onboarding import OnboardingError,onboard
+        try:return onboard(repository,model_id=body.model_id,repo_id=body.repo_id,revision=body.revision,
+                           source=body.source,tokenizer_revision=body.tokenizer_revision,config=body.config,
+                           allow_remote_code=body.allow_remote_code)
+        except OnboardingError as exc:raise HTTPException(422,str(exc))
+        except Exception as exc:raise HTTPException(502,f'artifact resolution failed: {type(exc).__name__}')
+
+    async def _adapter(deployment_id):
+        from inferstack.engines.adapters import adapter_for
+        from inferstack.engines.managed import DeploymentSpec,ManagedEngine
+        try:record=repository.read('deployment',deployment_id)
+        except KeyError:raise HTTPException(404,'unknown deployment')
+        engine=ManagedEngine(DeploymentSpec.from_record(record['body']))
+        return record,engine,adapter_for(record['body']['engine'],engine.client)
+
+    @app.get('/control/deployments/{deployment_id}/attestation',dependencies=auth)
+    async def attestation(deployment_id:str):
+        from inferstack.engines.adapters import attest
+        record,engine,adapter=await _adapter(deployment_id)
+        try:
+            result=await attest(record['body'],adapter)
+            return {**result,'deployment_revision':record['revision'],
+                    'features':await adapter.observed_features(result['identity'])}
+        finally:await engine.close()
+
+    @app.get('/control/deployments/{deployment_id}/telemetry',dependencies=auth)
+    async def telemetry(deployment_id:str):
+        record,engine,adapter=await _adapter(deployment_id)
+        try:
+            snapshot=await adapter.telemetry(engine_version=record['body'].get('engine_version'))
+            raw=snapshot.pop('raw_text',None)
+            if raw is not None:snapshot['raw_artifact']=repository.artifact(raw.encode())
+            return snapshot
+        finally:await engine.close()
+
+    @app.post('/control/inventory/{hardware_id}',dependencies=auth)
+    def inventory(hardware_id:str,provider:str='attached',expected_revision:int|None=None):
+        from inferstack.infrastructure.inventory import collect
+        body,notes=collect(provider=provider)
+        try:revision=repository.put_record('hardware',hardware_id,body,expected_revision)
+        except ValueError as exc:raise HTTPException(409,str(exc))
+        return {'revision':revision,'hardware':body,'notes':notes}
 
     @app.get('/control/allocations',dependencies=auth)
     def allocations(state:str|None=None,job_id:str|None=None):
