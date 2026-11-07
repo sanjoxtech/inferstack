@@ -1,0 +1,12 @@
+{
+  "schema_version":"1.0",
+  "model_id":"factorylm-2b",
+  "release_id":"v0-baseline",
+  "stage":"candidate",
+  "family":"qwen3.5",
+  "architecture":"auto",
+  "source":{"kind":"huggingface","uri":"Qwen/Qwen3.5-2B-Base","revision":"main","trust_remote_code":false,"load_kwargs":{}},
+  "tokenizer":{"uri":"Qwen/Qwen3.5-2B-Base","revision":"main","use_fast":true},
+  "serving":{"task":"causal_lm","dtype":"auto","attention":"auto","max_model_len":262144,"generation_defaults":{"temperature":0.0,"top_p":1.0}},
+  "metadata":{"producer":"Model Foundry","purpose":"FactoryLM untouched baseline"}
+}

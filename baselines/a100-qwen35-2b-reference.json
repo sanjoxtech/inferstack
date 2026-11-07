@@ -1,0 +1,6 @@
+{
+  "source":"user-measured A100 reference from InferStack v1.4 comparison",
+  "objective":{"ttft_p99_ms":120.0,"tpot_p99_ms":6.0,"peak_vram_mb":24576.0},
+  "vllm":{"1":{"ttft_p99_ms":37.1262,"tpot_p99_ms":4.1830,"output_tps":212.9894,"peak_vram_mb":20350},"4":{"ttft_p99_ms":77.9064,"tpot_p99_ms":4.2390,"output_tps":758.5883,"peak_vram_mb":20350},"8":{"ttft_p99_ms":81.3589,"tpot_p99_ms":4.4558,"output_tps":1454.4215,"peak_vram_mb":20372},"16":{"ttft_p99_ms":96.8682,"tpot_p99_ms":4.9078,"output_tps":2653.6724,"peak_vram_mb":20388}},
+  "sglang":{"1":{"ttft_p99_ms":39.8255,"tpot_p99_ms":3.9220,"output_tps":223.7032,"peak_vram_mb":34333},"4":{"ttft_p99_ms":528.9590,"tpot_p99_ms":6.4416,"output_tps":563.4373,"peak_vram_mb":34333},"8":{"ttft_p99_ms":82.1279,"tpot_p99_ms":4.3650,"output_tps":1469.2041,"peak_vram_mb":34333},"16":{"ttft_p99_ms":256.6668,"tpot_p99_ms":5.4240,"output_tps":2443.6484,"peak_vram_mb":34333}}
+}

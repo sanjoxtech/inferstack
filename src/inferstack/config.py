@@ -1,0 +1,101 @@
+from __future__ import annotations
+from dataclasses import dataclass, fields, field
+from pathlib import Path
+try: import tomllib
+except ModuleNotFoundError: import tomli as tomllib
+
+@dataclass
+class SchedulerConfig:
+    max_num_batched_tokens:int=8192
+    max_running_requests:int=128
+    max_prefill_chunk_tokens:int=128
+    decode_priority:bool=True
+    async_overlap:bool=False
+
+@dataclass
+class KernelConfig:
+    attention:str="auto"
+    rmsnorm:str="auto"
+    rope:str="auto"
+    cuda_graphs:bool=False
+    torch_compile:bool=False
+    compile_mode:str="reduce-overhead"
+
+@dataclass
+class NativeConfig:
+    enabled:bool=True
+    max_pending_requests:int=512
+    max_requests_per_batch:int=16
+    max_batch_tokens:int=8192
+    batch_wait_ms:float=2.0
+    dynamic_admission:bool=True
+    live_batch_refill:bool=True
+    active_batch_compaction:bool=True
+    max_active_cohorts:int=4
+    decode_quantum:int=1
+    prefill_chunk_tokens:int=128
+    prefill_chunks_per_turn:int=1
+    prefix_state_cache:bool=True
+    prefix_state_cache_max_entries:int=64
+    prefix_state_cache_max_mb:int=1024
+    prefix_cache_min_tokens:int=128
+    prefix_cache_block_tokens:int=128
+    custom_gdn_triton:bool=True
+    strict_custom_kernels:bool=False
+    fused_sampler:bool=True
+    compile_model:bool=False
+    compile_dynamic:bool=True
+    strict_compile:bool=False
+    explicit_cuda_graph:bool=False
+    cuda_graph_batch_sizes:tuple[int,...]=(1,2,4,8,16)
+    kv_padding_interval_size:int=8192
+    quantization:str="none"
+    quantization_group_size:int=128
+    use_hf_kernels:bool=False
+    graph_static_cache:bool=False
+    graph_cache_max_tokens:int=256
+    graph_generation_cloning:bool=True
+    profile_decode:bool=False
+
+    # v1.6 Qwen forward-fusion engine. These are inference-only structural
+    # optimizations installed after weights load; every path has a safe fallback.
+    forward_fusion:bool=False
+    fuse_rmsnorm:bool=True
+    fuse_add_rmsnorm:bool=True
+    fuse_gated_rmsnorm:bool=True
+    fuse_mlp_gate_up:bool=True
+    fuse_mlp_activation:bool=True
+    fuse_gdn_projections:bool=True
+    fuse_gdn_beta_g:bool=True
+    grouped_gdn_decode:bool=True
+    fuse_attention_qkv:bool=True
+    forward_fusion_strict:bool=False
+
+@dataclass
+class HardwareConfig:
+    device:str="auto"
+    dtype:str="auto"
+    adaptive:bool=True
+
+@dataclass
+class Profile:
+    name:str="production-v1.6.0"
+    scheduler:SchedulerConfig=field(default_factory=SchedulerConfig)
+    kernels:KernelConfig=field(default_factory=KernelConfig)
+    native:NativeConfig=field(default_factory=NativeConfig)
+    hardware:HardwareConfig=field(default_factory=HardwareConfig)
+
+
+def _build(cls,data):
+    names={f.name for f in fields(cls)}
+    return cls(**{k:v for k,v in (data or {}).items() if k in names})
+
+def load_profile(path:str|Path)->Profile:
+    with open(path,"rb") as f:d=tomllib.load(f)
+    return Profile(
+        name=d.get("name","production-v1.6.0"),
+        scheduler=_build(SchedulerConfig,d.get("scheduler")),
+        kernels=_build(KernelConfig,d.get("kernels")),
+        native=_build(NativeConfig,d.get("native")),
+        hardware=_build(HardwareConfig,d.get("hardware")),
+    )

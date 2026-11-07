@@ -1,0 +1,68 @@
+name = "production-v1.6.0-norm"
+
+[scheduler]
+max_num_batched_tokens = 8192
+max_running_requests = 128
+max_prefill_chunk_tokens = 128
+decode_priority = true
+async_overlap = false
+
+[kernels]
+attention = "auto"
+rmsnorm = "auto"
+rope = "auto"
+cuda_graphs = false
+torch_compile = false
+compile_mode = "reduce-overhead"
+
+[native]
+enabled = true
+max_pending_requests = 512
+max_requests_per_batch = 16
+max_batch_tokens = 8192
+batch_wait_ms = 3.0
+dynamic_admission = true
+live_batch_refill = true
+active_batch_compaction = true
+max_active_cohorts = 4
+decode_quantum = 1
+prefill_chunk_tokens = 128
+prefill_chunks_per_turn = 1
+prefix_state_cache = true
+prefix_state_cache_max_entries = 64
+prefix_state_cache_max_mb = 1024
+prefix_cache_min_tokens = 128
+prefix_cache_block_tokens = 128
+custom_gdn_triton = true
+strict_custom_kernels = false
+fused_sampler = true
+compile_model = false
+compile_dynamic = true
+strict_compile = false
+explicit_cuda_graph = false
+cuda_graph_batch_sizes = [1,2,4,8,16]
+kv_padding_interval_size = 8192
+quantization = "none"
+quantization_group_size = 128
+use_hf_kernels = false
+graph_static_cache = false
+graph_cache_max_tokens = 256
+graph_generation_cloning = true
+profile_decode = false
+
+forward_fusion = true
+fuse_rmsnorm = true
+fuse_add_rmsnorm = true
+fuse_gated_rmsnorm = true
+fuse_mlp_gate_up = false
+fuse_mlp_activation = false
+fuse_gdn_projections = false
+fuse_gdn_beta_g = false
+grouped_gdn_decode = false
+fuse_attention_qkv = false
+forward_fusion_strict = false
+
+[hardware]
+device = "auto"
+dtype = "bf16"
+adaptive = true
