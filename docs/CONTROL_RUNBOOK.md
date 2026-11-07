@@ -189,6 +189,46 @@ workers). Containers and Kubernetes resources use the same allocation contract
 in Package H. Reconciliation stops processes on the host where it runs; it does
 not reach other machines.
 
+## Research evidence and techniques
+
+**Supplied text** needs no network access. `technique_text` on a request is
+stored as evidence (`source_key=request:<request_key>`, provenance
+`user_supplied`) and its ID is added to the job payload. Operators can add text
+directly with `POST /control/evidence/text` (`text`, optional `title`,
+`source_key`, `license`).
+
+**URLs.** `technique_urls` (up to 10) on a request are fetched by the worker in a
+durable `research` step before planning; `POST /control/evidence/url` fetches one
+immediately. Retrieval is bounded (15 s total, 2 MB, 3 redirects, ports 80/443,
+text/HTML/Markdown/JSON only) and SSRF-guarded: every connection, including each
+redirect hop, resolves the host and is refused if any resolved address is not
+globally routable (loopback, private, link-local/metadata, reserved, IPv4-mapped
+forms). The vetted IP is the one dialed, so DNS rebinding cannot swap it. https to
+http redirects are refused. Environment proxies are ignored by design. Blocked,
+unavailable (including login walls), unsupported and oversized sources are stored
+as evidence with `availability` and a reason; the job continues.
+
+**Integrity and lineage.** Content is stored once by SHA-256; each distinct
+source gets its own evidence record, so identical text from a paper and a post
+keeps both lineages. `GET /control/evidence/{id}` verifies the stored content
+against the record hash and returns 409 if it was altered. Plans pin cited
+evidence as `id@revision`; a citation that does not resolve is rejected.
+
+**Untrusted content.** Evidence reaches the optimizer provider only inside a
+nonce-delimited `UNTRUSTED_EVIDENCE` envelope, and the raw `technique_text` is
+removed from the request context. Model output fields beyond the plan schema are
+rejected. Nothing derives commands, tool calls or further URLs from content.
+
+**Techniques.** Register manifests with `PUT /control/records/technique/{id}`
+(schema v2: engines with version specifiers, operations, dtypes, shapes, hardware,
+`min_compute_capability`, `min_gpu_memory_bytes`, `requires_capabilities`,
+dependencies with license, claims, `proven_by` trial refs, `status`).
+`GET /control/techniques/candidates?deployment_id=…` returns non-incompatible
+techniques for that deployment as `compatible_proven`, `compatible_claimed` or
+`unknown`, with blockers/unknowns and `executable` (false until every dependency
+is pinned with `==` and has a license). A claim is a candidate experiment, never
+an accepted optimization; `proven` requires referenced trials.
+
 ## Release and route
 
 A kept experiment can create a manifest via

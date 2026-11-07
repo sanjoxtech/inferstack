@@ -234,6 +234,29 @@ class Evidence(Record):
         return self
 
 
+class EvidenceV2(Evidence):
+    """v2: source availability outcome and canonical source identity.
+
+    A blocked or unavailable source is still recorded (content is empty and its
+    hash is the empty-content hash) so a job keeps a truthful source trail.
+    """
+    VERSION = 2
+    source_key: str = Field(min_length=1, max_length=2100)
+    availability: Literal['available', 'blocked', 'unavailable', 'unsupported', 'too_large', 'invalid'] = 'available'
+    availability_reason: str | None = Field(default=None, max_length=1000)
+    content_bytes: int = Field(ge=0)
+    content_type: str | None = None
+
+    @model_validator(mode='after')
+    def availability_consistency(self):
+        empty = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+        if self.availability == 'available' and (self.content_bytes == 0 or self.content_sha256 == empty):
+            raise ValueError('available evidence must carry content')
+        if self.availability != 'available' and (self.content_sha256 != empty or self.verification != 'unavailable'):
+            raise ValueError('unavailable evidence must have empty content and verification=unavailable')
+        return self
+
+
 class Dependency(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str
@@ -263,6 +286,23 @@ class Technique(Record):
     risks: list[str] = Field(default_factory=list)
     compatibility_claims: list[str] = Field(default_factory=list)
     proven_by: list[str] = Field(default_factory=list)
+
+
+class TechniqueV2(Technique):
+    """v2: shapes, runtime pins and lifecycle status. Claims are never 'proven'
+    without trial references; `proven` requires proven_by."""
+    VERSION = 2
+    shapes: list[str] = Field(default_factory=list)
+    min_compute_capability: str | None = Field(default=None, pattern=r'^[0-9]+\.[0-9]+$')
+    min_gpu_memory_bytes: int | None = Field(default=None, gt=0)
+    requires_capabilities: list[str] = Field(default_factory=list)
+    status: Literal['claim', 'candidate', 'proven', 'rejected'] = 'claim'
+
+    @model_validator(mode='after')
+    def proof_required(self):
+        if self.status == 'proven' and not self.proven_by:
+            raise ValueError('proven techniques must reference the trials that proved them')
+        return self
 
 
 class Plan(Record):
@@ -411,7 +451,8 @@ class InferenceIssue(Record):
 
 
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
-for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, Technique,
+for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
+             Technique, TechniqueV2,
              Plan, Trial, Release, Route, Rollout, ResourceAllocation, InferenceIssue):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}

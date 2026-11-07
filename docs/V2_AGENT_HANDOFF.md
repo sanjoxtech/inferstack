@@ -410,3 +410,31 @@ Status: implemented, CPU-tested (SQLite and PostgreSQL 16).
 - Remaining: process provider is local-host only (containers/Kubernetes in H);
   spend accounting needs authoritative prices (H); provider token charging is
   wired when planners report usage (E); retention TTL enforcement job (J).
+
+### Package D — research ingestion and technique registry
+
+Status: implemented, CPU-tested. Not tested against the public internet (this
+environment's egress is allowlisted); retrieval was exercised against a local
+HTTP server with an injected address policy and resolver.
+
+- `research/evidence.py`: normalized text ingestion; content-addressed storage
+  with one evidence record per (content, source) for deduplicated lineage;
+  idempotent re-ingestion; integrity-checked reads; citation resolution to pinned
+  snapshots; nonce-delimited untrusted envelope for prompts.
+- `research/fetch.py`: SSRF-guarded retrieval — address policy enforced inside the
+  transport on every connection and redirect hop, any-bad-address rejection,
+  vetted-IP dialing (no rebinding window), redirect/downgrade policy, time/size
+  caps (declared and streamed), content-type allowlist, HTML-to-text, proxies off.
+- `research/techniques.py`: claim vs proof assessment against deployment engine
+  version, dtype, hardware (name, compute capability, memory), capability matrix
+  and dependency pinning; incompatible techniques excluded from candidates.
+- Schemas: evidence v2 (source key, availability, reason, bytes, content type)
+  and technique v2 (shapes, hardware minimums, required capabilities, status,
+  proof required for `proven`); v1 records remain valid.
+- Worker `research` step (idempotent, unreachable URLs recorded and non-fatal);
+  API evidence/text, evidence/url, evidence read, technique candidates; supplied
+  `technique_text` ingested on submission; planner renders evidence as untrusted
+  data, strips raw text from context and pins cited revisions.
+- Checks: 96 CPU tests passed (21 new in `tests/test_research.py`).
+- Remaining: search adapters (no search provider configured); license detection
+  for fetched code repositories; tool-driven research in the planner (E).

@@ -22,7 +22,7 @@ from inferstack.control.store import LeaseLost
 
 class OptimizationWorker:
     def __init__(self, repository, planner, executor, verifier, *, lease_seconds=30, max_iterations=3,
-                 worker_id=None, allocations=None, provider=None, faults=None):
+                 worker_id=None, allocations=None, provider=None, faults=None, fetcher=None):
         if lease_seconds < .3 or not 1 <= max_iterations <= 20:
             raise ValueError('invalid worker bounds')
         self.repository = repository
@@ -31,6 +31,7 @@ class OptimizationWorker:
         self.worker_id = worker_id
         self.allocations, self.provider = allocations, provider
         self.faults = faults or (lambda point: None)
+        self.fetcher = fetcher
         self.history = {}
 
     def record(self, job, stage, body):
@@ -114,11 +115,31 @@ class OptimizationWorker:
             if candidate is not None:
                 await self.executor.cleanup(candidate)
 
+    async def research(self, job, step_key):
+        """Retrieve supplied URLs as evidence. Unavailable sources are recorded, never fatal."""
+        from inferstack.research import EvidenceStore
+        store = EvidenceStore(self.repository)
+        outcomes = []
+        for url in job['payload'].get('technique_urls', []):
+            if self.fetcher is None:
+                outcomes.append({'evidence_id': store.record_unavailable(
+                    url, availability='unavailable', reason='retrieval not configured for this worker',
+                    retrieved_at=self.repository.clock()), 'status': 'unavailable'})
+            else:
+                outcomes.append(await store.ingest_url(url, self.fetcher))
+        self.record(job, 'researched', {'sources': outcomes})
+        return outcomes
+
     async def optimize(self, job):
         history = self.history.setdefault(job['id'], [])
+        request = dict(job['payload'])
+        request['evidence_ids'] = list(request.get('evidence_ids') or [])
+        if request.get('technique_urls'):
+            sources = await self.step(job, 'research', self.research, idempotent=True)
+            request['evidence_ids'] += [s['evidence_id'] for s in sources]
         for iteration in range(self.max_iterations):
             async def plan_fn(j, key, iteration=iteration):
-                plan = await self.planner.plan(job['payload'], list(history))
+                plan = await self.planner.plan(request, list(history))
                 self.record(job, 'planned', {'iteration': iteration, 'plan': plan})
                 return plan
             try:

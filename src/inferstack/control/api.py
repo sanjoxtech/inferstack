@@ -11,9 +11,21 @@ class Submission(BaseModel):
     goal:str=Field(min_length=1,max_length=20000)
     source:str='user'
     technique_text:str|None=Field(default=None,max_length=100000)
+    technique_urls:list[str]=Field(default_factory=list,max_length=10)
     budget:dict|None=None
     deadline_at:float|None=None
     max_attempts:int=Field(default=1,ge=1,le=10)
+
+
+class TextEvidence(BaseModel):
+    text:str=Field(min_length=1,max_length=1000000)
+    title:str|None=Field(default=None,max_length=300)
+    source_key:str|None=Field(default=None,max_length=500)
+    license:str|None=None
+
+
+class UrlEvidence(BaseModel):
+    url:str=Field(min_length=1,max_length=2000)
 
 
 class Recovery(BaseModel):
@@ -29,8 +41,11 @@ class RecordBody(BaseModel):
 PUBLIC_KINDS={'deployment','model','hardware','workload','objective','technique','evidence','feedback'}
 
 
-def create_control_app(repository:Repository,token:str):
+def create_control_app(repository:Repository,token:str,fetcher=None):
     if not token:raise ValueError('control API token required')
+    from inferstack.research import EvidenceStore,EvidenceIntegrityError,SafeFetcher
+    evidence_store=EvidenceStore(repository)
+    fetcher=fetcher or SafeFetcher()
     app=FastAPI(title='InferStack control plane')
     async def authorize(authorization:str|None=Header(default=None)):
         if not authorization or not hmac.compare_digest(authorization.encode(),('Bearer '+token).encode()):
@@ -46,6 +61,14 @@ def create_control_app(repository:Repository,token:str):
         try:repository.read('deployment',body.deployment_id)
         except KeyError:raise HTTPException(404,'unknown deployment')
         payload=body.model_dump(exclude={'budget','deadline_at','max_attempts'})
+        for url in body.technique_urls:
+            problem=fetcher.check_url(url)
+            if problem:raise HTTPException(422,f'technique url rejected: {problem}')
+        payload['evidence_ids']=[]
+        if body.technique_text:
+            # Supplied text is attributed evidence; it works without any search access.
+            payload['evidence_ids'].append(evidence_store.ingest_text(body.technique_text,
+                source_key='request:'+body.request_key,provenance='user_supplied',title='technique text from '+body.source))
         try:job=repository.submit(body.request_key,payload,budget=body.budget,deadline_at=body.deadline_at,
                                   max_attempts=body.max_attempts)
         except ValueError as exc:raise HTTPException(409,str(exc))
@@ -61,6 +84,30 @@ def create_control_app(repository:Repository,token:str):
         try:repository.get(job_id)
         except KeyError:raise HTTPException(404,'unknown job')
         return {'cancelled':repository.cancel(job_id)}
+
+    @app.post('/control/evidence/text',dependencies=auth)
+    def evidence_text(body:TextEvidence):
+        import hashlib
+        key=body.source_key or 'operator:'+hashlib.sha256(body.text.encode()).hexdigest()[:16]
+        try:identifier=evidence_store.ingest_text(body.text,source_key=key,title=body.title,license=body.license)
+        except ValueError as exc:raise HTTPException(422,str(exc))
+        return {'evidence_id':identifier,'lineage':evidence_store.lineage(identifier)}
+
+    @app.post('/control/evidence/url',dependencies=auth)
+    async def evidence_url(body:UrlEvidence):
+        return await evidence_store.ingest_url(body.url,fetcher)
+
+    @app.get('/control/evidence/{identifier}',dependencies=auth)
+    def evidence_read(identifier:str,revision:int|None=None):
+        try:return evidence_store.read(identifier,revision)
+        except KeyError:raise HTTPException(404,'unknown evidence')
+        except EvidenceIntegrityError as exc:raise HTTPException(409,str(exc))
+
+    @app.get('/control/techniques/candidates',dependencies=auth)
+    def technique_candidates(deployment_id:str):
+        from inferstack.research import candidates
+        try:return {'candidates':candidates(repository,deployment_id)}
+        except KeyError:raise HTTPException(404,'unknown deployment')
 
     @app.get('/control/allocations',dependencies=auth)
     def allocations(state:str|None=None,job_id:str|None=None):
