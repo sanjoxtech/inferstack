@@ -69,7 +69,7 @@ class Repository(Store):
                     raise ValueError(f'dangling reference to {ref_kind}/{ref_id}'+(f'@{ref_rev}' if ref_rev else ''))
             revision=self._write(db,kind,identifier,encoded,expected_revision,cls.VERSION,'typed')
             for ref_kind,ref_id,ref_rev in refs:
-                db.execute('INSERT OR IGNORE INTO record_refs VALUES(?,?,?,?,?,?)',
+                db.execute('INSERT INTO record_refs VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING',
                            (kind,identifier,revision,ref_kind,ref_id,ref_rev))
             return revision
 

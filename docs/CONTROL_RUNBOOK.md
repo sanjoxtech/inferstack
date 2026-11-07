@@ -128,6 +128,67 @@ satisfy the current schema are kept verbatim with `schema_version` NULL; re-writ
 them through the API to validate them. Opening a database written by a newer
 InferStack fails with `IncompatibleSchema` rather than downgrading it.
 
+## Durable execution, budgets and resource ownership
+
+**Database.** `--database` selects the backend; default is SQLite at
+`STATE/control.db`. For a shared control plane use PostgreSQL:
+
+```bash
+python -m pip install -e '.[postgres]'
+python -m inferstack.control worker-once --database postgresql://user@host/inferstack --config worker.json
+```
+
+Both backends run the same numbered migrations and serialize writes through one
+writer lock (SQLite `BEGIN IMMEDIATE`, PostgreSQL a transaction advisory lock),
+so lease/fencing/CAS behavior is identical. Back up before upgrading: SQLite
+`sqlite3 control.db ".backup control.bak"`; PostgreSQL `pg_dump`.
+
+**Submission controls.** `POST /control/requests` accepts `budget`
+(`wall_seconds`, `gpu_seconds`, `provider_tokens`, `spend_usd`, `experiments`),
+an absolute `deadline_at` (UTC epoch seconds) and `max_attempts` (1–10).
+Budgets are checked before every step; exhaustion stops new steps and completes
+the job with `stop_reason` and all experiments gathered so far. `experiments` and
+`gpu_seconds` are derived from durable step and allocation records (GPU seconds
+= active time × GPU count), not from separately charged counters.
+
+**Steps and resume.** Each iteration is `iter{i}.plan` (idempotent; a succeeded
+plan is reused after restart) and `iter{i}.experiment` (side-effecting: launch,
+verify, clean up). An interrupted experiment is re-run only after its
+allocations are reconciled. Job detail (`GET /control/jobs/{id}`) includes
+`steps`, `usage`, `budget` and `last_error`.
+
+**Errors and retries.** Errors are stored typed (`type`, `code`, `retryable`,
+scrubbed `message`). Only transient conditions (network/timeouts, HTTP 408/429/5xx,
+`ProviderUnavailable`, `ResourceUnavailable`) are retryable, and only while
+`attempt < max_attempts`, with linear backoff. Unknown exceptions are permanent.
+
+**Resource ownership.** Every launched process has an allocation row written
+*before* the launch (`intent`), carries `INFERSTACK_ALLOCATION_ID` in its
+environment, runs in its own process group, and is identified by host, PID,
+process group and kernel start time (PID reuse cannot be mistaken for it). An
+allocation is released only after the process is verified gone.
+
+**Workers and reconciliation.** `worker-once` registers a worker with a heartbeat
+lease and reconciles allocations of dead workers before claiming work. To run
+reconciliation alone: `python -m inferstack.control reconcile --state .inferstack`.
+Outcomes: `never_launched`, `unrecorded_launch_stopped` (found by tag),
+`orphan_stopped`, `already_exited`, or `orphaned` when a stop cannot be confirmed.
+
+**Operator recovery.** `GET /control/allocations?state=orphaned` lists unresolved
+resources; `GET /control/workers` lists workers and heartbeats.
+`POST /control/allocations/{id}/recover` with `{}` retries the stop; after manual
+cleanup, `{"force_note": "what you did"}` force-releases with an audit note.
+
+**Cancel and deadline.** Cancellation fences the worker immediately; on its next
+heartbeat it stops work, stops and releases its processes, and attaches partial
+evidence once (`partial_evidence` event). A deadline does the same and fails the
+job with a non-retryable `DeadlineExceeded` carrying the partial history.
+
+Scope: the local process provider covers attached hosts (including Colab
+workers). Containers and Kubernetes resources use the same allocation contract
+in Package H. Reconciliation stops processes on the host where it runs; it does
+not reach other machines.
+
 ## Release and route
 
 A kept experiment can create a manifest via

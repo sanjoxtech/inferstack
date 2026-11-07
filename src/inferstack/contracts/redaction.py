@@ -41,6 +41,15 @@ def reject_secrets(body):
                          '; reference them with an *_env field instead')
 
 
+_SECRET_SUBSTRING = re.compile(r'(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|'
+                               r'AKIA[0-9A-Z]{16}|(?<=Bearer )\S{8,}|(?<=://)[^/@\s:]+:[^/@\s]+(?=@))')
+
+
+def scrub_text(text: str) -> str:
+    """Mask credential-looking substrings (keys, bearer values, user:secret@ in URLs)."""
+    return _SECRET_SUBSTRING.sub(REDACTED, text)
+
+
 def redact(value):
     """Return a deep copy with credential-like keys and values replaced."""
     if isinstance(value, dict):

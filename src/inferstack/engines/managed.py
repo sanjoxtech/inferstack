@@ -67,7 +67,9 @@ class ManagedEngine:
             return any(m.get('id')==self.spec.model for m in response.json().get('data',[]))
         except (httpx.HTTPError,ValueError,TypeError,AttributeError):return False
 
-    async def start(self,log_path,timeout=300):
+    async def start(self,log_path,timeout=300,spawn=None):
+        """Attach, or launch the configured command. `spawn(argv, log)` lets the caller
+        own process creation (allocation intent and identity tagging)."""
         if self.process is not None:raise RuntimeError('worker already started')
         if not self.spec.command:
             if not await self.ready():raise RuntimeError('attached endpoint is not ready')
@@ -75,7 +77,10 @@ class ManagedEngine:
         path=Path(log_path);path.parent.mkdir(parents=True,exist_ok=True)
         self.log=path.open('ab')
         try:
-            self.process=await asyncio.create_subprocess_exec(*self.spec.command,stdout=self.log,stderr=self.log,start_new_session=True)
+            if spawn is None:
+                self.process=await asyncio.create_subprocess_exec(*self.spec.command,stdout=self.log,stderr=self.log,start_new_session=True)
+            else:
+                self.process=await spawn(list(self.spec.command),self.log)
             deadline=time.monotonic()+timeout
             while time.monotonic()<deadline:
                 if self.process.returncode is not None:raise RuntimeError('engine exited before readiness')

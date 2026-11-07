@@ -375,3 +375,38 @@ Status: implemented, CPU-tested.
 - Remaining: PostgreSQL dialect for the same migrations (Package B); TTL
   enforcement; runtime observations refining the capability matrix (Package C);
   schema v2 plan as experiment DAG (Package E).
+
+### Package B — durable execution and resource ownership
+
+Status: implemented, CPU-tested (SQLite and PostgreSQL 16).
+
+- `storage/db.py`: one database layer for SQLite and PostgreSQL; a single writer
+  lock per transaction (SQLite `BEGIN IMMEDIATE`, PostgreSQL advisory xact lock)
+  makes lease/fencing/CAS semantics identical. Trade-off: no concurrent writers.
+- `storage/migrations.py`: dialect-aware DDL; migration 4 adds job controls
+  (worker, deadline, budget, usage, max_attempts, backoff, last_error),
+  `job_steps`, `workers` and `allocations`.
+- `control/store.py`: durable steps (`reuse`/`run`/`ambiguous`), lease-fenced
+  usage charges, derived experiment and GPU-second usage, typed failure with
+  retry/backoff, deadline-at-claim, cancellation keeping the token so the last
+  holder can attach partial evidence once, worker registry with heartbeats.
+- `control/errors.py`: typed errors; only explicit transient classes retry;
+  messages scrubbed of credential substrings.
+- `control/worker.py`: plan (idempotent, reused) and experiment (side-effecting,
+  reconciled before re-run) steps; budget check before every step; absolute
+  deadline; partial evidence on cancel/deadline/failure.
+- `infrastructure/`: allocation intent before launch, idempotency key per
+  job/step/attempt/purpose, process identity (host, pid, pgid, kernel start
+  time) and environment tag, verified stop before release, reconciler for dead
+  workers, `orphaned` state and operator recovery (retry or force with note).
+- API/CLI: submission budget/deadline/max_attempts, allocations, recover,
+  workers, `--database`, `reconcile` action; worker reconciles on start.
+- Checks: 75 CPU tests passed. New: 26 store tests (13 x SQLite + PostgreSQL,
+  real temporary cluster), 15 real-process tests — a worker subprocess killed
+  (`os._exit(137)`) at each of 10 transitions then a fresh worker resumes, plus
+  wedged-worker takeover, cancel, deadline, budget and orphan recovery. Mutation
+  checks: reconciler releasing without stopping fails 2 crash tests; removing
+  lease fencing from allocation intent fails 3 tests.
+- Remaining: process provider is local-host only (containers/Kubernetes in H);
+  spend accounting needs authoritative prices (H); provider token charging is
+  wired when planners report usage (E); retention TTL enforcement job (J).

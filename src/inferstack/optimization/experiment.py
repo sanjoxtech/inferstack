@@ -9,14 +9,41 @@ from inferstack.evaluation.judge import evaluate, Objective
 
 
 class EndpointExecutor:
-    """Runs registered candidates in separate processes or attaches to test endpoints."""
-    def __init__(self, repository, log_root, engine_factory=ManagedEngine):
+    """Runs registered candidates in separate processes or attaches to test endpoints.
+
+    With `allocations` and `provider`, every launch is preceded by a persisted
+    allocation intent, the process is tagged with its allocation identity, and
+    the allocation is released only after the process is verified stopped.
+    """
+    accepts_context = True
+
+    def __init__(self, repository, log_root, engine_factory=ManagedEngine, *, allocations=None, provider=None):
         self.repository=repository
         self.log_root=Path(log_root)
         self.engine_factory=engine_factory
+        self.allocations,self.provider=allocations,provider
+        if (allocations is None)!=(provider is None):raise ValueError('allocations and provider go together')
         self.active={}
+        self.owned={}
 
-    async def execute(self, plan, namespace):
+    def _spawner(self, context, spec):
+        if self.allocations is None or not spec.command or context is None:return None
+        async def spawn(argv, log):
+            alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
+                provider=self.provider.name, resource_type=self.provider.resource_type,
+                spec={'deployment_id':spec.id,'argv':argv}, gpu_count=context.get('gpu_count',0))
+            if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
+            process=await self.provider.spawn(alloc['id'], argv, log)
+            self.allocations.faults('process_started')
+            external=self.provider.external_for(process.pid)
+            self.allocations.record_external(alloc['id'], external)
+            self.allocations.faults('process_spawned')
+            self.allocations.activate(alloc['id'], context['job'], external)
+            self.owned[context['namespace']]=(alloc['id'],external)
+            return process
+        return spawn
+
+    async def execute(self, plan, namespace, context=None):
         record=self.repository.read('deployment',plan['candidate_id'])
         if record['revision']!=plan['candidate_revision']:raise ValueError('candidate changed after planning')
         spec=DeploymentSpec.from_record(record["body"])
@@ -25,18 +52,28 @@ class EndpointExecutor:
             raise ValueError('candidate must use a separate endpoint before execution')
         if baseline['body']['model']!=spec.model:raise ValueError('candidate model mismatch')
         engine=self.engine_factory(spec)
+        if context is not None:context={**context,'namespace':namespace}
         try:
-            await engine.start(self.log_root/(namespace+'.log'))
+            await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec))
         except BaseException:
             await engine.close()
+            self._release(namespace,'launch_failed')
             raise
         self.active[namespace]=engine
         return {'id':namespace, 'deployment_id':spec.id, 'revision':record['revision'],
                 'spec_sha256':hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest()}
 
+    def _release(self, namespace, note):
+        owned=self.owned.pop(namespace,None)
+        if owned is None:return
+        alloc_id,external=owned
+        if self.provider.stop(external):self.allocations.release(alloc_id,note)
+        else:self.allocations.mark_orphaned(alloc_id,'stop_failed_during_'+note)
+
     async def cleanup(self, candidate):
         engine=self.active.pop(candidate['id'],None)
         if engine:await engine.close()
+        if self.allocations is not None:self._release(candidate['id'],'cleanup')
 
 
 class EndpointVerifier:

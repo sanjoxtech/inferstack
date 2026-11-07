@@ -11,6 +11,13 @@ class Submission(BaseModel):
     goal:str=Field(min_length=1,max_length=20000)
     source:str='user'
     technique_text:str|None=Field(default=None,max_length=100000)
+    budget:dict|None=None
+    deadline_at:float|None=None
+    max_attempts:int=Field(default=1,ge=1,le=10)
+
+
+class Recovery(BaseModel):
+    force_note:str|None=Field(default=None,max_length=500)
 
 
 class RecordBody(BaseModel):
@@ -38,7 +45,9 @@ def create_control_app(repository:Repository,token:str):
     def submit(body:Submission):
         try:repository.read('deployment',body.deployment_id)
         except KeyError:raise HTTPException(404,'unknown deployment')
-        try:job=repository.submit(body.request_key,body.model_dump())
+        payload=body.model_dump(exclude={'budget','deadline_at','max_attempts'})
+        try:job=repository.submit(body.request_key,payload,budget=body.budget,deadline_at=body.deadline_at,
+                                  max_attempts=body.max_attempts)
         except ValueError as exc:raise HTTPException(409,str(exc))
         return {'job_id':job,'job':repository.get(job)}
 
@@ -52,6 +61,21 @@ def create_control_app(repository:Repository,token:str):
         try:repository.get(job_id)
         except KeyError:raise HTTPException(404,'unknown job')
         return {'cancelled':repository.cancel(job_id)}
+
+    @app.get('/control/allocations',dependencies=auth)
+    def allocations(state:str|None=None,job_id:str|None=None):
+        from inferstack.infrastructure import AllocationManager
+        return {'allocations':AllocationManager(repository,'api').list(state=state,job_id=job_id)}
+
+    @app.post('/control/allocations/{allocation_id}/recover',dependencies=auth)
+    def recover_allocation(allocation_id:str,body:Recovery):
+        from inferstack.infrastructure import LocalProcessProvider,recover
+        try:return recover(repository,LocalProcessProvider(),allocation_id,force_note=body.force_note)
+        except KeyError:raise HTTPException(404,'unknown allocation')
+        except ValueError as exc:raise HTTPException(409,str(exc))
+
+    @app.get('/control/workers',dependencies=auth)
+    def workers():return {'workers':repository.workers()}
 
     @app.put('/control/records/{kind}/{identifier}',dependencies=auth)
     def put(kind:str,identifier:str,record:RecordBody):
