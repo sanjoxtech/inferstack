@@ -1,8 +1,15 @@
-# InferStack v1.6.0 — Qwen Forward Fusion Candidate
+# InferStack — serving platform and inference optimization harness
 
-Private development repository for InferStack's inference runtime and planned
-optimization control plane. The imported v1.6.0 candidate is the starting point;
-the control plane is not implemented yet. See [architecture and roadmap](docs/ARCHITECTURE.md).
+InferStack serves supported models through native and third-party engines and is
+being extended with its own planner-executor-verifier harness for inference
+optimization across hardware and cloud infrastructure. The current code is the
+v1.6.0 Qwen forward-fusion candidate; the broader control plane is planned.
+
+Start with the [target architecture](docs/ARCHITECTURE.md), the evidence-based
+[current-state audit](docs/CURRENT_STATE_AUDIT.md), and the release-sized
+[implementation plan](docs/IMPLEMENTATION_PLAN.md). They distinguish functioning
+code from proposed capabilities, including the current engine-adapter and
+measurement gaps.
 
 ## GitHub and Colab workflow
 
