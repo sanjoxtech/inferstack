@@ -168,3 +168,7 @@ A fusion is kept only if it:
 4. does not introduce unacceptable deterministic output divergence.
 
 **No v1.6 speedup is claimed until that A100 matrix is run.**
+
+## Integrated v2 development
+
+See [build status](docs/V2_BUILD.md) and [control-plane runbook](docs/CONTROL_RUNBOOK.md). The integrated control, optimization and release path is under development; this checkpoint is not the completed v2.0 release.

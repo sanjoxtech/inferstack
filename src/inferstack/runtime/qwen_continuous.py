@@ -253,9 +253,9 @@ class QwenHybridContinuousEngine:
         for i,t in enumerate(toks):
             r=state.requests[i]
             if r.state!=RequestState.RUNNING:continue
-            t=int(t);r.generated_token_ids.append(t);state.generated[i]+=1;self._emit(state.queues[i],t);self._stats['tokens_emitted']+=1
+            t=int(t);r.token_emission_times.append(time.perf_counter());r.generated_token_ids.append(t);state.generated[i]+=1;self._emit(state.queues[i],t);self._stats['tokens_emitted']+=1
             if t in state.stop_sets[i] or state.generated[i]>=r.sampling.max_new_tokens:
-                r.state=RequestState.FINISHED;self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
+                r.finish_reason='stop' if t in state.stop_sets[i] else 'length';r.state=RequestState.FINISHED;self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
     def _compact(self,state):
         import torch
         keep=[i for i,r in enumerate(state.requests) if r.state==RequestState.RUNNING]

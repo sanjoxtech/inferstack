@@ -7,11 +7,14 @@ from pydantic import BaseModel,Field
 from inferstack import __version__
 from inferstack.core.request import SamplingParams
 
+class StreamOptions(BaseModel):
+    include_usage:bool=False
+
 class CompletionBody(BaseModel):
-    model:str;prompt:str;max_tokens:int=64;temperature:float=0.0;top_p:float=1.0;top_k:int|None=None;min_p:float=0.0;repetition_penalty:float=1.0;seed:int|None=None;stream:bool=False
+    model:str;prompt:str;max_tokens:int=Field(default=64,ge=1,le=32768);temperature:float=Field(default=0.0,ge=0,allow_inf_nan=False);top_p:float=Field(default=1.0,gt=0,le=1);top_k:int|None=Field(default=None,ge=1);min_p:float=Field(default=0.0,ge=0,le=1);repetition_penalty:float=Field(default=1.0,gt=0,allow_inf_nan=False);seed:int|None=None;stream:bool=False;stream_options:StreamOptions|None=None
 class ChatMessage(BaseModel):role:str;content:str
 class ChatBody(BaseModel):
-    model:str;messages:list[ChatMessage];max_tokens:int=64;temperature:float=0.0;top_p:float=1.0;top_k:int|None=None;min_p:float=0.0;repetition_penalty:float=1.0;seed:int|None=None;stream:bool=False
+    model:str;messages:list[ChatMessage];max_tokens:int=Field(default=64,ge=1,le=32768);temperature:float=Field(default=0.0,ge=0,allow_inf_nan=False);top_p:float=Field(default=1.0,gt=0,le=1);top_k:int|None=Field(default=None,ge=1);min_p:float=Field(default=0.0,ge=0,le=1);repetition_penalty:float=Field(default=1.0,gt=0,allow_inf_nan=False);seed:int|None=None;stream:bool=False;stream_options:StreamOptions|None=None
 
 def create_app(registry):
     @asynccontextmanager
@@ -33,25 +36,49 @@ def create_app(registry):
     def sampling(b):return SamplingParams(max_new_tokens=b.max_tokens,temperature=b.temperature,top_p=b.top_p,top_k=b.top_k,min_p=b.min_p,repetition_penalty=b.repetition_penalty,seed=b.seed)
     async def completion(service,prompt,b,chat=False):
         r,q=await service.submit(prompt,sampling(b))
+        def usage():
+            count=len(r.generated_token_ids)
+            return {'prompt_tokens':len(r.prompt_token_ids),'completion_tokens':count,'total_tokens':len(r.prompt_token_ids)+count}
         if not b.stream:
             toks=[]
-            while True:
-                x=await q.get()
-                if x is None:break
-                if isinstance(x,BaseException):raise HTTPException(500,str(x))
-                toks.append(int(x))
+            try:
+                while True:
+                    x=await q.get()
+                    if x is None:break
+                    if isinstance(x,BaseException):raise HTTPException(500,'engine generation failed')
+                    toks.append(int(x))
+            finally:
+                if not r.done:service.cancel(r.request_id)
             text=service.tokenizer.decode(toks,skip_special_tokens=True)
-            if chat:return {'id':r.request_id,'object':'chat.completion','model':service.model_id,'choices':[{'index':0,'message':{'role':'assistant','content':text},'finish_reason':'stop'}]}
-            return {'id':r.request_id,'object':'text_completion','model':service.model_id,'choices':[{'index':0,'text':text,'finish_reason':'stop'}]}
+            if chat:return {'id':r.request_id,'object':'chat.completion','model':service.model_id,'usage':usage(),'choices':[{'index':0,'message':{'role':'assistant','content':text},'finish_reason':r.finish_reason or 'stop'}]}
+            return {'id':r.request_id,'object':'text_completion','model':service.model_id,'usage':usage(),'choices':[{'index':0,'text':text,'finish_reason':r.finish_reason or 'stop'}]}
         async def gen():
+            tokens=[];emitted=''
             try:
                 while True:
                     x=await q.get()
                     if x is None:break
                     if isinstance(x,BaseException):
-                        yield 'data: '+json.dumps({'error':str(x)})+'\n\n';break
-                    piece=service.decode_token(int(x));payload={'choices':[{'index':0,'delta':{'content':piece}}]} if chat else {'choices':[{'index':0,'text':piece}]}
+                        yield 'data: '+json.dumps({'error':'engine generation failed'})+'\n\n';return
+                    tokens.append(int(x))
+                    decoded=service.tokenizer.decode(tokens,skip_special_tokens=True,clean_up_tokenization_spaces=False)
+                    if decoded.endswith('\ufffd'):continue
+                    if not decoded.startswith(emitted):
+                        yield 'data: '+json.dumps({'error':'tokenizer streaming prefix changed'})+'\n\n';return
+                    piece=decoded[len(emitted):];emitted=decoded
+                    payload={'choices':[{'index':0,'delta':{'content':piece}}]} if chat else {'choices':[{'index':0,'text':piece}]}
                     yield 'data: '+json.dumps(payload,separators=(',',':'))+'\n\n'
+                decoded=service.tokenizer.decode(tokens,skip_special_tokens=True,clean_up_tokenization_spaces=False)
+                if decoded.startswith(emitted) and len(decoded)>len(emitted):
+                    piece=decoded[len(emitted):]
+                    tail={'choices':[{'index':0,'delta':{'content':piece}}]} if chat else {'choices':[{'index':0,'text':piece}]}
+                    yield 'data: '+json.dumps(tail)+'\n\n'
+                final={'choices':[{'index':0,'finish_reason':r.finish_reason or 'stop'}]}
+                yield 'data: '+json.dumps(final)+'\n\n'
+                if b.stream_options and b.stream_options.include_usage:
+                    times=r.token_emission_times
+                    timing={'token_count':len(times),'decode_elapsed_ms':(times[-1]-times[0])*1000 if len(times)>1 else None}
+                    yield 'data: '+json.dumps({'choices':[],'usage':usage(),'inferstack_timing':timing})+'\n\n'
                 yield 'data: [DONE]\n\n'
             except (asyncio.CancelledError,GeneratorExit):
                 service.cancel(r.request_id);raise

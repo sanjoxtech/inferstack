@@ -31,3 +31,29 @@ and resource cleanup; a database lease alone cannot stop an expired process.
 
 Remaining backlog stays open until functioning code and appropriate evidence exist.
 The package remains at its existing version until the integrated release is ready.
+
+## November 7 implementation pass: executable optimization path
+
+Implemented (not a v2.0 completion claim):
+
+- Content-aware streaming measurements, authoritative usage, native token-emission
+  TPOT, missing-data handling, repeated-trial CV/MAD and constrained epsilon judge.
+- Revision-checked domain records and SHA-256 evidence artifacts.
+- Authenticated control API; HTTP engine adapters with local subprocess supervision.
+- Lease-renewing worker, cancellation, bounded planner/executor/verifier iterations,
+  append-only stage events and per-attempt candidate cleanup.
+- Configured JSON provider planner, registered candidate execution, repeated paired
+  endpoint trials with exact-match quality gates and recorded evidence.
+- Verified release manifests, route CAS, weighted canary selection, promotion and
+  rollback; multi-model HTTP gateway pins each request to a release specification.
+- Native streaming usage/finish reasons, generation bounds and Unicode buffering.
+
+Scope still open: research fetching/tool-driven planning, arbitrary code/plugin
+experiments in sandboxes, GPU numerical/semantic verifiers, infrastructure/cloud
+allocation, continuous trigger policies, operational migrations and hard-crash
+process reconciliation. Release manifests freeze configuration records; remote
+endpoint contents must still be pinned and attested by a deployment controller.
+The current endpoint verifier covers only the supplied exact-match workload and
+mean end-to-end latency. It does not certify numerical parity or general quality.
+
+See CONTROL_RUNBOOK.md for the executable path and validation boundaries.

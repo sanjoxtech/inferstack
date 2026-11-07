@@ -23,6 +23,8 @@ class Request:
     sampling:SamplingParams=field(default_factory=SamplingParams)
     state:RequestState=RequestState.WAITING
     generated_token_ids:list[int]=field(default_factory=list)
+    token_emission_times:list[float]=field(default_factory=list)
+    finish_reason:str|None=None
     prompt_cursor:int=0
     error:str|None=None
 

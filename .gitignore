@@ -19,3 +19,6 @@ dist/
 *.ckpt
 results/*
 !results/.gitkeep
+
+.inferstack/
+worker.json
