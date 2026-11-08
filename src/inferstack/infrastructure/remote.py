@@ -131,6 +131,7 @@ class DockerProvider(_CLIProvider):
 class KubernetesProvider(_CLIProvider):
     name = 'kubernetes'
     resource_type = 'k8s_deployment'
+    schedules_devices = True  # GPU requests are placed by the cluster scheduler (nvidia.com/gpu)
 
     def __init__(self, *, namespace, runner=default_runner, kubectl='kubectl', egress_cidrs=(), context=None):
         super().__init__(runner)

@@ -71,7 +71,7 @@ jobs:
       - name: test suite (CPU + PostgreSQL)
         run: uv run --no-sync python -m pytest -o addopts='' -q -rs
       - name: verification acceptance probes
-        run: uv run --no-sync python -m pytest -o addopts='' -q docs/verification/v2_contract_probes.py docs/verification/v2_second_pass_probes.py
+        run: uv run --no-sync python -m pytest -o addopts='' -q docs/verification/v2_contract_probes.py docs/verification/v2_second_pass_probes.py docs/verification/v2_third_pass_probes.py
       - name: qualification runner refuses a GPU-less host
         run: |
           set +e

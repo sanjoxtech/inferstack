@@ -79,7 +79,9 @@ class EndpointExecutor:
             placement={'gpu_devices':devices} if devices else ({'gpu_pool':self.gpu_devices} if gpus else {})
             alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
                 provider=self.provider.name, resource_type=self.provider.resource_type,
-                spec={'deployment_id':spec.id,'argv':argv,'gpu_basis':basis,**placement,**self._price(gpus)},
+                spec={'deployment_id':spec.id,'argv':argv,'gpu_basis':basis,**placement,**self._price(gpus),
+                      # the verified launch environment (credential-free, scrubbed) for replacements
+                      **({'launch_env':{k:v for k,v in env.items() if k!='CUDA_VISIBLE_DEVICES'}} if env else {})},
                 gpu_count=gpus)
             if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
             devices=alloc['spec'].get('gpu_devices') or devices

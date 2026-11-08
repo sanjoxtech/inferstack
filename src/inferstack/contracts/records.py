@@ -371,6 +371,10 @@ class Release(Record):
     # model/hardware record revisions, plugins). Attestation and deployment use these
     # exact values; later updates to the referenced records never change them.
     identity: dict | None = None
+    # Frozen from the verified serving allocation: where it ran (provider, namespace,
+    # context) and how (credential-free launch environment). Replacements replay these.
+    placement: dict | None = None
+    execution: dict | None = None
 
     def references(self):
         snapshot = self.deployment

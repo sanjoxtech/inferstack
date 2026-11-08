@@ -113,7 +113,7 @@ def read_roots(readable=()):
     return sorted({r for r in roots if r.exists()} | {r.resolve() for r in roots if r.exists()})
 
 
-def seatbelt_profile(writable, *, offline, home=None, readable=()):
+def seatbelt_profile(writable, *, offline, home=None, readable=(), readable_files=()):
     home = Path(home or os.path.expanduser('~'))
     roots = read_roots(readable) + [Path(w).resolve() for w in writable]
     rules = ['(version 1)', '(allow default)', '(deny file-write*)',
@@ -125,7 +125,9 @@ def seatbelt_profile(writable, *, offline, home=None, readable=()):
              '(allow file-read-data (literal "/") (regex #"^/dev/") ' +
              ' '.join(f'(subpath {_sb_quote(r)})' for r in roots) +
              # directory listing (names only) of the package's parent so imports resolve
-             f' (literal {_sb_quote(Path(__file__).resolve().parents[2])}))',
+             f' (literal {_sb_quote(Path(__file__).resolve().parents[2])})' +
+             # individual program files (never their directories)
+             ''.join(f' (literal {_sb_quote(Path(f).resolve())})' for f in readable_files) + ')',
              # Process credentials: no keychain access and no other process's details.
              '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))']
     secrets = [home / p for p in SECRET_PATHS]
@@ -135,7 +137,7 @@ def seatbelt_profile(writable, *, offline, home=None, readable=()):
     return ''.join(rules)
 
 
-def bwrap_prefix(writable, *, offline, readable=(), home=None):
+def bwrap_prefix(writable, *, offline, readable=(), home=None, readable_files=()):
     """bubblewrap mount namespace with only the read roots visible (read-only), the
     writable paths bound read-write, fresh /dev, /proc (own PID namespace, so other
     processes' environments are not visible), /tmp, and credential paths masked."""
@@ -152,6 +154,9 @@ def bwrap_prefix(writable, *, offline, readable=(), home=None):
             prefix += ['--symlink', os.readlink(source), str(source)]
         else:
             prefix += ['--ro-bind-try', str(source), str(source)]
+    for program in readable_files:  # single files, bound individually
+        program = Path(program).resolve()
+        prefix += ['--ro-bind-try', str(program), str(program)]
     for secret in SECRET_PATHS:
         path = home / secret
         if path.is_dir():
@@ -209,15 +214,17 @@ class Sandbox:
                 'network_isolation': self.backend or ('netns' if self.netns else 'unavailable'),
                 'env': 'allowlisted', 'limits': asdict(self.limits)}
 
-    def wrap(self, argv, *, workspace, offline, extra_writable=(), readable=()):
+    def wrap(self, argv, *, workspace, offline, extra_writable=(), readable=(), readable_files=()):
         """Prefix argv with the isolation boundary: writes confined to the workspace, reads to
         `read_roots(readable)` plus the writable paths."""
         writable = [Path(workspace), *map(Path, extra_writable)]
         argv = list(argv)
         if self.backend == 'seatbelt':
-            return ['sandbox-exec', '-p', seatbelt_profile(writable, offline=offline, readable=readable), *argv]
+            return ['sandbox-exec', '-p', seatbelt_profile(writable, offline=offline, readable=readable,
+                                                           readable_files=readable_files), *argv]
         if self.backend == 'bwrap':
-            return [*bwrap_prefix(writable, offline=offline, readable=readable), '--', *argv]
+            return [*bwrap_prefix(writable, offline=offline, readable=readable, readable_files=readable_files),
+                    '--', *argv]
         if offline and self.netns:
             return ['unshare', '-n', '--', *argv]
         return argv
@@ -229,9 +236,11 @@ class Sandbox:
         # candidate's PYTHONPATH, so patched source cannot replace it.
         applied = [sys.executable, '-I', str(Path(__file__).with_name('limit_exec.py')), str(limits.cpu_seconds),
                    str(limits.open_files), str(limits.file_bytes), str(limits.address_space_bytes or 0), '--', *argv]
-        # The declared program files of the command are readable (their directories only).
-        programs = [Path(a).parent for a in argv if isinstance(a, str) and a.startswith('/') and Path(a).is_file()]
-        return self.wrap(applied, workspace=workspace, offline=offline, readable=[*readable, *programs])
+        # Only the declared program files themselves are readable, never their directories
+        # (a script's siblings, e.g. a project's .env, stay unreadable). Anything else the
+        # program needs must be in the workspace or passed explicitly as `readable`.
+        programs = [Path(a) for a in argv if isinstance(a, str) and a.startswith('/') and Path(a).is_file()]
+        return self.wrap(applied, workspace=workspace, offline=offline, readable=readable, readable_files=programs)
 
     def terminate_all(self):
         """Kill every running step's process group (cancellation/deadline)."""

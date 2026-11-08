@@ -164,3 +164,118 @@ def test_unpinned_reference_without_frozen_identity_is_not_attestable(repo):
     repo.put_record('model', 'mdl', {'source': 'huggingface', 'repo_id': 'org/m', 'revision': 'b' * 40})
     expected = _expected(repo, {'model': 'm', 'model_ref': 'mdl'}, {'body': {}})
     assert expected['model_revision'] is None  # -> attestation 'unverified', never the latest record
+
+
+# --- third review (T01-T05) -------------------------------------------------------
+
+
+class _Ready:
+    def __init__(self, spec):
+        self.spec = spec
+
+    async def ready(self):
+        return True
+
+    async def close(self):
+        pass
+
+
+def _release(repo, name, **body):
+    repo.put_record('deployment', name, {'id': name, 'engine': 'generic_openai', 'model': 'm',
+                                         'base_url': 'http://' + name, **body})
+    repo.put('release', 'rel-' + name, {'deployment': repo.read('deployment', name),
+             'evidence': {'sha256': 'f' * 64, 'bytes': 0}, 'job_id': 'fixture', 'verification_scope': 'fixture'})
+    return 'rel-' + name
+
+
+@pytest.mark.asyncio
+async def test_orphan_is_retried_and_retirement_completes_after_recovery(repo, tmp_path):
+    """T03: an orphaned serving resource keeps the obligation pending until a later stop succeeds."""
+    from inferstack.releases.runtime import ReleaseRuntime
+    stable = _release(repo, 'stable')
+    repo.submit('own', {})
+    claim = repo.claim(100)
+    manager = AllocationManager(repo, 'w')
+    row = manager.intent(claim, 's', purpose='p', provider='local', resource_type='process', spec={})
+    manager.activate(row['id'], claim, {'pid': 1})
+    manager.transfer_to_serving(row['id'], 'stable', claim)
+
+    class Provider:
+        name, results = 'local', [False, True]
+
+        def stop(self, external):
+            return self.results.pop(0)
+
+    runtime = ReleaseRuntime(repo, Provider(), engine_factory=_Ready, log_root=tmp_path)
+    first = await runtime.retire(stable)
+    assert [a['state'] for a in first['allocations']] == ['orphaned']
+    second = await runtime.retire(stable)
+    assert [a['state'] for a in second['allocations']] == ['released']
+    assert runtime.unresolved_allocations(stable) == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_container_placement_is_refused(repo, tmp_path):
+    """T04: with several remote providers and no recorded placement, never guess one."""
+    from inferstack.releases.runtime import ReleaseRuntime, RuntimeUnavailable
+
+    class Remote:
+        launches_remotely, resource_type = True, 'container'
+
+        def __init__(self, name):
+            self.name = name
+
+    rel = _release(repo, 'c', profile={'container': {'image': 'x@sha256:' + 'a' * 64, 'container_port': 1}})
+    runtime = ReleaseRuntime(repo, LocalProcessProvider(), engine_factory=_Ready, log_root=tmp_path,
+                             providers={'docker': Remote('docker'), 'kubernetes': Remote('kubernetes')})
+    with pytest.raises(RuntimeUnavailable, match='refusing to guess'):
+        await runtime.ensure(rel)
+
+
+@pytest.mark.asyncio
+async def test_local_container_gpu_count_reserves_identified_host_devices(repo, tmp_path):
+    """T05: a local container runtime with gpus: 1 gets a reserved host device; Kubernetes does not."""
+    from inferstack.releases.runtime import ReleaseRuntime
+    launched = []
+
+    class Docker:
+        name, launches_remotely, resource_type = 'docker', True, 'container'
+
+        def launch(self, alloc_id, spec):
+            launched.append(spec)
+            return {'provider': 'docker', 'container_id': alloc_id}
+
+        def alive(self, external):
+            return True
+
+    rel = _release(repo, 'g', profile={'container': {'provider': 'docker', 'image': 'x@sha256:' + 'a' * 64,
+                                                     'container_port': 1, 'gpus': 1}})
+    runtime = ReleaseRuntime(repo, LocalProcessProvider(), engine_factory=_Ready, log_root=tmp_path,
+                             providers={'docker': Docker()}, gpu_devices=['GPU-x'])
+    await runtime.ensure(rel)
+    assert launched[0]['gpus'] == ['GPU-x']
+
+
+@pytest.mark.asyncio
+async def test_replacement_uses_frozen_execution_env_without_control_secrets(repo, tmp_path, monkeypatch):
+    """T01: the frozen release environment is replayed; the control process's variables are not."""
+    from inferstack.releases.runtime import ReleaseRuntime
+    monkeypatch.setenv('CONTROL_ONLY_FAKE_TOKEN', 'sentinel')
+    marker = tmp_path / 'env.json'
+    code = ('import json,os,time; json.dump({"pp":os.environ.get("PYTHONPATH"),'
+            '"tok":os.environ.get("CONTROL_ONLY_FAKE_TOKEN")},open(%r,"w")); time.sleep(30)' % str(marker))
+    rel = _release(repo, 'e', command=[sys.executable, '-c', code])
+    body = repo.read('release', rel)['body']
+    repo.put('release', 'rel-e2', {**body, 'execution': {'env': {'PYTHONPATH': '/frozen/src'}}})
+    runtime = ReleaseRuntime(repo, LocalProcessProvider(), engine_factory=_Ready, log_root=tmp_path / 'logs')
+    try:
+        await runtime.ensure('rel-e2')
+        for _ in range(200):
+            if marker.exists() and marker.read_text():
+                break
+            await asyncio.sleep(0.02)
+        import json
+        seen = json.loads(marker.read_text())
+        assert seen == {'pp': '/frozen/src', 'tok': None}
+    finally:
+        await runtime.retire('rel-e2')

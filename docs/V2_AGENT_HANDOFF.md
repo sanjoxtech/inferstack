@@ -670,6 +670,14 @@ makes GPU launches without identified devices fail closed. Details and evidence:
 - Integrations: atomic trigger admission; every terminal transition writes the
   outcome callback; qualification classifies skips by required integration.
 
+### Third independent review remediated — 8 November 2026
+
+All five findings in `docs/V2_THIRD_REVIEW.md` (T01–T05) fixed; all 36 probes
+(three probe files) pass and run in CI. Replacements replay the frozen,
+credential-free launch environment and placement; the launcher exposes program
+files only; retirement completes only when every serving resource is released;
+Kubernetes GPU replacements use the cluster scheduler.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |

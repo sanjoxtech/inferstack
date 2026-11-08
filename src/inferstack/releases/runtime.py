@@ -46,10 +46,27 @@ class ReleaseRuntime:
         release = self.repository.read('release', release_id)
         return release, release['body']['deployment']['body']
 
-    def serving_allocations(self, release_id):
+    def _owned(self, release_id):
         _, deployment = self._manifest(release_id)
-        manager = AllocationManager(self.repository, SERVING_PREFIX + deployment['id'])
-        return [a for a in manager.list(state='active') if a['worker_id'] == SERVING_PREFIX + deployment['id']]
+        owner = SERVING_PREFIX + deployment['id']
+        return [a for a in AllocationManager(self.repository, owner).list() if a['worker_id'] == owner]
+
+    def serving_allocations(self, release_id):
+        return [a for a in self._owned(release_id) if a['state'] == 'active']
+
+    def unresolved_allocations(self, release_id):
+        """Every serving resource of the release not yet proven released (intent, active,
+        releasing or orphaned): retirement is complete only when this is empty."""
+        from inferstack.infrastructure.allocations import LIVE_STATES
+        return [a for a in self._owned(release_id) if a['state'] in (*LIVE_STATES, 'orphaned')]
+
+    def _history(self, release_id, key):
+        """Most recent value of a spec field recorded on any serving allocation of the release's
+        deployment (e.g. the verified launch environment or the container placement)."""
+        for alloc in reversed(self._owned(release_id)):
+            if (alloc['spec'] or {}).get(key) is not None:
+                return alloc
+        return None
 
     def _provider_for(self, name):
         """The provider that owns a placement; Docker needs no configuration, others must be supplied."""
@@ -98,11 +115,22 @@ class ReleaseRuntime:
         await self._restore(deployment)
         return result
 
-    def _placement(self, container):
-        name = container.get('provider')
+    def _placement(self, container, release_id=None, release=None):
+        """The provider a container release must be replaced on: the placement frozen in the
+        release, else the provider stated in its profile, else the provider of its recorded
+        serving allocation. Never guessed: with several remote providers configured and no
+        recorded placement the replacement is refused."""
+        name = ((release or {}).get('body') or {}).get('placement', {}).get('provider') if release else None
+        name = name or container.get('provider')
+        if name is None and release_id is not None:
+            recorded = self._history(release_id, 'container')
+            name = recorded['provider'] if recorded else None
         if name is None:
             remote = [n for n, p in self.providers.items() if getattr(p, 'launches_remotely', False)]
-            name = remote[0] if len(remote) == 1 else 'docker'
+            if len(remote) > 1:
+                raise RuntimeUnavailable(f'container release has no recorded placement and several remote '
+                                         f'providers are configured ({sorted(remote)}); refusing to guess')
+            name = remote[0] if remote else 'docker'
         provider = self._provider_for(name)
         if provider is None or not getattr(provider, 'launches_remotely', False):
             raise RuntimeUnavailable(f'container release needs a configured {name!r} provider')
@@ -112,7 +140,7 @@ class ReleaseRuntime:
         owner = SERVING_PREFIX + deployment['id']
         manager = AllocationManager(self.repository, owner)
         alloc_id = 'alloc-' + uuid.uuid4().hex[:20]
-        provider = self._placement(container) if container is not None else self.provider
+        provider = self._placement(container, release_id, release) if container is not None else self.provider
         spec = {'release_id': release_id, 'kind': 'serving'}
         from inferstack.infrastructure.allocations import ResourceConflict, place_devices
         from inferstack.optimization.experiment import GPU_ENGINES
@@ -121,10 +149,17 @@ class ReleaseRuntime:
             spec['container'] = container  # persisted placement: recovery can relaunch or stop it
             listed = container.get('gpus') if isinstance(container.get('gpus'), list) else []
             gpus = len(listed) if listed else int(container.get('gpus') or 0)
-            if listed:
+            scheduled = getattr(provider, 'schedules_devices', provider.name == 'kubernetes')
+            if scheduled:
+                pass  # the cluster scheduler places count-based GPU requests; gpu_count is accounting only
+            elif listed:
                 spec['gpu_devices'] = [str(g) for g in listed]
+            elif gpus:
+                spec['gpu_pool'] = self.gpu_devices  # a local container runtime needs identified host devices
         else:
             spec['argv'] = list(deployment['command'])
+            spec['launch_env'] = self._launch_env(release_id, release, alloc_id)
+            scheduled = False
             gpus = int(resources.get('gpu_count') or len(resources.get('gpu_devices') or []) or
                        (1 if deployment.get('engine') in GPU_ENGINES else 0))
             if resources.get('gpu_devices'):
@@ -133,7 +168,8 @@ class ReleaseRuntime:
                 spec['gpu_pool'] = self.gpu_devices
         try:
             with self.repository.transaction() as db:  # intent before launch, no job lease (serving owner)
-                spec = place_devices(db, provider.name, spec, gpus)
+                if not scheduled:  # host devices; a cluster scheduler does its own placement
+                    spec = place_devices(db, provider.name, spec, gpus)
                 now = self.repository.clock()
                 db.execute('INSERT INTO allocations(id,idempotency_key,job_id,step_key,worker_id,provider,'
                            'resource_type,spec,state,gpu_count,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -141,14 +177,20 @@ class ReleaseRuntime:
                             provider.resource_type, self.repository.encode(spec), 'intent', gpus, now, now))
         except ResourceConflict as exc:
             raise RuntimeUnavailable(f'no exclusive GPU placement for {release_id}: {exc}') from exc
+        if container is not None and spec.get('gpu_devices') and not isinstance(container.get('gpus'), list):
+            container = {**container, 'gpus': spec['gpu_devices']}  # docker --gpus device=<reserved>
         self.log_root.mkdir(parents=True, exist_ok=True)
         log = (self.log_root / f'{alloc_id}.log').open('ab')
         try:
             if container is not None:
                 external = {**provider.launch(alloc_id, container), 'allocation_id': alloc_id}
             else:
-                env = {'CUDA_VISIBLE_DEVICES': ','.join(spec['gpu_devices'])} if spec.get('gpu_devices') else None
-                process = await provider.spawn(alloc_id, spec['argv'], log, env=env)
+                # Exactly the frozen, credential-free launch environment: never the control
+                # process's own environment. Only reserved devices are added deliberately.
+                env = dict(spec['launch_env'])
+                if spec.get('gpu_devices'):
+                    env['CUDA_VISIBLE_DEVICES'] = ','.join(spec['gpu_devices'])
+                process = await provider.spawn(alloc_id, spec['argv'], log, env=env, inherit_env=False)
                 external = {**provider.external_for(process.pid), 'allocation_id': alloc_id}
             manager.record_external(alloc_id, external)
             with self.repository.transaction() as db:
@@ -175,6 +217,29 @@ class ReleaseRuntime:
         finally:
             log.close()
 
+    def _launch_env(self, release_id, release, alloc_id):
+        """Credential-free environment for a replacement process.
+
+        The release's frozen `execution.env` (copied at release creation from the verified
+        launch) wins; else the environment recorded on the release's earlier serving
+        allocation; else a minimal allowlisted environment. Every source is re-checked
+        through `scrubbed_env`, which refuses credential-like variables."""
+        from inferstack.execution.sandbox import scrubbed_env
+        frozen = ((release.get('body') or {}).get('execution') or {}).get('env')
+        if frozen is None:
+            recorded = self._history(release_id, 'launch_env')
+            frozen = recorded['spec']['launch_env'] if recorded else None
+        runnable = (release.get('body') or {}).get('runnable') or {}
+        if frozen is not None and frozen.get('HOME'):
+            home = Path(frozen['HOME'])
+        elif runnable.get('path'):
+            home = Path(runnable['path'])
+        else:
+            home = self.log_root / f'{alloc_id}.home'
+        home.mkdir(parents=True, exist_ok=True)
+        extra = {k: v for k, v in (frozen or {}).items() if k not in ('HOME', 'TMPDIR')}
+        return scrubbed_env(extra, home=home)
+
     async def retire(self, release_id, *, drain_seconds=30.0):
         """Drain in-flight requests (deadline), then stop and release every serving runtime of the release.
 
@@ -183,9 +248,19 @@ class ReleaseRuntime:
         _, deployment = self._manifest(release_id)
         drained = await self.drain(deployment['id'], drain_seconds) if self.drain else {'drained': None}
         outcomes = []
-        for alloc in self.serving_allocations(release_id):
+        for alloc in self.unresolved_allocations(release_id):
             manager = AllocationManager(self.repository, alloc['worker_id'])
             provider = self._provider_for(alloc['provider'])
+            if alloc['external'] is None and provider is not None:
+                tagged = provider.find_tagged(alloc['id']) if hasattr(provider, 'find_tagged') else None
+                if tagged == []:
+                    manager.release(alloc['id'], 'retired_never_launched')
+                    outcomes.append({'allocation_id': alloc['id'], 'state': 'released'})
+                else:
+                    manager.mark_orphaned(alloc['id'], 'retire_unidentified_launch')
+                    outcomes.append({'allocation_id': alloc['id'], 'state': 'orphaned',
+                                     'reason': 'launch identity not recorded'})
+                continue
             if provider is None:
                 manager.mark_orphaned(alloc['id'], f"retire_no_provider_{alloc['provider']}")
                 outcomes.append({'allocation_id': alloc['id'], 'state': 'orphaned',

@@ -31,7 +31,9 @@ class ReleaseManager:
                   'identity':self.freeze_identity(record['body'],evidence)}
         serving=experiment.get('serving') or {}
         if serving.get('runnable'):manifest['runnable']=serving['runnable']
-        if serving.get('allocation_id'):manifest['serving_allocation_id']=serving['allocation_id']
+        if serving.get('allocation_id'):
+            manifest['serving_allocation_id']=serving['allocation_id']
+            manifest.update(self.freeze_runtime(serving['allocation_id']))
         artifact=self.repository.artifact(self.repository.encode(manifest).encode())
         identifier=artifact['sha256']
         # Idempotent by immutable manifest digest.
@@ -41,6 +43,18 @@ class ReleaseManager:
             stored=self.repository.read('release',identifier)['body']
             if stored not in (manifest,validate('release',manifest).model_dump(mode='json')):raise
         return identifier
+
+    def freeze_runtime(self,allocation_id):
+        """Placement and launch environment of the verified serving allocation."""
+        from inferstack.infrastructure.allocations import AllocationManager
+        alloc=AllocationManager(self.repository,'release').get(allocation_id)
+        external=alloc['external'] or {}
+        placement={'provider':alloc['provider'],'resource_type':alloc['resource_type'],
+                   **{k:external[k] for k in ('namespace','context','host') if external.get(k) is not None}}
+        out={'placement':placement}
+        if (alloc['spec'] or {}).get('launch_env') is not None:
+            out['execution']={'env':alloc['spec']['launch_env']}
+        return out
 
     def freeze_identity(self,deployment,evidence):
         """Resolve every identity reference to the exact revision that was verified.
