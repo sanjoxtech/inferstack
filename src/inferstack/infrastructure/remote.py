@@ -67,8 +67,9 @@ class DockerProvider(_CLIProvider):
 
     def launch_argv(self, alloc_id, spec):
         image = spec['image']
-        if not re.search(r'@sha256:[0-9a-f]{64}$', image):
-            raise ValueError('container image must be pinned by digest (image@sha256:...)')
+        # A registry digest or a local content-addressed image ID (built candidate) are both immutable.
+        if not (re.search(r'@sha256:[0-9a-f]{64}$', image) or re.fullmatch(r'sha256:[0-9a-f]{64}', image)):
+            raise ValueError('container image must be pinned by digest (image@sha256:...) or image ID')
         argv = [self.docker, 'run', '-d', '--name', k8s_name(alloc_id), '--label', f'{LABEL}={alloc_id}',
                 '--read-only', '--tmpfs', '/tmp:rw,size=1g', '--cap-drop', 'ALL',
                 '--security-opt', 'no-new-privileges', '--pids-limit', str(self.pids), '--memory', self.memory,
@@ -87,6 +88,11 @@ class DockerProvider(_CLIProvider):
 
     def owns(self, external):
         return isinstance(external, dict) and external.get('provider') == self.name
+
+    def observed_image_id(self, external):
+        code, image_id, _ = self.run([self.docker, 'inspect', '--format', '{{.Image}}', external['container_id']],
+                                     check=False)
+        return image_id.strip() if code == 0 and image_id.strip() else None
 
     def observed_image_digest(self, external):
         """Repository digest of the image the container actually runs (attestation evidence), or None."""
@@ -150,7 +156,11 @@ class KubernetesProvider(_CLIProvider):
                      'env': [{'name': k, 'value': str(v)} for k, v in sorted((spec.get('env') or {}).items())],
                      'readinessProbe': {'httpGet': {'path': spec.get('ready_path', '/v1/models'), 'port': port},
                                         'periodSeconds': 5, 'failureThreshold': 120},
-                     'securityContext': {'runAsNonRoot': True, 'allowPrivilegeEscalation': False,
+                     # Drain: endpoints are removed first, the container keeps serving in-flight
+                     # requests for drain_seconds, then receives SIGTERM within the grace period.
+                     'lifecycle': {'preStop': {'sleep': {'seconds': int(spec.get('drain_seconds', 15))}}},
+                     'securityContext': {'runAsNonRoot': True, 'runAsUser': int(spec.get('run_as_user', 65532)),
+                                         'allowPrivilegeEscalation': False,
                                          'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}},
                      'volumeMounts': [{'name': 'scratch', 'mountPath': '/tmp'}]}
         egress = [{'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}]
@@ -158,9 +168,11 @@ class KubernetesProvider(_CLIProvider):
             egress.append({'to': [{'ipBlock': {'cidr': c}} for c in self.egress_cidrs]})
         return [
             {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {'name': name, 'labels': labels},
-             'spec': {'replicas': 1, 'selector': {'matchLabels': {LABEL: alloc_id}},
+             'spec': {'replicas': int(spec.get('replicas', 1)), 'selector': {'matchLabels': {LABEL: alloc_id}},
                       'template': {'metadata': {'labels': labels},
                                    'spec': {'automountServiceAccountToken': False, 'enableServiceLinks': False,
+                                            'terminationGracePeriodSeconds': int(spec.get('drain_seconds', 15)) +
+                                            int(spec.get('shutdown_seconds', 30)),
                                             'containers': [container],
                                             'volumes': [{'name': 'scratch', 'emptyDir': {'sizeLimit': '2Gi'}}],
                                             **({'nodeSelector': spec['node_selector']} if spec.get('node_selector') else {})}}}},
@@ -183,6 +195,56 @@ class KubernetesProvider(_CLIProvider):
     def owns(self, external):
         return isinstance(external, dict) and external.get('provider') == self.name and \
             external.get('namespace') == self.namespace
+
+    def namespace_manifests(self, *, max_pods, max_gpus, max_cpu, max_memory, default_cpu='1', default_memory='2Gi'):
+        """ResourceQuota + LimitRange bounding everything InferStack may run in its namespace."""
+        labels = {'app.kubernetes.io/managed-by': 'inferstack'}
+        return [
+            {'apiVersion': 'v1', 'kind': 'ResourceQuota', 'metadata': {'name': 'inferstack-quota', 'labels': labels},
+             'spec': {'hard': {'pods': str(max_pods), 'requests.nvidia.com/gpu': str(max_gpus),
+                               'limits.cpu': str(max_cpu), 'limits.memory': str(max_memory),
+                               'requests.cpu': str(max_cpu), 'requests.memory': str(max_memory)}}},
+            {'apiVersion': 'v1', 'kind': 'LimitRange', 'metadata': {'name': 'inferstack-defaults', 'labels': labels},
+             'spec': {'limits': [{'type': 'Container', 'default': {'cpu': default_cpu, 'memory': default_memory},
+                                  'defaultRequest': {'cpu': default_cpu, 'memory': default_memory}}]}},
+        ]
+
+    def ensure_quota(self, **limits):
+        docs = self.namespace_manifests(**limits)
+        self.run(self.base + ['apply', '-f', '-'], input_text=json.dumps({'apiVersion': 'v1', 'kind': 'List',
+                                                                           'items': docs}))
+        return docs
+
+    def deployment_status(self, external):
+        code, out, _ = self.run(self.base + ['get', 'deployment', external['name'], '-o', 'json'], check=False)
+        if code != 0:
+            return None
+        body = json.loads(out)
+        if body['metadata']['uid'] != external['uid']:
+            return None
+        status = body.get('status') or {}
+        return {'replicas': body['spec'].get('replicas', 0), 'ready': status.get('readyReplicas', 0) or 0,
+                'updated': status.get('updatedReplicas', 0) or 0, 'available': status.get('availableReplicas', 0) or 0}
+
+    def scale(self, external, replicas, *, timeout=600.0, poll=1.0):
+        """Scale the allocation's Deployment and wait until exactly `replicas` are ready and the rest are gone."""
+        if isinstance(replicas, bool) or not isinstance(replicas, int) or not 0 <= replicas <= 64:
+            raise ValueError('replicas must be an integer in [0, 64]')
+        if self.deployment_status(external) is None:
+            raise RuntimeError(f"deployment {external['name']} is not ours or does not exist")
+        self.run(self.base + ['scale', 'deployment', external['name'], f'--replicas={replicas}'])
+        deadline = time.monotonic() + timeout
+        while True:
+            status, pods = self.deployment_status(external), self.pods(external)
+            if status and status['ready'] >= replicas and pods is not None and len(pods) == replicas:
+                return {**status, 'pods': len(pods)}
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"scale to {replicas} not reached: {status}, pods={None if pods is None else len(pods)}")
+            time.sleep(poll)
+
+    def drain(self, external, *, timeout=600.0):
+        """Graceful drain: scale to zero (preStop keeps serving in-flight work) and wait for all Pods to exit."""
+        return self.scale(external, 0, timeout=timeout)
 
     def external_for(self, name):
         _, out, _ = self.run(self.base + ['get', 'deployment', name, '-o', 'json'])
@@ -236,6 +298,20 @@ class KubernetesProvider(_CLIProvider):
             if (pod.get('status') or {}).get('phase') not in ('Succeeded', 'Failed'):
                 live.append(pod)
         return live
+
+    def observed_image_digest(self, external):
+        """Single image digest every running container of the allocation reports (Pod imageID), or None."""
+        pods = self.pods(external)
+        if not pods:
+            return None
+        digests = set()
+        for pod in pods:
+            for status in (pod.get('status') or {}).get('containerStatuses') or []:
+                image_id = status.get('imageID') or ''
+                if '@sha256:' not in image_id:
+                    return None
+                digests.add(image_id.split('@', 1)[1])
+        return digests.pop() if len(digests) == 1 else None
 
     def residual(self, external):
         """True while the Deployment or any of its Pods (GPU work) still exists, or when unknown."""

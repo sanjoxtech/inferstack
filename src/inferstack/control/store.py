@@ -148,11 +148,26 @@ class Store:
             raise ValueError('invalid terminal state')
         encoded = self.encode(result)
         with self.transaction() as db:
-            self.owned(db, job_id, token)
+            row = self.owned(db, job_id, token)
             error = self.encode(result.get('error')) if state == 'failed' and isinstance(result, dict) and result.get('error') else None
             db.execute('UPDATE jobs SET state=?,result=?,lease_token=NULL,lease_until=NULL,last_error=COALESCE(?,last_error),'
                        'updated=? WHERE id=?', (state, encoded, error, self.clock(), job_id))
             self.event(db, job_id, state, result)
+            self._enqueue_outcome(db, row, state, result)
+
+    def _enqueue_outcome(self, db, row, state, result):
+        """Durable outbox: the outcome callback is written in the job's terminal transaction."""
+        payload = json.loads(row['payload']) if row['payload'] else {}
+        callback = payload.get('outcome_callback')
+        if not callback:
+            return
+        from inferstack.integrations.outbox import outcome_body
+        body = outcome_body(row['id'], payload, state, result)
+        key = f"outcome:{callback['idempotency_key']}:{row['id']}"
+        db.execute('INSERT INTO outbox(id,idempotency_key,topic,job_id,payload,state,attempts,next_attempt_at,created_at) '
+                   'VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING',
+                   ('ob-' + uuid.uuid4().hex[:20], key, callback.get('topic', 'factoryos.outcome'), row['id'],
+                    self.encode(body), 'pending', 0, self.clock(), self.clock()))
 
     def fail(self, job_id, token, error, partial=None, backoff_seconds=5.0):
         """Terminal failure, or reschedule when the error is retryable and attempts remain."""
@@ -170,6 +185,7 @@ class Store:
             db.execute("UPDATE jobs SET state='failed',result=?,lease_token=NULL,lease_until=NULL,last_error=?,"
                        "updated=? WHERE id=?", (self.encode(result), self.encode(error), now, job_id))
             self.event(db, job_id, 'failed', result)
+            self._enqueue_outcome(db, row, 'failed', result)
             return 'failed'
 
     def cancel(self, job_id):
@@ -324,10 +340,16 @@ class Store:
         spend, unknown = 0.0, False
         gpu_seconds = 0.0
         for r in rows:
-            seconds = max(0.0, (r['released_at'] or now) - r['active_at']) * r['gpu_count']
+            history = (json.loads(r['spec']) or {}).get('scale_history')
+            end = r['released_at'] or now
+            if history:  # piecewise GPU count after rescaling
+                seconds = sum(max(0.0, min(end, (history[i + 1][0] if i + 1 < len(history) else end)) - max(t, r['active_at']))
+                              * g for i, (t, g) in enumerate(history))
+            else:
+                seconds = max(0.0, end - r['active_at']) * r['gpu_count']
             gpu_seconds += seconds
             price = (json.loads(r['spec']) or {}).get('price')
-            if r['gpu_count'] and not price:
+            if (r['gpu_count'] or seconds) and not price:
                 unknown = True
             elif price:
                 spend += seconds / 3600.0 * price['usd_per_gpu_hour']

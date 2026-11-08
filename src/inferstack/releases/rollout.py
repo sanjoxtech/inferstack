@@ -263,3 +263,17 @@ def http_observer(repository, gateway_url, token, transport=None):
             response.raise_for_status()
             return response.json()
     return observe
+
+
+def http_drain(gateway_url, token, transport=None):
+    """drain(deployment_id, deadline_s) against a separate gateway process (for ReleaseRuntime.retire)."""
+    import httpx
+
+    async def drain(deployment_id, deadline_seconds):
+        async with httpx.AsyncClient(base_url=gateway_url, transport=transport, timeout=deadline_seconds + 10,
+                                     headers={'Authorization': 'Bearer ' + token}) as client:
+            response = await client.post(f'/gateway/drain/{deployment_id}',
+                                         params={'deadline_seconds': deadline_seconds})
+            response.raise_for_status()
+            return response.json()
+    return drain

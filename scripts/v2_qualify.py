@@ -23,7 +23,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = ('environment', 'model_identity', 'test_suite', 'kernel_equivalence', 'native_smoke')
-OPTIONAL = ('vllm_conformance', 'provider_deepseek', 'provider_openrouter')
+OPTIONAL = ('vllm_conformance', 'sglang_conformance', 'provider_deepseek', 'provider_openrouter', 'postgresql',
+            'docker', 'kubernetes')
+PINNED_MODEL = ('Qwen/Qwen3.5-2B-Base', 'b1485b2fa6dfa1287294f269f5fb618e03d52d7c')
+
+
+def gpu_profile(gpus):
+    """T4 and A100 are separate qualification profiles; results never transfer between them."""
+    names = ' '.join(g.get('name', '') for g in gpus).upper()
+    for key in ('H100', 'A100', 'L4', 'T4', 'A10'):
+        if key in names:
+            return key.lower()
+    return 'other' if gpus else 'cpu'
 # Every check the kernel-equivalence script must report, per seed. A report with a
 # missing, extra-empty or non-finite check is not evidence of equivalence.
 KERNEL_SEEDS = (123, 7, 2026)
@@ -151,13 +162,41 @@ def main():
                                      lane_verdicts=lanes, note='liveness only; performance claims need lane keep '
                                      'verdicts from repeated runs')
 
-    try:
-        import vllm  # noqa: F401
-        gates['vllm_conformance'] = gate('skipped', requirement='pinned vLLM launch-and-attest run',
-                                         reason='vllm importable but this runner does not launch it; run the '
-                                         'conformance cell in COLAB_V2_QUALIFICATION.md and record its evidence')
-    except ImportError:
-        gates['vllm_conformance'] = gate('skipped', requirement='vllm installed', reason='vllm not installed')
+    import importlib.util
+    for engine, module in (('vllm', 'vllm'), ('sglang', 'sglang')):
+        key = f'{engine}_conformance'
+        if importlib.util.find_spec(module) is None:
+            gates[key] = gate('skipped', requirement=f'{module} installed', reason=f'{module} not installed')
+            continue
+        if not hardware['gpus']:
+            gates[key] = gate('skipped', requirement='GPU', reason='no GPU on this host')
+            continue
+        code, text, secs = run([sys.executable, 'scripts/engine_conformance.py', '--engine', engine,
+                                '--model', PINNED_MODEL[0], '--revision', PINNED_MODEL[1],
+                                '--out', str((out / f'conformance-{engine}.json').relative_to(ROOT))],
+                               out / f'conformance-{engine}.runner.log', 3600)
+        detail = {}
+        try:
+            detail = json.loads((out / f'conformance-{engine}.json').read_text())
+        except (OSError, ValueError):
+            pass
+        gates[key] = gate('passed' if code == 0 and detail.get('pass') is True else 'failed', seconds=secs,
+                          checks=detail.get('checks'), error=detail.get('error'))
+
+    for key, test, requirement, env_key in (
+            ('postgresql', ['tests/test_control_store.py', 'tests/test_execution_store.py'],
+             'INFERSTACK_TEST_POSTGRES_URL', 'INFERSTACK_TEST_POSTGRES_URL'),
+            ('docker', ['tests/test_docker_live.py'], 'Docker daemon with a local pinned image', None),
+            ('kubernetes', ['tests/test_kubernetes_live.py'], 'INFERSTACK_TEST_K8S_CONTEXT', 'INFERSTACK_TEST_K8S_CONTEXT')):
+        if env_key and not os.environ.get(env_key):
+            gates[key] = gate('skipped', requirement=requirement, reason=f'{env_key} not set')
+            continue
+        code, text, secs = run([sys.executable, '-m', 'pytest', '-o', 'addopts=', '-q', '-rs', '-p', 'no:cacheprovider',
+                                *test], out / f'{key}.log', 3600)
+        skipped = [l for l in text.splitlines() if l.startswith('SKIPPED')]
+        status = 'failed' if code != 0 else 'skipped' if skipped and ' passed' not in text else 'passed'
+        gates[key] = gate(status, seconds=secs, summary=(text.strip().splitlines() or [''])[-1],
+                          skipped=skipped[:10] or None, requirement=requirement)
 
     for kind, model, env in (('deepseek', a.deepseek_model, 'DEEPSEEK_API_KEY'),
                              ('openrouter', a.openrouter_model, 'OPENROUTER_API_KEY')):
@@ -171,6 +210,7 @@ def main():
     required_failed = [g for g in required if gates[g]['status'] != 'passed']
     from inferstack import __version__
     result = {'version': __version__, 'commit': commit, 'finished_at': time.time(), 'required': list(required),
+              'gpu_profile': gpu_profile(hardware['gpus']),
               'optional_not_required': [g for g in OPTIONAL if g not in required],
               'verdict': 'qualified' if not required_failed else 'not_qualified',
               'blocking': required_failed, 'gates': gates}

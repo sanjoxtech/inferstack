@@ -21,11 +21,17 @@ class ResourceConflict(RuntimeError):
     """The requested devices are held by another live allocation."""
 
 
+class QuotaExceeded(ResourceConflict):
+    """A provider quota (live allocations or GPUs) would be exceeded."""
+
+
 class AllocationManager:
-    def __init__(self, store, worker_id, faults=None):
+    def __init__(self, store, worker_id, faults=None, quotas=None):
+        """quotas: {provider: {'max_live': int, 'max_gpus': int}} enforced at intent time."""
         self.store = store
         self.worker_id = worker_id
         self.faults = faults or (lambda point: None)
+        self.quotas = quotas or {}
 
     @staticmethod
     def _row(row):
@@ -41,6 +47,14 @@ class AllocationManager:
             existing = db.execute('SELECT * FROM allocations WHERE idempotency_key=?', (key,)).fetchone()
             if existing is not None:
                 return self._row(existing)
+            quota = self.quotas.get(provider)
+            if quota:
+                live = db.execute('SELECT COUNT(*), COALESCE(SUM(gpu_count),0) FROM allocations WHERE provider=? '
+                                  'AND state IN (?,?,?,?)', (provider, *LIVE_STATES, 'orphaned')).fetchone()
+                if quota.get('max_live') is not None and live[0] + 1 > quota['max_live']:
+                    raise QuotaExceeded(f'{provider}: {live[0]} live allocations, quota {quota["max_live"]}')
+                if quota.get('max_gpus') is not None and live[1] + gpu_count > quota['max_gpus']:
+                    raise QuotaExceeded(f'{provider}: {live[1]}+{gpu_count} GPUs exceeds quota {quota["max_gpus"]}')
             devices = set((spec or {}).get('gpu_devices') or [])
             if devices:
                 # Exclusive device reservation: experiments never share a GPU with serving
@@ -107,6 +121,32 @@ class AllocationManager:
                 raise RuntimeError(f'allocation {alloc_id} is not active; cannot retain it for serving')
             self.store.event(db, job['id'], 'allocation_retained', {'allocation_id': alloc_id, 'owner': owner})
         return self.get(alloc_id)
+
+    def rescale(self, alloc_id, gpu_count, *, max_gpus=None):
+        """Record a change of GPUs held (scale up/down). GPU-seconds integrate the scale history."""
+        if isinstance(gpu_count, bool) or not isinstance(gpu_count, int) or gpu_count < 0:
+            raise ValueError('gpu_count must be a non-negative integer')
+        with self.store.transaction() as db:
+            row = db.execute('SELECT * FROM allocations WHERE id=?', (alloc_id,)).fetchone()
+            if row is None or row['state'] != 'active':
+                raise RuntimeError(f'allocation {alloc_id} is not active')
+            quota = self.quotas.get(row['provider'])
+            if quota and quota.get('max_gpus') is not None:
+                others = db.execute('SELECT COALESCE(SUM(gpu_count),0) FROM allocations WHERE provider=? AND id<>? '
+                                    'AND state IN (?,?,?,?)', (row['provider'], alloc_id, *LIVE_STATES,
+                                                              'orphaned')).fetchone()[0]
+                if others + gpu_count > quota['max_gpus']:
+                    raise QuotaExceeded(f"{row['provider']}: rescale to {gpu_count} GPUs exceeds quota")
+            spec = json.loads(row['spec'])
+            history = spec.get('scale_history') or [[row['active_at'], row['gpu_count']]]
+            now = self.store.clock()
+            history.append([now, gpu_count])
+            spec['scale_history'] = history
+            db.execute('UPDATE allocations SET gpu_count=?,spec=?,updated_at=? WHERE id=?',
+                       (gpu_count, self.store.encode(spec), now, alloc_id))
+            if row['job_id']:
+                self.store.event(db, row['job_id'], 'allocation_rescaled', {'allocation_id': alloc_id,
+                                                                            'gpu_count': gpu_count})
 
     def mark_orphaned(self, alloc_id, note):
         with self.store.transaction() as db:

@@ -62,6 +62,10 @@ def build_executor(repository, config, *, state, allocations, provider, pricing=
     sandbox = Sandbox(require_filesystem_isolation=spec.pop('require_filesystem_isolation', True),
                       require_network_isolation=spec.pop('require_network_isolation', False))
     work_root = Path(spec.pop('work_root', Path(state) / 'work'))
+    builder = spec.pop('image_builder', None)
+    if builder is not None:
+        from inferstack.infrastructure.images import ImageBuilder
+        spec['image_builder'] = ImageBuilder(**builder)
     return IsolatedExecutor(repository, Path(state) / 'logs', work_root=work_root, source_root=source_root,
                             source_revision=revision, sandbox=sandbox, **spec, **common)
 

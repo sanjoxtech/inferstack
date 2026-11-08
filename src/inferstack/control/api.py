@@ -63,7 +63,8 @@ class RolloutStart(BaseModel):
 ACTIONABLE={'latency','throughput','capacity','cost'}
 
 
-def create_control_app(repository:Repository,token:str,fetcher=None,rollout_observer=None,rollout_attest=None):
+def create_control_app(repository:Repository,token:str,fetcher=None,rollout_observer=None,rollout_attest=None,
+                       release_runtime=None):
     if not token:raise ValueError('control API token required')
     from inferstack.research import EvidenceStore,EvidenceIntegrityError,SafeFetcher
     evidence_store=EvidenceStore(repository)
@@ -182,7 +183,7 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
         if rollout_observer is None:raise HTTPException(503,'rollout observation is not configured (gateway URL)')
         # Traffic never shifts to an unattested runtime: no attestor, no rollout.
         if rollout_attest is None:raise HTTPException(503,'release attestation is not configured; refusing to route traffic')
-        return RolloutController(repository,observe=rollout_observer,attest=rollout_attest)
+        return RolloutController(repository,observe=rollout_observer,attest=rollout_attest,runtime=release_runtime)
 
     @app.post('/control/rollouts',dependencies=auth)
     async def rollout_start(body:RolloutStart):
@@ -222,10 +223,43 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
             deployment_id,_=parse_ref(issue.deployment_ref)
             goal=(f'Address {issue.category} issue {issue.issue_id} reported by {issue.source}. '
                   f'Observations: {json.dumps(issue.observations,sort_keys=True)[:2000]}')
-            job_id=repository.submit('feedback:'+issue.idempotency_key,{'deployment_id':deployment_id,'goal':goal,
-                'source':issue.source,'feedback_ref':f'{issue.issue_id}@{record["revision"]}','evidence_ids':[]})
+            payload={'deployment_id':deployment_id,'goal':goal,'source':issue.source,
+                     'feedback_ref':f'{issue.issue_id}@{record["revision"]}','evidence_ids':[]}
+            if issue.source=='factoryos':
+                # Terminal job state writes a durable InferenceOutcome to the outbox (same transaction).
+                payload['outcome_callback']={'issue_id':issue.issue_id,'idempotency_key':issue.idempotency_key,
+                                             'trace_ids':issue.trace_ids[:100],'topic':'factoryos.outcome'}
+            job_id=repository.submit('feedback:'+issue.idempotency_key,payload)
         return {'issue_id':issue.issue_id,'contract_version':record['schema_version'],'job_id':job_id,
                 'status':'queued' if job_id else 'recorded_not_actionable'}
+
+    from inferstack.integrations.outbox import Outbox
+    from inferstack.integrations.triggers import TriggerService
+    outbox=Outbox(repository)
+
+    @app.get('/control/outbox',dependencies=auth)
+    def outbox_list(state:str|None=None):
+        return {'items':outbox.list(state)}
+
+    @app.post('/control/outbox/{outbox_id}/retry',dependencies=auth)
+    def outbox_retry(outbox_id:str):
+        try:outbox.retry_dead(outbox_id)
+        except ValueError as exc:raise HTTPException(409,str(exc))
+        return {'retried':outbox_id}
+
+    @app.post('/control/triggers',dependencies=auth)
+    def trigger_create(body:dict):
+        try:return TriggerService(repository).create(body.get('trigger_id',''),body.get('kind',''),body.get('spec') or {})
+        except ValueError as exc:raise HTTPException(422,str(exc))
+
+    @app.get('/control/triggers',dependencies=auth)
+    def trigger_list():return {'items':TriggerService(repository).list()}
+
+    @app.post('/control/triggers/{trigger_id}/{state}',dependencies=auth)
+    def trigger_state(trigger_id:str,state:str):
+        try:TriggerService(repository).set_state(trigger_id,state)
+        except ValueError as exc:raise HTTPException(422,str(exc))
+        return TriggerService(repository).get(trigger_id)
 
     @app.get('/control/feedback/{issue_id}',dependencies=auth)
     def feedback_status(issue_id:str):

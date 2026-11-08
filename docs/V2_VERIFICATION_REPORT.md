@@ -420,3 +420,20 @@ Still open (unchanged by this pass): GPU qualification (native, vLLM, SGLang,
 kernel equivalence on A100), Kubernetes cluster run, candidate image build
 pipeline for container providers, logit/semantic quality oracles, FactoryOS
 end-to-end, CI workflows and dependency lock.
+
+## Remediation, second pass — 8 November 2026
+
+Closes the residual limits of the first pass and the report's non-numbered scope.
+
+| Item | Change | Evidence |
+| --- | --- | --- |
+| V05 residual | `launch_observer`: running command line (model/tokenizer revision), Docker image ID/digest, Pod `imageID`, recomputed runnable digest; wired into the control CLI attestor. | `test_live_runtime_is_attested_from_observed_launch` (real process) |
+| V08 residual | Gateway `POST /gateway/drain/{deployment}`; `http_drain`; control `serve` builds a `ReleaseRuntime` (launch/warm/attest, drain, verified stop) for rollouts. | `test_retire_drains_in_flight_requests_through_the_gateway` (real gateway, in-flight request completes) |
+| V16 residual | `ImageBuilder`: offline `docker build --network none` from the pinned base, recorded wheelhouse and patched source; content-addressed image; optional registry push for Kubernetes. Container providers now run plugin/source candidates instead of refusing. | live: plugin installed in image, container runs exactly the built image ID |
+| FactoryOS | Migration 5. Durable outbox row written in the job's terminal transaction; `Idempotency-Key` delivery with backoff, dead-letter and re-arm; HTTPS-only callbacks; `outbox-deliver` CLI. | lost-ack redelivery yields one effect; 503s retried; 400 dead-lettered |
+| Triggers | Periodic and SLO triggers: mandatory budget, cooldown, daily cap, one job in flight per trigger, global cap, window-idempotent submission; missing telemetry never fires. `triggers-tick` CLI, API. | `tests/test_integrations.py` |
+| Kubernetes lifecycle | `scale` (waits for exact ready/pod count), graceful `drain` (preStop sleep + grace period), namespace `ResourceQuota`/`LimitRange`, non-root UID; control-plane quotas (`max_live`, `max_gpus`) and GPU-seconds integrated over scale history. | live kind v1.37 run: quota blocks the 3rd replica, drain to 0, verified stop |
+| CI / lock / containers | `uv.lock` + hashed `requirements*.lock` (`requires-python >=3.11`: transformers 5.22 needs it); `Dockerfile` (pinned base, `--require-hashes`, non-root, bubblewrap); `.github/workflows/ci.yml` (lock check, CPU+PostgreSQL matrix, probes, container, Docker live, kind, manual provider smoke). | local: lock check, hashed install on clean 3.11, image builds and reports the version. Not yet run on GitHub Actions. |
+| Phase telemetry | Streaming pass (client TTFT, SSE-event gaps), engine histogram deltas (queue/prefill/decode/TTFT/TPOT), authoritative `output_tokens_per_s`, p95 only with >= 200 samples, metric source recorded per metric. | `tests/test_quality_phases.py` |
+| Quality | Graded cases (token F1 / contains) with a declared `quality_budget`; `logit_agreement` gate from engine logprobs; unsupported → inconclusive. | same file |
+| Qualification | `engine_conformance.py` (vLLM/SGLang live launch-and-check), `postgresql`/`docker`/`kubernetes` gates, `gpu_profile` per run. | runner checked against an emulated engine (not GPU evidence) |

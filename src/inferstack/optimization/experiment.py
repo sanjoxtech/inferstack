@@ -191,10 +191,51 @@ VERIFIER_CODE_SHA256=_code_sha256()
 
 
 MAX_REPEATS=20
-MEASURED_METRICS=frozenset({'e2e_ms'})
+MEASURED_METRICS=frozenset({'e2e_ms','exact_match_rate','quality_score','ttft_client_ms','chunk_gap_client_ms',
+                            'ttft_client_p95_ms','output_tokens_per_s','ttft_engine_ms','tpot_engine_ms',
+                            'engine_queue_ms','engine_prefill_ms','engine_decode_ms','logprob_divergence'})
 # Gates this verifier can execute. Anything else a plan requests is reported as
 # unsupported (None), which makes the verdict inconclusive, never a silent pass.
 SERVING_GATES=frozenset({'cancellation','overload'})
+EVALUATED_GATES=frozenset({'quality_budget','logit_agreement'})
+TAIL_MIN_SAMPLES=200
+from inferstack.contracts.metrics import METRICS as _METRICS
+METRICS_SOURCE={name:definition.source for name,definition in _METRICS.items()}  # p95 needs >= 10/(1-0.95) samples before it is reported
+ENGINE_PHASES={'ttft_engine_ms':'engine_ttft_ms','tpot_engine_ms':'engine_tpot_ms','engine_queue_ms':'engine_queue_ms',
+               'engine_prefill_ms':'engine_prefill_ms','engine_decode_ms':'engine_decode_ms'}
+
+
+def _tokens(text):
+    return (text or '').lower().split()
+
+
+def case_score(case, text):
+    """Graded quality of one output against the case's declared reference."""
+    if text is None:
+        return 0.0
+    if 'expected' in case:
+        return 1.0 if text == case['expected'] else 0.0
+    reference, mode = case['reference'], case.get('match', 'f1')
+    if mode == 'contains':
+        return 1.0 if reference.lower() in text.lower() else 0.0
+    got, want = _tokens(text), _tokens(reference)
+    if not got or not want:
+        return float(got == want)
+    from collections import Counter
+    common = sum((Counter(got) & Counter(want)).values())
+    if not common:
+        return 0.0
+    precision, recall = common / len(got), common / len(want)
+    return 2 * precision * recall / (precision + recall)
+
+
+def percentile(values, p):
+    values = sorted(values)
+    if not values:
+        return None
+    k = (len(values) - 1) * p
+    lo, hi = int(k), min(int(k) + 1, len(values) - 1)
+    return values[lo] + (values[hi] - values[lo]) * (k - lo)
 
 
 class EndpointVerifier:
@@ -211,13 +252,22 @@ class EndpointVerifier:
     separate verifiers.
     """
     def __init__(self, repository, executor, baseline_id, cases, objectives, *, repeats=3, workload_ref=None,
-                 objective_ref=None, overload_concurrency=8):
+                 objective_ref=None, overload_concurrency=8, phase_timing=True, phase_max_chunks=8,
+                 quality_budget=0.0, max_logprob_divergence=0.05, engine_telemetry=True):
         if repeats<3 or not cases:raise ValueError('three repeats and nonempty workload required')
         for case in cases:
-            if set(case)!={'prompt','expected','max_tokens'} or not isinstance(case['expected'],str):
-                raise ValueError('each case requires prompt, expected, max_tokens')
+            keys=set(case)
+            exact=keys=={'prompt','expected','max_tokens'} and isinstance(case['expected'],str)
+            graded=keys in ({'prompt','reference','max_tokens'},{'prompt','reference','max_tokens','match'}) and \
+                isinstance(case['reference'],str) and case.get('match','f1') in ('f1','contains','exact')
+            if not (exact or graded):
+                raise ValueError('each case requires prompt, max_tokens and expected (exact) or reference (+match)')
             if not isinstance(case['max_tokens'],int) or isinstance(case['max_tokens'],bool) or case['max_tokens']<=0:
                 raise ValueError('max_tokens must be positive')
+        if not 0<=quality_budget<1:raise ValueError('quality_budget must be in [0,1)')
+        self.phase_timing,self.phase_max_chunks=phase_timing,phase_max_chunks
+        self.quality_budget,self.max_logprob_divergence=quality_budget,max_logprob_divergence
+        self.engine_telemetry=engine_telemetry
         self.repository,self.executor=repository,executor
         self.baseline_id,self.cases,self.repeats=baseline_id,cases,repeats
         self.objectives=[Objective(**o) for o in objectives]
@@ -305,16 +355,93 @@ class EndpointVerifier:
         return None,f'{name} not supported'
 
     async def trial(self,engine):
-        times=[];correct=True;outputs=[]
+        times=[];correct=True;outputs=[];scores=[];exact=[];tokens=0;token_known=True
+        started=time.perf_counter()
         for case in self.cases:
             start=time.perf_counter()
             result=await engine.complete({'prompt':case['prompt'],'max_tokens':case['max_tokens'],'temperature':0})
             times.append((time.perf_counter()-start)*1000)
             choices=result.get('choices',[])
             text=choices[0].get('text') if len(choices)==1 else None
-            correct &= text==case['expected']
+            if 'expected' in case:
+                correct &= text==case['expected'];exact.append(text==case['expected'])
+            scores.append(case_score(case,text))
             outputs.append(text)
-        return {'e2e_ms':sum(times)/len(times)},correct,outputs
+            usage=(result.get('usage') or {}).get('completion_tokens')
+            if isinstance(usage,int) and not isinstance(usage,bool):tokens+=usage
+            else:token_known=False  # never inferred from text or SSE events
+        wall=time.perf_counter()-started
+        metrics={'e2e_ms':sum(times)/len(times),'quality_score':sum(scores)/len(scores),
+                 'output_tokens_per_s':tokens/wall if token_known and wall>0 else None}
+        if exact:metrics['exact_match_rate']=sum(exact)/len(exact)
+        return metrics,correct,outputs
+
+    async def phases(self,engine):
+        """Streaming pass: client TTFT and content-chunk gaps (chunks are NOT tokens). None when unsupported."""
+        if not self.phase_timing or not hasattr(engine,'stream'):return {}
+        ttfts,gaps=[],[]
+        for case in self.cases:
+            payload={'prompt':case['prompt'],'max_tokens':case['max_tokens'],'temperature':0}
+            start=time.perf_counter();last=None;seen=0
+            stream=engine.stream(payload)
+            try:
+                async for chunk in stream:
+                    # Count SSE content events (several may arrive in one read); [DONE] is not content.
+                    events=[e for e in chunk.split(b'data:')[1:] if e.strip() and not e.strip().startswith(b'[DONE]')]
+                    if not events:continue
+                    now=time.perf_counter()
+                    for _ in events:
+                        if last is None:ttfts.append((now-start)*1000)
+                        else:gaps.append((now-last)*1000)
+                        last=now;seen+=1
+                    if seen>=self.phase_max_chunks:break
+            except Exception:  # noqa: BLE001 - streaming failure leaves phase metrics unavailable
+                return {'ttft_client_ms':None,'chunk_gap_client_ms':None,'ttft_client_p95_ms':None}
+            finally:
+                await stream.aclose()
+        import statistics as _st
+        return {'ttft_client_ms':_st.median(ttfts) if ttfts else None,
+                'chunk_gap_client_ms':_st.median(gaps) if gaps else None,
+                'ttft_client_p95_ms':percentile(ttfts,.95) if len(ttfts)>=TAIL_MIN_SAMPLES else None}
+
+    async def scrape(self,engine,spec):
+        if not self.engine_telemetry or spec.engine not in ('vllm','sglang') or not hasattr(engine,'metrics'):return None
+        try:return await engine.metrics()
+        except Exception:return None  # noqa: BLE001 - unavailable telemetry stays unavailable
+
+    @staticmethod
+    def engine_phases(spec,before,after):
+        if before is None or after is None:return {}
+        from inferstack.telemetry.normalize import normalize
+        snapshot=normalize(spec.engine,after,previous_text=before)
+        return {name:(snapshot['metrics'].get(source) or {}).get('value') for name,source in ENGINE_PHASES.items()}
+
+    async def logprobs(self,engine):
+        """Greedy token logprobs per case, or None when the engine does not return them."""
+        if not hasattr(engine,'complete'):return None
+        out=[]
+        for case in self.cases:
+            try:
+                result=await engine.complete({'prompt':case['prompt'],'max_tokens':case['max_tokens'],
+                                              'temperature':0,'logprobs':1})
+            except Exception:return None  # noqa: BLE001
+            choice=(result.get('choices') or [{}])[0]
+            lp=choice.get('logprobs') or {}
+            if not isinstance(lp.get('tokens'),list) or not isinstance(lp.get('token_logprobs'),list):return None
+            out.append((lp['tokens'],lp['token_logprobs']))
+        return out
+
+    def logit_agreement(self,base,cand):
+        if base is None or cand is None:return None,None,'engine does not return logprobs'
+        diffs=[];mismatch=0
+        for (bt,bl),(ct,cl) in zip(base,cand):
+            for i,(a,b) in enumerate(zip(bt,ct)):
+                if a!=b:mismatch+=1;break
+                if isinstance(bl[i],(int,float)) and isinstance(cl[i],(int,float)):diffs.append(abs(bl[i]-cl[i]))
+        if not diffs:return None,None,'no comparable token positions'
+        divergence=sum(diffs)/len(diffs)
+        return divergence<=self.max_logprob_divergence and mismatch==0,divergence,\
+            f'mean |dlogprob| {divergence:.4f} over {len(diffs)} tokens; {mismatch} cases diverged in greedy tokens'
 
     def record_trials(self,plan,candidate,baseline_record,trials,raw_sha256):
         """Persist each scored trial as a typed `trial` record pinned to exact deployment revisions."""
@@ -352,9 +479,14 @@ class EndpointVerifier:
             trials=[[],[]];correct=True;outputs=[[],[]]
             # Warmup excluded from scored trials.
             await self.trial(baseline);await self.trial(target)
+            specs=(baseline_spec,candidate_spec)
             for repeat in range(policy['repeats']):
                 for index in ([0,1] if repeat%2==0 else [1,0]):
-                    metrics,valid,texts=await self.trial((baseline,target)[index])
+                    engine=(baseline,target)[index]
+                    before=await self.scrape(engine,specs[index])
+                    metrics,valid,texts=await self.trial(engine)
+                    metrics={**metrics,**await self.phases(engine),
+                             **self.engine_phases(specs[index],before,await self.scrape(engine,specs[index]))}
                     trials[index].append(metrics);outputs[index].append(texts);correct &= valid
             healthy &= await baseline.ready() and await target.ready()
             stable=self.repository.read('deployment',self.baseline_id)['revision']==baseline_record['revision']
@@ -367,9 +499,26 @@ class EndpointVerifier:
             comparable,comparability,identity=self.comparability(baseline_record,candidate_record,stable)
             gates={'correctness':correct,'quality':correct,'health':healthy,'complete':complete,'comparable':comparable}
             gate_notes={}
+            graded=any('reference' in c for c in self.cases)
+            mean=lambda side,key:(sum(t[key] for t in side if isinstance(t.get(key),(int,float)))/
+                                  max(1,sum(1 for t in side if isinstance(t.get(key),(int,float)))))
+            quality={'baseline':mean(trials[0],'quality_score'),'candidate':mean(trials[1],'quality_score'),
+                     'budget':self.quality_budget}
+            if graded:
+                ok=quality['candidate']>=quality['baseline']-self.quality_budget
+                gates['quality']=bool(ok) and gates['quality']
+                gate_notes['quality']=(f"graded quality {quality['candidate']:.3f} vs baseline "
+                                       f"{quality['baseline']:.3f} (budget {self.quality_budget})")
+            logit=None
             for name in policy['required']:
                 if name in gates:continue
                 if name in SERVING_GATES:gates[name],gate_notes[name]=await self.serving_gate(name,target)
+                elif name=='quality_budget':
+                    gates[name]=(quality['candidate']>=quality['baseline']-self.quality_budget) if graded else None
+                    gate_notes[name]=gate_notes.get('quality','no graded (reference) cases in the workload')
+                elif name=='logit_agreement':
+                    gates[name],logit,gate_notes[name]=self.logit_agreement(await self.logprobs(baseline),
+                                                                            await self.logprobs(target))
                 else:gates[name],gate_notes[name]=None,'not supported by EndpointVerifier'
             if policy['problems']:
                 verdict={'decision':'inconclusive','reasons':['verification policy not satisfiable: '+
@@ -383,7 +532,10 @@ class EndpointVerifier:
                                   'repeats':policy['repeats'],'order':'interleaved, warmup excluded'},
                       'policy':{**policy,'sha256':hashlib.sha256(self.repository.encode(policy).encode()).hexdigest()},
                       'gate_notes':gate_notes,'comparability':comparability,'identity':identity,
-                      'scope':'exact-match completion suite (quality gate = exact match); mean end-to-end latency only'}
+                      'quality':quality,'logprob_divergence':logit,
+                      'metric_sources':{m:METRICS_SOURCE.get(m) for m in sorted({k for side in trials for t in side for k in t})},
+                      'scope':'completion suite: exact-match and graded (F1/contains) quality with a declared budget; '
+                               'client E2E, streaming TTFT and chunk gaps; engine phase histograms when exported'}
             artifact=self.repository.artifact(self.repository.encode(evidence).encode())
             trial_refs=self.record_trials(plan,candidate,baseline_record,trials,artifact['sha256'])
             return {**verdict,'evidence':artifact,'scope':evidence['scope'],'gates':gates,'trial_refs':trial_refs,

@@ -97,7 +97,7 @@ def relocate(body, port):
 
 class IsolatedExecutor(EndpointExecutor):
     def __init__(self, repository, log_root, *, work_root, source_root, source_revision, allocations, provider,
-                 sandbox=None, pip_index_args=(), test_timeout=900, keep_workspaces=False, **kw):
+                 sandbox=None, pip_index_args=(), test_timeout=900, keep_workspaces=False, image_builder=None, **kw):
         super().__init__(repository, log_root, allocations=allocations, provider=provider, **kw)
         self.work_root = Path(work_root)
         self.work_root.mkdir(parents=True, exist_ok=True)
@@ -108,6 +108,7 @@ class IsolatedExecutor(EndpointExecutor):
         self.pip_index_args, self.test_timeout = tuple(pip_index_args), test_timeout
         self.keep_workspaces = keep_workspaces
         self.workspaces = {}
+        self.image_builder = image_builder  # required for plugin/source candidates on container providers
 
     # --- materialization -----------------------------------------------------------
 
@@ -213,10 +214,11 @@ class IsolatedExecutor(EndpointExecutor):
         if context is None:
             raise ValueError('isolated execution requires a job context (allocation ownership)')
         untrusted = [a['id'] for a in plan['actions'] if a.get('type') in ('plugin_install', 'source_patch')]
-        if untrusted and getattr(self.provider, 'launches_remotely', False):
+        remote = getattr(self.provider, 'launches_remotely', False)
+        if untrusted and remote and self.image_builder is None:
             # A local build cannot change the pinned image a container provider launches.
-            raise BuildFailed(f'actions {untrusted} need a candidate image build, which is not implemented for '
-                              f'{self.provider.name}; run them with the local provider or supply a built image digest')
+            raise BuildFailed(f'actions {untrusted} need a candidate image build for {self.provider.name}; '
+                              'configure an image builder (executor.image_builder) or use the local provider')
         if untrusted and not self.sandbox.filesystem_isolated:
             raise BuildFailed(f'actions {untrusted} run untrusted code but this host has no filesystem isolation '
                               'boundary (sandbox-exec or bwrap); refusing')
@@ -261,11 +263,14 @@ class IsolatedExecutor(EndpointExecutor):
                     body['command'] = [str(venv / 'bin' / 'python'), *body['command'][1:]]
             if src is not None:
                 env['PYTHONPATH'] = str(src / 'src')
-            if derived:
+            if derived and remote:
+                body = await self._containerize(body, ws, namespace, plan, actions, src, artifacts)
+            elif derived:
                 body['command'], body['base_url'] = relocate(body, free_port())
                 if venv is not None or src is not None:
                     # The candidate server runs untrusted code: launch it inside the boundary.
                     body['command'] = self.sandbox.launcher(body['command'], workspace=ws)
+            if derived:
                 body['id'] = f'{namespace}-candidate'
                 self.repository.put_record('deployment', body['id'], body)
                 record = self.repository.read('deployment', body['id'])
@@ -282,6 +287,30 @@ class IsolatedExecutor(EndpointExecutor):
                 self.allocations.release(build_alloc, 'build_aborted')
             self._discard(namespace)
             raise
+
+    async def _containerize(self, body, ws, namespace, plan, actions, src, artifacts):
+        """Derived candidate for a container provider: build its image (if code changed) and relocate its port."""
+        container = dict((body.get('profile') or {}).get('container') or {})
+        if not container.get('image'):
+            raise BuildFailed('container candidates need profile.container.image on the baseline deployment')
+        deps = [actions[a]['params']['dependency'] for a in plan['action_order']
+                if actions[a]['type'] == 'plugin_install']
+        if deps or src is not None:
+            identity = await self._offload(lambda: self.image_builder.build(
+                ws, container['image'], tag=f'inferstack-candidate:{namespace[:60].lower()}', dependencies=deps,
+                with_src=src is not None))
+            self._artifact(artifacts, 'image.Dockerfile', identity['dockerfile'])
+            self._artifact(artifacts, 'image.json', json.dumps({k: v for k, v in identity.items()
+                                                                if k not in ('dockerfile', 'log_tail')}, sort_keys=True))
+            container['image'] = identity['image']
+            body['image_digest'] = identity['image'].split('@', 1)[1] if '@' in identity['image'] else identity['image']
+        if self.provider.name == 'docker':
+            container['host_port'] = free_port()
+            url = urlparse(body['base_url'])
+            body['base_url'] = urlunparse(url._replace(netloc=f"{url.hostname}:{container['host_port']}"))
+        body['profile'] = {**(body.get('profile') or {}), 'container': container}
+        body['command'] = []
+        return body
 
     @staticmethod
     def tree_sha256(root):

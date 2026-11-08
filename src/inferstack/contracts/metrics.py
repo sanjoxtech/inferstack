@@ -39,6 +39,12 @@ METRICS: dict[str, MetricDefinition] = {m.name: m for m in [
     MetricDefinition('gpu_memory_sampled_peak_bytes', 'bytes', 'Peak of periodic nvidia-smi samples per GPU UUID; not an exact allocation maximum', 'gpu', 'min', 'max'),
     MetricDefinition('cost_usd_per_million_output_tokens', 'usd', 'Identified spend divided by authoritative output tokens; unavailable when price is unknown', 'billing', 'min', 'ratio'),
     MetricDefinition('exact_match_rate', 'ratio', 'Fraction of fixture cases whose output equals expected text exactly', 'evaluator', 'max', 'ratio'),
+    MetricDefinition('quality_score', 'ratio', 'Mean graded case score (exact=1/0, token F1, or contains) against declared references', 'evaluator', 'max', 'mean'),
+    MetricDefinition('ttft_client_p95_ms', 'ms', 'p95 client TTFT within a trial; None unless the trial has >= 200 streamed samples', 'client', 'min', 'p95'),
+    MetricDefinition('engine_queue_ms', 'ms', 'Engine-reported queue wait (Prometheus histogram mean over the trial window)', 'engine', 'min', 'mean'),
+    MetricDefinition('engine_prefill_ms', 'ms', 'Engine-reported prefill phase time (histogram mean over the trial window)', 'engine', 'min', 'mean'),
+    MetricDefinition('engine_decode_ms', 'ms', 'Engine-reported decode phase time (histogram mean over the trial window)', 'engine', 'min', 'mean'),
+    MetricDefinition('logprob_divergence', 'nats', 'Mean absolute difference of greedy-token logprobs, candidate vs baseline, over identical token positions', 'evaluator', 'min', 'mean'),
 ]}
 
 

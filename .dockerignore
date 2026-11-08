@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+.env.*
+results
+.inferstack
+.serena
+**/__pycache__
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+docs
+tests

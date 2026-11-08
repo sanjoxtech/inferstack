@@ -104,6 +104,20 @@ class LocalProcessProvider:
                 found.append(int(line.split()[0]))
         return found
 
+    def observed_argv(self, external):
+        """Command line of the identified running process (attestation evidence), or None."""
+        if not self.alive(external):
+            return None
+        cmdline = Path(f"/proc/{external['pid']}/cmdline")
+        try:
+            if cmdline.exists():
+                return [a.decode() for a in cmdline.read_bytes().split(b'\0') if a]
+            out = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(external['pid'])], capture_output=True,
+                                 text=True, timeout=5)
+            return out.stdout.strip().split() if out.returncode == 0 and out.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError):
+            return None
+
     @staticmethod
     def group_members(pgid):
         """Live, non-zombie PIDs in a process group."""

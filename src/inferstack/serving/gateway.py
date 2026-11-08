@@ -51,6 +51,13 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
     def observe(deployment_id: str, since: float):
         return admission.observe(deployment_id, since)
 
+    @app.post('/gateway/drain/{deployment_id}')
+    async def drain(deployment_id: str, deadline_seconds: float = 30.0):
+        """Stop admitting new requests to a deployment and wait (bounded) for in-flight ones."""
+        if not 0 < deadline_seconds <= 3600:
+            raise HTTPException(422, 'deadline_seconds must be in (0, 3600]')
+        return await admission.drain(deployment_id, deadline_seconds)
+
     def rejected(exc: Rejected, headers):
         extra = {'Retry-After': str(exc.retry_after)} if exc.retry_after else {}
         return JSONResponse({'error': {'message': exc.reason, 'type': 'admission'}}, status_code=exc.status,

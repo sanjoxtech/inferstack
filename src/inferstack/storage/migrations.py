@@ -126,11 +126,29 @@ def _execution(database, db, now):
     ''')
 
 
+def _integrations(database, db, now):
+    _script(database, db, '''
+        CREATE TABLE IF NOT EXISTS outbox (
+            id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, topic TEXT NOT NULL,
+            job_id TEXT, payload TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at {FLOAT} NOT NULL, last_error TEXT, created_at {FLOAT} NOT NULL,
+            delivered_at {FLOAT}, response TEXT
+        );
+        CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state, next_attempt_at);
+        CREATE TABLE IF NOT EXISTS triggers (
+            id TEXT PRIMARY KEY, kind TEXT NOT NULL, spec TEXT NOT NULL, state TEXT NOT NULL,
+            last_fired_at {FLOAT}, last_job_id TEXT, fired_count INTEGER NOT NULL DEFAULT 0,
+            created_at {FLOAT} NOT NULL, updated_at {FLOAT} NOT NULL
+        )
+    ''')
+
+
 MIGRATIONS = [
     (1, 'baseline jobs, events and records (v1.6 layout)', _baseline),
     (2, 'record schema versions and immutable revision history', _history),
     (3, 'record reference index', _references),
     (4, 'durable steps, budgets, deadlines, workers and resource allocations', _execution),
+    (5, 'integration outbox and bounded optimization triggers', _integrations),
 ]
 LATEST = MIGRATIONS[-1][0]
 

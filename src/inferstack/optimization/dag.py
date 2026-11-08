@@ -23,7 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from inferstack.contracts.metrics import require_metric
 
 MANDATORY_GATES = {'correctness', 'quality', 'health', 'comparable', 'complete'}
-KNOWN_GATES = MANDATORY_GATES | {'numerical_oracle', 'quality_budget', 'cancellation', 'cache_isolation', 'overload',
+KNOWN_GATES = MANDATORY_GATES | {'numerical_oracle', 'quality_budget', 'logit_agreement', 'cancellation',
+                                 'cache_isolation', 'overload',
                                  'liveness', 'performance', 'slo'}
 PATCH_ROOTS = ('src/inferstack/kernels/', 'src/inferstack/runtime/')
 PROFILE_KEYS = {

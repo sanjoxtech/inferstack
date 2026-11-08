@@ -1,0 +1,118 @@
+# CI separates evidence classes: CPU conformance, PostgreSQL, sandbox, container,
+# Kubernetes (kind, CPU) and live providers (manual, secrets). GPU qualification is
+# not CI: it runs on a declared GPU host with scripts/v2_qualify.py.
+name: ci
+on:
+  push:
+    branches: [main, 'v2/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      provider_smoke:
+        description: Run live DeepSeek/OpenRouter planning smoke (uses repository secrets)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock:
+    name: dependency lock is current
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --check
+      - name: exported locks match uv.lock
+        run: |
+          uv export --frozen --no-dev --extra postgres --format requirements-txt --no-emit-project -o /tmp/req.lock
+          uv export --frozen --extra dev --extra postgres --format requirements-txt --no-emit-project -o /tmp/req-dev.lock
+          diff <(grep -v '^#' requirements.lock) <(grep -v '^#' /tmp/req.lock)
+          diff <(grep -v '^#' requirements-dev.lock) <(grep -v '^#' /tmp/req-dev.lock)
+
+  cpu-conformance:
+    name: CPU conformance (py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      INFERSTACK_TEST_POSTGRES_URL: postgresql://postgres:ci@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: sandbox backend (bubblewrap)
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces; allow them for bwrap.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: install (hashed lock) + CPU torch
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install --require-hashes -r requirements-dev.lock
+          uv pip install --no-deps -e .
+          uv pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: test suite (CPU + PostgreSQL)
+        run: uv run --no-sync python -m pytest -o addopts='' -q -rs
+      - name: verification acceptance probes
+        run: uv run --no-sync python -m pytest -o addopts='' -q docs/verification/v2_contract_probes.py
+      - name: qualification runner refuses a GPU-less host
+        run: |
+          set +e
+          uv run --no-sync python scripts/v2_qualify.py --out results/ci-qualify
+          test $? -eq 2
+
+  container:
+    name: container image builds and starts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t inferstack:ci .
+      - run: test "$(docker run --rm --entrypoint inferstack inferstack:ci --version)" = "$(python3 -c 'import re;print(re.search(r"__version__ = \"(.+)\"",open("src/inferstack/__init__.py").read())[1])')"
+      - name: live Docker provider and candidate image build
+        run: |
+          docker pull python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+          pip install uv && uv venv && uv pip install --require-hashes -r requirements-dev.lock && uv pip install --no-deps -e .
+          export INFERSTACK_TEST_DOCKER_IMAGE=python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+          uv run --no-sync python -m pytest -o addopts='' -q -rs tests/test_docker_live.py
+
+  kubernetes:
+    name: Kubernetes lifecycle on kind (CPU)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: inferstack
+      - run: |
+          pip install uv && uv venv && uv pip install --require-hashes -r requirements-dev.lock && uv pip install --no-deps -e .
+          INFERSTACK_TEST_K8S_CONTEXT=kind-inferstack uv run --no-sync python -m pytest -o addopts='' -q -rs tests/test_kubernetes_live.py
+
+  provider-smoke:
+    name: live provider planning smoke (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.provider_smoke
+    runs-on: ubuntu-24.04
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install uv && uv venv && uv pip install --require-hashes -r requirements-dev.lock && uv pip install --no-deps -e .
+      - run: uv run --no-sync python scripts/provider_smoke.py --kind openrouter --model deepseek/deepseek-chat --key-env OPENROUTER_API_KEY --tools
+      - run: uv run --no-sync python scripts/provider_smoke.py --kind deepseek --model deepseek-chat --key-env DEEPSEEK_API_KEY

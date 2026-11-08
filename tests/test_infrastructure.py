@@ -115,13 +115,14 @@ def test_kubernetes_manifests_are_hardened():
     pod = deployment['spec']['template']['spec']
     container = pod['containers'][0]
     assert deployment['metadata']['name'] == 'isx-alloc-abc-1' and pod['automountServiceAccountToken'] is False
-    assert container['securityContext'] == {'runAsNonRoot': True, 'allowPrivilegeEscalation': False,
+    assert container['securityContext'] == {'runAsNonRoot': True, 'runAsUser': 65532, 'allowPrivilegeEscalation': False,
                                             'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}}
     assert container['resources']['limits']['nvidia.com/gpu'] == '1'
     assert policy['spec']['policyTypes'] == ['Ingress', 'Egress']
     assert policy['spec']['egress'][0] == {'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}
     assert policy['spec']['egress'][1]['to'] == [{'ipBlock': {'cidr': '10.20.0.0/16'}}]
     assert service['spec']['selector'] == {LABEL: 'alloc-ABC_1'}
+    assert pod['terminationGracePeriodSeconds'] == 45 and container['lifecycle']['preStop'] == {'sleep': {'seconds': 15}}
     with pytest.raises(ValueError, match='namespace'):
         KubernetesProvider(namespace='Bad_NS', runner=None)
 
@@ -215,3 +216,31 @@ def test_spend_is_derived_and_unknown_price_exhausts_spend_budget(tmp_path):
     with pytest.raises(ValueError, match='source'):
         PriceTable({'x/y': {'usd_per_gpu_hour': 1, 'source': '', 'as_of': '2026'}})
     assert table.stamp('local', 'A100', 0)['price']['usd_per_gpu_hour'] == 0.0
+
+
+def test_allocation_quotas_and_rescale_accounting(tmp_path):
+    """Quotas bound live allocations and GPUs; GPU-seconds follow the scale history."""
+    from inferstack.infrastructure.allocations import QuotaExceeded
+    now = [1000.0]
+    repo = Repository(tmp_path / 'db', tmp_path / 'a')
+    repo.clock = lambda: now[0]
+    job = repo.submit('q', {}, budget={'gpu_seconds': 10_000})
+    claim = repo.claim(600)
+    ctx = {**claim, 'id': job, 'step_attempt': 1}
+    manager = AllocationManager(repo, 'w', quotas={'kubernetes': {'max_live': 2, 'max_gpus': 3}})
+    spec = {'image': IMAGE, 'container_port': 8000}
+    a = manager.intent(ctx, 's', purpose='a', provider='kubernetes', resource_type='k8s_deployment', spec=spec, gpu_count=2)
+    with pytest.raises(QuotaExceeded, match='GPUs'):
+        manager.intent(ctx, 's', purpose='b', provider='kubernetes', resource_type='k8s_deployment', spec=spec,
+                       gpu_count=2)
+    manager.intent(ctx, 's', purpose='c', provider='kubernetes', resource_type='k8s_deployment', spec=spec, gpu_count=1)
+    with pytest.raises(QuotaExceeded, match='live allocations'):
+        manager.intent(ctx, 's', purpose='d', provider='kubernetes', resource_type='k8s_deployment', spec=spec)
+    manager.activate(a['id'], ctx, {'provider': 'kubernetes'})
+    now[0] += 100           # 100 s at 2 GPUs
+    with pytest.raises(QuotaExceeded):
+        manager.rescale(a['id'], 3)  # 3 + the other allocation's 1 > 3
+    manager.rescale(a['id'], 1)
+    now[0] += 100           # 100 s at 1 GPU
+    manager.release(a['id'], 'done')
+    assert repo._usage(repo.get(job))['gpu_seconds'] == pytest.approx(300.0)

@@ -98,3 +98,34 @@ async def test_promotion_retires_previous_stable(tmp_path):
     finally:
         for release in (stable, cand):
             await runtime.retire(release)
+
+
+@pytest.mark.asyncio
+async def test_retire_drains_in_flight_requests_through_the_gateway(tmp_path):
+    """V08: a slow in-flight request finishes before the old runtime is stopped."""
+    import asyncio
+
+    import httpx
+
+    from inferstack.releases.rollout import http_drain
+    from test_engines import GatewayServer
+    repo = Repository(tmp_path / 'db', tmp_path / 'a')
+    port = free_port()
+    repo.put_record('deployment', 'slow', {'id': 'slow', 'engine': 'generic_openai', 'model': 'm',
+                                           'base_url': f'http://127.0.0.1:{port}',
+                                           'command': [sys.executable, FIXTURE, '--port', str(port), '--delay', '1.5']})
+    repo.put('release', 'rel-slow', {'deployment': repo.read('deployment', 'slow'),
+                                     'evidence': {'sha256': 'f' * 64, 'bytes': 0}, 'job_id': 'j',
+                                     'verification_scope': 's'})
+    with GatewayServer(create_gateway(repo, 'tok')) as gw:
+        runtime = ReleaseRuntime(repo, LocalProcessProvider(), log_root=tmp_path / 'logs', ready_timeout=20,
+                                 drain=http_drain(gw, 'tok'))
+        await runtime.ensure('rel-slow')
+        ReleaseManager(repo).route('m', 'rel-slow')
+        async with httpx.AsyncClient(base_url=gw, headers={'Authorization': 'Bearer tok'}, timeout=30) as client:
+            inflight = asyncio.create_task(client.post('/v1/completions', json={'model': 'm', 'prompt': '2+2'}))
+            await asyncio.sleep(0.5)
+            outcome = await runtime.retire('rel-slow', drain_seconds=10)
+            response = await inflight
+    assert response.status_code == 200  # the in-flight request completed during the drain
+    assert outcome['drain']['drained'] is True and outcome['allocations'][0]['state'] == 'released'

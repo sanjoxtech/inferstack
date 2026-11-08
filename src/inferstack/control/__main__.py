@@ -9,7 +9,11 @@ from inferstack.storage.repository import Repository
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention'])
+    parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention','outbox-deliver',
+                                          'triggers-tick'])
+    parser.add_argument('--callback-url',help='outbox-deliver: FactoryOS outcome endpoint (https)')
+    parser.add_argument('--callback-token-env',default='FACTORYOS_CALLBACK_TOKEN')
+    parser.add_argument('--max-active',type=int,default=2,help='triggers-tick: global unfinished triggered jobs')
     parser.add_argument('--event-ttl-days',type=int)
     parser.add_argument('--artifact-ttl-days',type=int)
     parser.add_argument('--dry-run',action='store_true')
@@ -31,9 +35,27 @@ def main():
             from inferstack.releases.rollout import http_observer
             observer=http_observer(repo,os.environ['INFERSTACK_GATEWAY_URL'],
                                    os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
-        from inferstack.releases.attestation import release_attestor
-        attest=release_attestor(repo)
-        app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest) if args.action=='serve' \
+        from inferstack.releases.attestation import launch_observer,release_attestor
+        from inferstack.infrastructure import LocalProcessProvider
+        providers={'local':LocalProcessProvider()}
+        if os.environ.get('INFERSTACK_DOCKER_ATTEST','1')=='1':
+            from inferstack.infrastructure.remote import DockerProvider
+            providers['docker']=DockerProvider()
+        if os.environ.get('INFERSTACK_K8S_NAMESPACE'):
+            from inferstack.infrastructure.remote import KubernetesProvider
+            providers['kubernetes']=KubernetesProvider(namespace=os.environ['INFERSTACK_K8S_NAMESPACE'])
+        attest=release_attestor(repo,observe_launch=launch_observer(repo,providers))
+        runtime=None
+        if args.action=='serve':
+            # Releases are launched/warmed before traffic and drained/stopped after promotion or rollback.
+            from inferstack.releases.runtime import ReleaseRuntime
+            from inferstack.releases.rollout import http_drain
+            drain=None
+            if os.environ.get('INFERSTACK_GATEWAY_URL'):
+                drain=http_drain(os.environ['INFERSTACK_GATEWAY_URL'],os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
+            runtime=ReleaseRuntime(repo,providers['local'],log_root=state/'release-logs',attest=attest,drain=drain)
+        app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest,release_runtime=runtime) \
+            if args.action=='serve' \
             else create_gateway(repo,token)
         uvicorn.run(app,host=args.host,port=args.port)
     elif args.action=='retention':
@@ -41,6 +63,19 @@ def main():
         from inferstack.control.maintenance import enforce
         policy=RetentionPolicy(event_ttl_days=args.event_ttl_days,artifact_ttl_days=args.artifact_ttl_days)
         print(json.dumps(enforce(repo,policy,dry_run=args.dry_run),indent=2))
+    elif args.action=='outbox-deliver':
+        from inferstack.integrations.outbox import Outbox,http_sender
+        if not args.callback_url:parser.error('--callback-url required for outbox-deliver')
+        print(json.dumps(asyncio.run(Outbox(repo).deliver_due(http_sender(args.callback_url,
+                                                                           token_env=args.callback_token_env)))))
+    elif args.action=='triggers-tick':
+        from inferstack.integrations.triggers import TriggerService
+        observe=None
+        if os.environ.get('INFERSTACK_GATEWAY_URL'):
+            from inferstack.integrations.slo import gateway_slo_observer
+            observe=gateway_slo_observer(os.environ['INFERSTACK_GATEWAY_URL'],
+                                         os.environ.get('INFERSTACK_GATEWAY_TOKEN') or os.environ.get('INFERSTACK_CONTROL_TOKEN',''))
+        print(json.dumps(asyncio.run(TriggerService(repo,observe=observe,max_active=args.max_active).tick()),indent=2))
     elif args.action=='reconcile':
         from inferstack.infrastructure import LocalProcessProvider,reconcile
         print(json.dumps(reconcile(repo,LocalProcessProvider()),indent=2))
@@ -71,7 +106,7 @@ def main():
                 pricing=PriceTable(infra['prices'])
             # Resolve resources left by dead workers before taking new work.
             for action in reconcile(repo,provider):print(json.dumps({'reconciled':action}))
-            allocations=AllocationManager(repo,worker_id)
+            allocations=AllocationManager(repo,worker_id,quotas=infra.get('quotas'))
             from inferstack.control.wiring import build_executor,build_fetcher,telemetry_source
             if kind!='local':
                 # Build steps always run as local processes; reconcile their allocations too.
