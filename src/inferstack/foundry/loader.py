@@ -43,7 +43,11 @@ class FoundryModelLoader:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         manifest, source, plan=self.inspect(ref, profile)
         uri=source.get('uri') or manifest['tokenizer']['uri']
-        revision=source.get('revision','main')
+        revision=source.get('revision')
+        if source.get('kind','huggingface')=='huggingface':
+            import re
+            if not re.fullmatch(r'[0-9a-f]{40}',revision or ''):
+                raise ValueError(f'Foundry manifest {ref} must pin source.revision to a 40-hex commit (got {revision!r})')
         dtype={'bf16':torch.bfloat16,'fp16':torch.float16,'fp32':torch.float32}[plan.dtype]
         kwargs=dict(source.get('load_kwargs') or {})
         kwargs.update(dict(revision=revision, trust_remote_code=bool(source.get('trust_remote_code',False)), dtype=dtype))

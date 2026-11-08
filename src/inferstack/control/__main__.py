@@ -9,7 +9,10 @@ from inferstack.storage.repository import Repository
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile'])
+    parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention'])
+    parser.add_argument('--event-ttl-days',type=int)
+    parser.add_argument('--artifact-ttl-days',type=int)
+    parser.add_argument('--dry-run',action='store_true')
     parser.add_argument('--state',default='.inferstack')
     parser.add_argument('--database',help='database URL (sqlite:///path or postgresql://...); default STATE/control.db')
     parser.add_argument('--host',default='127.0.0.1')
@@ -30,6 +33,11 @@ def main():
                                    os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
         app=create_control_app(repo,token,rollout_observer=observer) if args.action=='serve' else create_gateway(repo,token)
         uvicorn.run(app,host=args.host,port=args.port)
+    elif args.action=='retention':
+        from inferstack.contracts.redaction import RetentionPolicy
+        from inferstack.control.maintenance import enforce
+        policy=RetentionPolicy(event_ttl_days=args.event_ttl_days,artifact_ttl_days=args.artifact_ttl_days)
+        print(json.dumps(enforce(repo,policy,dry_run=args.dry_run),indent=2))
     elif args.action=='reconcile':
         from inferstack.infrastructure import LocalProcessProvider,reconcile
         print(json.dumps(reconcile(repo,LocalProcessProvider()),indent=2))

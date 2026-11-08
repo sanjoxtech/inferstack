@@ -590,3 +590,43 @@ automatic rollback from real failing traffic. Not tested with FactoryOS itself.
 - Remaining: scheduled automatic stepping (currently operator/cron driven);
   SLO-based gates from engine telemetry in addition to gateway TTFB; FactoryOS
   client and end-to-end test against a FactoryOS instance.
+
+### Package J — qualification, retention and release candidate
+
+Status: implemented; the GPU qualification run itself is pending (user runs it).
+
+- `scripts/v2_qualify.py`: consolidated run recording every gate as passed /
+  failed / skipped-with-reason; `qualified` only when all required gates pass
+  (environment, model_identity, test_suite, kernel_equivalence, native_smoke);
+  optional vLLM/provider/PostgreSQL gates never change the verdict. Dry run on a
+  GPU-less host correctly reports `not_qualified` with the blocking gates.
+- `docs/COLAB_V2_QUALIFICATION.md`: exact Colab cells (token via header, never
+  echoed or stored).
+- Model identity: both Foundry manifests pinned to the verified
+  `Qwen/Qwen3.5-2B-Base` commit `b1485b2fa6dfa1287294f269f5fb618e03d52d7c`
+  (config confirmed `qwen3_5` / `Qwen3_5ForConditionalGeneration`); the Foundry
+  loader now refuses unpinned Hugging Face revisions instead of defaulting to
+  `main`.
+- `control/maintenance.py` + `retention` CLI action: TTL enforcement for events
+  of terminal jobs and unreferenced artifacts, with dry run.
+- Version `2.0.0rc1`.
+
+## 9. v2.0 release-candidate status
+
+| Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |
+|---|---|---|---|
+| A contracts/schemas/migrations | yes | yes (SQLite + PostgreSQL) | — |
+| B durable execution/resources | yes | yes (kill-at-every-transition) | — |
+| C engines/telemetry/onboarding | yes | emulated engines | live vLLM/SGLang/native conformance (GPU) |
+| D research/techniques | yes | local HTTP + SSRF cases | public-internet retrieval |
+| E planner/providers | yes | mocked DeepSeek/OpenRouter | live provider smoke (API keys) |
+| F isolated executor | yes | real venv/git/netns | GPU candidates built in isolation |
+| G verifier/numerics | yes | CPU oracle (emulated BF16) | `v2_qualify.py` kernel_equivalence (GPU) |
+| H infrastructure/spend | yes | CLI doubles | real Docker daemon / Kubernetes cluster |
+| I rollout/FactoryOS | yes | real gateway rollback | FactoryOS end-to-end |
+| J qualification | yes | GPU-less dry run | Colab A100 `qualified` verdict |
+
+CPU test suite: 183 passed, 1 deselected (torch-dependent tests run in qualification).
+Release `v2.0.0` should be tagged only after `scripts/v2_qualify.py` returns
+`qualified` on the target GPU and the optional gates relevant to the deployment
+(provider smoke, cluster) have been run.
