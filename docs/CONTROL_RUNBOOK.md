@@ -357,6 +357,27 @@ candidate. `EndpointExecutor` refuses such plans with a clear error.
   cleanup and on every build failure (nothing is launched and no record is
   written for a failed build).
 
+## Verification gates and numerical equivalence
+
+The endpoint verifier computes every gate from evidence: `correctness`/`quality`
+(exact match on every case and repeat), `health` (both endpoints ready before
+and after), `complete` (every scored trial has finite values for every objective
+metric and every case returned one choice), `comparable` (unchanged record
+revisions, same model, same `hardware_ref`; both unrecorded is allowed but
+reported as `hardware: unrecorded`). Any failed gate rejects; any unknown gate is
+inconclusive. An improvement must exceed both epsilon and twice the larger
+median absolute deviation. Each scored trial is stored as a `trial` record pinned
+to exact deployment revisions (usable as technique `proven_by` evidence), and the
+evidence artifact records the verifier code hash and workload fixture hash.
+
+`scripts/v160_kernel_equivalence.py` (GPU) now compares fused kernels with FP32
+oracles on the same BF16 inputs and reports error in ULPs: pass at <=1 ULP max and
+<=0.5 ULP mean, or no worse than the BF16 reference; grouped GDN output allows 2
+ULP and FP32 state uses a 1e-3 relative bound. `v160_analyze_results.py` keeps
+missing metrics as `null` and gives each lane a judge verdict (three runs per
+side required; single runs are `inconclusive_single_run`). The Colab matrix
+reports `liveness_pass` only and states that it makes no performance claim.
+
 ## Release and route
 
 A kept experiment can create a manifest via

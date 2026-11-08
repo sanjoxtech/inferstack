@@ -525,3 +525,29 @@ authoring by the provider (patches must be supplied as stored diffs).
   end-to-end credential assertion.
 - Remaining: native-engine profile flags; provider-authored patches (would go
   through the same inspection); container-level isolation and GPU limits (H).
+
+### Package G — independent verifier
+
+Status: implemented, CPU-tested. The rewritten GPU kernel-equivalence script is
+NOT yet run on GPU (J); its oracle library is tested on CPU with emulated BF16.
+
+- `evaluation/numerical.py`: ULP error against FP32/FP64 oracles per output
+  dtype, bound or no-worse-than-reference criteria, relative bound for FP32
+  state, BF16/FP16 rounding emulation.
+- `scripts/v160_kernel_equivalence.py`: three seeds, FP32 oracles for every
+  fused kernel, ULP bounds declared per check (fixes the 2026-11-07 false
+  failures on A100).
+- Judge: improvement must exceed max(epsilon, 2 x MAD); per-metric gain,
+  tolerance and noise floor reported.
+- Endpoint verifier: `complete` and `comparable` computed (were asserted),
+  hardware identity checked, typed trial records per scored repeat, verifier
+  code and fixture hashes in evidence.
+- Scripts: analyzer no longer turns missing metrics or operator counts into
+  zero (A2) and issues per-lane judge verdicts; matrix `pass` renamed
+  `liveness_pass` with an explicit "no performance claim" (A3).
+- Declared missing dependencies: `numpy`, `packaging`.
+- Checks: 168 CPU tests passed (6 new in `tests/test_verifier.py`).
+- Remaining: GPU run of the new equivalence script; logit-level/teacher-forced
+  quality oracle and semantic quality budgets for non-exact workloads; streaming
+  TPOT and tail percentiles in the endpoint verifier; cancellation/overload
+  probes as gates.

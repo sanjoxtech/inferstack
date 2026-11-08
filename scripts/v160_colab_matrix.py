@@ -101,8 +101,11 @@ def main():
     else:stop(proc);lf.close()
     summary['profiles']['profile']=prow
     required=['baseline','norm','mlp','gdn','attention','full']
-    summary['pass']=bool(summary['kernel_equivalence']['pass'] and all(summary['profiles'].get(x,{}).get('ready') and summary['profiles'].get(x,{}).get('benchmark_acceptance',{}).get('pass') for x in required) and summary['profiles'].get('full',{}).get('feature_probe_pass') and summary['profiles'].get('profile',{}).get('runtime_profile_pass'))
+    # Liveness only: requests completed without errors and features/profiles ran.
+    # This is not a performance claim; see analysis.json lane verdicts (audit A3).
+    summary['liveness_pass']=bool(summary['kernel_equivalence']['pass'] and all(summary['profiles'].get(x,{}).get('ready') and summary['profiles'].get(x,{}).get('benchmark_acceptance',{}).get('pass') for x in required) and summary['profiles'].get('full',{}).get('feature_probe_pass') and summary['profiles'].get('profile',{}).get('runtime_profile_pass'))
+    summary['performance_claim']='none: read analysis.json verdicts (keep requires repeated runs)'
     (out/'summary.json').write_text(json.dumps(summary,indent=2,default=str)+'\n')
     ar=run_capture([sys.executable,'scripts/v160_analyze_results.py','--results',a.results],root,out/'analysis.log');summary['analysis_exit']=ar.returncode;(out/'summary.json').write_text(json.dumps(summary,indent=2,default=str)+'\n')
-    print(json.dumps(summary,indent=2,default=str));print('\nSaved',out/'summary.json','and',out/'analysis.json');raise SystemExit(0 if summary['pass'] else 2)
+    print(json.dumps(summary,indent=2,default=str));print('\nSaved',out/'summary.json','and',out/'analysis.json');raise SystemExit(0 if summary['liveness_pass'] else 2)
 if __name__=='__main__':main()

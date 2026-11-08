@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import hashlib
+import math
 import json
 import time
 from pathlib import Path
@@ -84,6 +85,17 @@ class EndpointExecutor:
         if self.allocations is not None:self._release(candidate['id'],'cleanup')
 
 
+def _code_sha256():
+    from pathlib import Path as _P
+    digest=hashlib.sha256()
+    for path in sorted([_P(__file__),_P(__file__).parents[1]/'evaluation'/'judge.py']):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+VERIFIER_CODE_SHA256=_code_sha256()
+
+
 class EndpointVerifier:
     """Repeated paired HTTP trials with exact-match task checks.
 
@@ -113,6 +125,24 @@ class EndpointVerifier:
             outputs.append(text)
         return {'e2e_ms':sum(times)/len(times)},correct,outputs
 
+    def record_trials(self,plan,candidate,baseline_record,trials,raw_sha256):
+        """Persist each scored trial as a typed `trial` record pinned to exact deployment revisions."""
+        refs=[]
+        now=self.repository.clock()
+        pins={'baseline':f"{baseline_record['id']}@{baseline_record['revision']}",
+              'candidate':f"{candidate['deployment_id']}@{candidate['revision']}"}
+        for role,side in zip(('baseline','candidate'),trials):
+            for index,metrics in enumerate(side):
+                identifier=f"{candidate['id']}-{role}-{index}"
+                try:
+                    self.repository.put_record('trial',identifier,{'experiment_id':candidate['id'],
+                        'deployment_ref':pins[role],'role':role,'repeat_index':index,'metrics':metrics,
+                        'raw_artifact_sha256':raw_sha256,'started_at':now,'ended_at':now})
+                except ValueError as exc:
+                    if 'expected_revision' not in str(exc):raise
+                refs.append(f'{identifier}@1')
+        return refs
+
     async def verify(self,plan,candidate):
         if plan.get('baseline_id')!=self.baseline_id:raise ValueError('job baseline does not match verifier configuration')
         baseline_record=self.repository.read('deployment',self.baseline_id)
@@ -137,13 +167,27 @@ class EndpointVerifier:
             healthy &= await baseline.ready() and await target.ready()
             stable=self.repository.read('deployment',self.baseline_id)['revision']==baseline_record['revision']
             stable &= self.repository.read('deployment',candidate['deployment_id'])['revision']==candidate['revision']
-            gates={'correctness':correct,'quality':correct,'health':healthy,
-                   'complete':True,'comparable':stable and baseline_spec.model==candidate_spec.model}
+            # Gates are computed from evidence, never asserted.
+            metric_names={o.metric for o in self.objectives}
+            complete=all(len(side)==self.repeats for side in trials) and all(
+                isinstance(t.get(m),(int,float)) and math.isfinite(t[m]) for side in trials for t in side for m in metric_names)
+            complete&=all(text is not None for side in outputs for run in side for text in run)
+            b_hw,c_hw=baseline_record['body'].get('hardware_ref'),candidate_record['body'].get('hardware_ref')
+            same_hardware=b_hw==c_hw
+            comparable=stable and baseline_spec.model==candidate_spec.model and same_hardware
+            gates={'correctness':correct,'quality':correct,'health':healthy,'complete':complete,'comparable':comparable}
             verdict=evaluate(*trials,self.objectives,gates=gates)
+            fixture_sha=hashlib.sha256(self.repository.encode(self.cases).encode()).hexdigest()
             evidence={'baseline':baseline_record,'candidate':candidate,'workload':self.cases,
                       'trials':trials,'outputs':outputs,'gates':gates,'verdict':verdict,
-                      'scope':'exact-match completion suite; mean end-to-end latency only'}
+                      'verifier':{'code_sha256':VERIFIER_CODE_SHA256,'fixture_sha256':fixture_sha,
+                                  'repeats':self.repeats,'order':'interleaved, warmup excluded'},
+                      'comparability':{'hardware':'same' if same_hardware and b_hw else
+                                       'unrecorded' if same_hardware else 'different',
+                                       'model':baseline_spec.model==candidate_spec.model,'records_stable':stable},
+                      'scope':'exact-match completion suite (quality gate = exact match); mean end-to-end latency only'}
             artifact=self.repository.artifact(self.repository.encode(evidence).encode())
-            return {**verdict,'evidence':artifact,'scope':evidence['scope']}
+            trial_refs=self.record_trials(plan,candidate,baseline_record,trials,artifact['sha256'])
+            return {**verdict,'evidence':artifact,'scope':evidence['scope'],'gates':gates,'trial_refs':trial_refs}
         finally:
             await baseline.close()

@@ -57,12 +57,15 @@ def evaluate(baseline, candidate, objectives, *, gates, min_trials=3, max_cv=0.1
             noisy |= cv > max_cv
         b,c = [g['median'] for g in groups]
         tolerance = abs(b)*objective.epsilon
+        # An improvement must also exceed run-to-run spread (2x the larger MAD).
+        noise_floor = 2*max(groups[0]['mad'], groups[1]['mad'])
         gain = b-c if objective.direction == 'min' else c-b
-        improved |= gain > tolerance
+        improved |= gain > max(tolerance, noise_floor)
         worse |= gain < -tolerance
         if objective.limit is not None:
             slo_failed |= c > objective.limit if objective.direction == 'min' else c < objective.limit
-        summary[objective.metric] = {'baseline': groups[0], 'candidate': groups[1]}
+        summary[objective.metric] = {'baseline': groups[0], 'candidate': groups[1], 'gain': gain,
+                                     'tolerance': tolerance, 'noise_floor': noise_floor}
     decision = 'reject' if slo_failed else 'retest' if noisy else 'reject' if worse else 'keep' if improved else 'inconclusive'
     return {'decision': decision, 'metrics': summary,
             'reasons': ['SLO failed'] if slo_failed else ['noise exceeds policy'] if noisy else
