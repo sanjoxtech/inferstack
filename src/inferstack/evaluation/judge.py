@@ -21,7 +21,10 @@ class Objective:
             raise ValueError('limit must be finite and nonnegative')
 
 
-def evaluate(baseline, candidate, objectives, *, gates, min_trials=3, max_cv=0.1):
+MANDATORY = frozenset({'correctness', 'quality', 'health', 'comparable', 'complete'})
+
+
+def evaluate(baseline, candidate, objectives, *, gates, min_trials=3, max_cv=0.1, required=None):
     """Constrained epsilon comparison over repeated aggregate metrics.
 
     Caller supplies immutable comparable experiment identities separately. This
@@ -30,12 +33,16 @@ def evaluate(baseline, candidate, objectives, *, gates, min_trials=3, max_cv=0.1
     if min_trials < 2 or not finite_number(max_cv) or not objectives:
         raise ValueError('invalid evaluation policy')
     if len({o.metric for o in objectives})!=len(objectives):raise ValueError('duplicate objective metric')
-    required = {'correctness', 'quality', 'health', 'comparable', 'complete'}
+    # Every gate of the bound verification policy must have run and passed; a gate
+    # that is unsupported or could not be measured (None/absent) is inconclusive.
+    required = MANDATORY | set(required or ())
+    # A gate that ran and failed is decisive even when other gates are unknown.
+    failed = sorted(k for k in required if k in gates and gates[k] is not None and gates[k] is not True)
+    if failed:
+        return {'decision': 'reject', 'reasons': ['required gate failed: '+','.join(failed)]}
     absent = sorted(k for k in required if k not in gates or gates[k] is None)
     if absent:
         return {'decision': 'inconclusive', 'reasons': ['missing gates: '+','.join(absent)]}
-    if any(gates[k] is not True for k in required):
-        return {'decision': 'reject', 'reasons': ['required gate failed']}
     if len(baseline) < min_trials or len(candidate) < min_trials:
         return {'decision': 'inconclusive', 'reasons': ['insufficient independent trials']}
     summary = {}

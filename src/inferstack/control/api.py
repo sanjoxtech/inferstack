@@ -180,6 +180,8 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
 
     def controller():
         if rollout_observer is None:raise HTTPException(503,'rollout observation is not configured (gateway URL)')
+        # Traffic never shifts to an unattested runtime: no attestor, no rollout.
+        if rollout_attest is None:raise HTTPException(503,'release attestation is not configured; refusing to route traffic')
         return RolloutController(repository,observe=rollout_observer,attest=rollout_attest)
 
     @app.post('/control/rollouts',dependencies=auth)

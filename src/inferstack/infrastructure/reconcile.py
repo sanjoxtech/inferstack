@@ -26,7 +26,7 @@ def reconcile_allocation(manager: AllocationManager, provider, alloc) -> str:
         if not pids:
             manager.release(alloc['id'], 'never_launched')
             return 'never_launched'
-        ok = all(_stop(provider, provider.external_for(pid)) for pid in pids)
+        ok = all(_stop(provider, {**provider.external_for(pid), 'allocation_id': alloc['id']}) for pid in pids)
         if ok:
             manager.release(alloc['id'], 'unrecorded_launch_stopped')
             return 'unrecorded_launch_stopped'
@@ -34,10 +34,14 @@ def reconcile_allocation(manager: AllocationManager, provider, alloc) -> str:
         return 'orphaned'
     if not provider.owns(alloc['external']):
         return 'foreign_host'
-    if not provider.alive(alloc['external']):
+    external = alloc['external']
+    if external.get('allocation_id') is None and alloc['id']:
+        external = {**external, 'allocation_id': alloc['id']}
+    residual = getattr(provider, 'residual', None)
+    if not provider.alive(external) and not (residual and residual(external)):
         manager.release(alloc['id'], 'already_exited')
         return 'already_exited'
-    if _stop(provider, alloc['external']):
+    if _stop(provider, external):
         manager.release(alloc['id'], 'orphan_stopped')
         return 'orphan_stopped'
     manager.mark_orphaned(alloc['id'], 'stop_failed')

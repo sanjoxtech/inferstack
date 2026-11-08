@@ -9,6 +9,38 @@ from inferstack.engines.managed import DeploymentSpec, ManagedEngine
 from inferstack.evaluation.judge import evaluate, Objective
 
 
+GPU_ENGINES = frozenset({'inferstack_native', 'vllm', 'sglang'})
+
+
+def resolve_gpu_reservation(context, spec, resources=None):
+    """GPU reservation for a local launch: (count, devices, basis). Never silently zero.
+
+    Precedence: explicit reservation in the worker context, then the deployment's
+    declared `resources`, then the engine's minimum. GPU engines reserve at least
+    one device; only engines that do not use a GPU may record zero.
+    """
+    context, resources = context or {}, resources or {}
+    reservation = context.get('reservation') or {}
+    for source, basis in ((reservation, 'reservation'), (resources, 'deployment_resources')):
+        devices = source.get('gpu_devices')
+        if devices:
+            if not isinstance(devices, (list, tuple)) or not all(isinstance(d, str) and d for d in devices):
+                raise ValueError('gpu_devices must be a list of device identifiers')
+            return len(devices), list(devices), basis
+        if source.get('gpu_count') is not None:
+            count = source['gpu_count']
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError('gpu_count must be a non-negative integer')
+            if count == 0 and spec.engine in GPU_ENGINES:
+                raise ValueError(f'{spec.engine} needs a GPU; a zero-GPU reservation is not valid')
+            return count, None, basis
+    if context.get('gpu_count'):
+        return int(context['gpu_count']), None, 'context'
+    if spec.engine in GPU_ENGINES:
+        return 1, None, 'engine_minimum'
+    return 0, None, 'cpu_engine'
+
+
 class EndpointExecutor:
     """Runs registered candidates in separate processes or attaches to test endpoints.
 
@@ -29,17 +61,20 @@ class EndpointExecutor:
         self.active={}
         self.owned={}
 
-    def _spawner(self, context, spec, env=None):
+    def _spawner(self, context, spec, env=None, resources=None):
         if self.allocations is None or not spec.command or context is None:return None
         async def spawn(argv, log):
-            gpus=context.get('gpu_count',0)
+            gpus,devices,basis=resolve_gpu_reservation(context,spec,resources)
             alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
                 provider=self.provider.name, resource_type=self.provider.resource_type,
-                spec={'deployment_id':spec.id,'argv':argv,**self._price(gpus)}, gpu_count=gpus)
+                spec={'deployment_id':spec.id,'argv':argv,'gpu_basis':basis,
+                      **({'gpu_devices':devices} if devices else {}),**self._price(gpus)}, gpu_count=gpus)
             if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
-            process=await self.provider.spawn(alloc['id'], argv, log, env=env, inherit_env=env is None)
+            child_env,inherit=env,env is None
+            if devices:child_env={**(env or {}),'CUDA_VISIBLE_DEVICES':','.join(devices)}
+            process=await self.provider.spawn(alloc['id'], argv, log, env=child_env, inherit_env=inherit)
             self.allocations.faults('process_started')
-            external=self.provider.external_for(process.pid)
+            external={**self.provider.external_for(process.pid),'allocation_id':alloc['id']}
             self.allocations.record_external(alloc['id'], external)
             self.allocations.faults('process_spawned')
             self.allocations.activate(alloc['id'], context['job'], external)
@@ -101,7 +136,7 @@ class EndpointExecutor:
         engine=self.engine_factory(spec)
         if context is not None:context={**context,'namespace':namespace}
         try:
-            await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec,env))
+            await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec,env,record['body'].get('resources')))
         except BaseException:
             await engine.close()
             self._release(namespace,'launch_failed')
@@ -135,13 +170,28 @@ def _code_sha256():
 VERIFIER_CODE_SHA256=_code_sha256()
 
 
-class EndpointVerifier:
-    """Repeated paired HTTP trials with exact-match task checks.
+MAX_REPEATS=20
+MEASURED_METRICS=frozenset({'e2e_ms'})
+# Gates this verifier can execute. Anything else a plan requests is reported as
+# unsupported (None), which makes the verdict inconclusive, never a silent pass.
+SERVING_GATES=frozenset({'cancellation','overload'})
 
-    Scope: deterministic completion workloads and end-to-end latency. Numerical
-    logits, streaming TPOT, task-specific semantic quality need separate verifiers.
+
+class EndpointVerifier:
+    """Repeated paired HTTP trials with exact-match task checks, bound to the plan's policy.
+
+    The verification policy is the mandatory gates plus every gate the frozen plan
+    declares, with the plan's measure parameters. Gates this verifier cannot run
+    (numerical oracle, quality budget, cache isolation, ...) are recorded as
+    unsupported and make the verdict inconclusive. Comparability requires pinned,
+    equal hardware and model identities on both sides; missing identity is unknown.
+
+    Scope: deterministic completion workloads, end-to-end latency, cancellation and
+    overload probes. Numerical logits, streaming TPOT and semantic quality need
+    separate verifiers.
     """
-    def __init__(self, repository, executor, baseline_id, cases, objectives, *, repeats=3):
+    def __init__(self, repository, executor, baseline_id, cases, objectives, *, repeats=3, workload_ref=None,
+                 objective_ref=None, overload_concurrency=8):
         if repeats<3 or not cases:raise ValueError('three repeats and nonempty workload required')
         for case in cases:
             if set(case)!={'prompt','expected','max_tokens'} or not isinstance(case['expected'],str):
@@ -151,6 +201,88 @@ class EndpointVerifier:
         self.repository,self.executor=repository,executor
         self.baseline_id,self.cases,self.repeats=baseline_id,cases,repeats
         self.objectives=[Objective(**o) for o in objectives]
+        self.workload_ref,self.objective_ref=workload_ref,objective_ref
+        self.overload_concurrency=overload_concurrency
+
+    def policy(self,plan):
+        """The executable policy for this plan: required gates, repeats and binding problems."""
+        required=sorted(set(plan.get('gates') or [])|{'correctness','quality','health','comparable','complete'})
+        problems=[]
+        measure=next((a for a in plan.get('actions') or [] if a.get('type')=='measure'),None)
+        params=(measure or {}).get('params') or {}
+        repeats=self.repeats
+        if params.get('repeats') is not None:
+            asked=params['repeats']
+            if not isinstance(asked,int) or isinstance(asked,bool) or asked<1:problems.append('invalid repeats')
+            elif asked>MAX_REPEATS:problems.append(f'plan requests {asked} repeats; verifier maximum is {MAX_REPEATS}')
+            else:repeats=max(repeats,asked)
+        for key,configured in (('workload_ref',self.workload_ref),('objective_ref',self.objective_ref)):
+            if params.get(key) is not None and params[key]!=configured:
+                problems.append(f'plan {key} {params[key]!r} is not the verifier-configured {configured!r}')
+        expected=set((measure or {}).get('expected_measurements') or plan.get('expected_measurements') or [])
+        unmeasured=sorted(expected-MEASURED_METRICS)
+        if unmeasured:problems.append('measurements not produced by this verifier: '+','.join(unmeasured))
+        return {'required':required,'repeats':repeats,'problems':problems,
+                'unsupported':sorted(set(required)-{'correctness','quality','health','comparable','complete'}-SERVING_GATES)}
+
+    def comparability(self,baseline_record,candidate_record,stable):
+        """True only with pinned, equal hardware and model identities; None when identity is missing."""
+        b,c=baseline_record['body'],candidate_record['body']
+        detail={'records_stable':stable,'model_name':b['model']==c['model']}
+        identity={}
+        for key,kind in (('hardware_ref','hardware'),('model_ref','model')):
+            pins=[]
+            for body in (b,c):
+                ref=body.get(key)
+                if not ref:pins.append(None);continue
+                from inferstack.contracts.records import parse_ref
+                try:
+                    identifier,revision=parse_ref(ref)
+                    record=self.repository.read(kind,identifier,revision)
+                    pins.append(f"{identifier}@{record['revision']}")
+                except (KeyError,ValueError):pins.append(None)
+            identity[key]=pins
+            detail[key]='missing' if None in pins else 'same' if pins[0]==pins[1] else 'different'
+        if not stable or not detail['model_name'] or 'different' in (detail['hardware_ref'],detail['model_ref']):
+            return False,detail,identity
+        if 'missing' in (detail['hardware_ref'],detail['model_ref']):return None,detail,identity
+        return True,detail,identity
+
+    async def serving_gate(self,name,engine):
+        """Cancellation/overload probes on the candidate. None when the engine cannot be probed."""
+        case=self.cases[0]
+        payload={'prompt':case['prompt'],'max_tokens':case['max_tokens'],'temperature':0}
+        if not (hasattr(engine,'complete') and hasattr(engine,'ready')):return None,'engine does not expose completions'
+        try:
+            if name=='cancellation':
+                if not hasattr(engine,'stream'):return None,'engine does not expose streaming'
+                stream=engine.stream(payload)
+                try:
+                    await asyncio.wait_for(stream.__anext__(),30)
+                except StopAsyncIteration:pass
+                finally:await stream.aclose()
+                # After a client disconnect the engine must stay live and still answer correctly.
+                result=await engine.complete(payload)
+                choices=result.get('choices',[])
+                ok=await engine.ready() and len(choices)==1 and choices[0].get('text')==case['expected']
+                return ok,'stream cancelled after first chunk; engine live and correct afterwards'
+            if name=='overload':
+                import httpx as _httpx
+                async def one():
+                    try:
+                        result=await engine.complete(payload)
+                        choices=result.get('choices',[])
+                        return 'ok' if len(choices)==1 and choices[0].get('text')==case['expected'] else 'wrong'
+                    except _httpx.HTTPStatusError as exc:
+                        return 'shed' if exc.response.status_code in (429,503) else 'error'
+                    except _httpx.HTTPError:return 'error'
+                outcomes=await asyncio.gather(*(one() for _ in range(self.overload_concurrency)))
+                live=await engine.ready()
+                ok=live and 'error' not in outcomes and 'wrong' not in outcomes and 'ok' in outcomes
+                return ok,f'{self.overload_concurrency} concurrent requests: '+','.join(sorted(outcomes))+f'; live={live}'
+        except Exception as exc:  # noqa: BLE001 - a probe failure is evidence, recorded with its type
+            return False,f'{name} probe failed: {type(exc).__name__}'
+        return None,f'{name} not supported'
 
     async def trial(self,engine):
         times=[];correct=True;outputs=[]
@@ -196,10 +328,11 @@ class EndpointVerifier:
         target=self.executor.active[candidate['id']]
         try:
             healthy=await baseline.ready() and await target.ready()
+            policy=self.policy(plan)
             trials=[[],[]];correct=True;outputs=[[],[]]
             # Warmup excluded from scored trials.
             await self.trial(baseline);await self.trial(target)
-            for repeat in range(self.repeats):
+            for repeat in range(policy['repeats']):
                 for index in ([0,1] if repeat%2==0 else [1,0]):
                     metrics,valid,texts=await self.trial((baseline,target)[index])
                     trials[index].append(metrics);outputs[index].append(texts);correct &= valid
@@ -208,25 +341,32 @@ class EndpointVerifier:
             stable &= self.repository.read('deployment',candidate['deployment_id'])['revision']==candidate['revision']
             # Gates are computed from evidence, never asserted.
             metric_names={o.metric for o in self.objectives}
-            complete=all(len(side)==self.repeats for side in trials) and all(
+            complete=all(len(side)==policy['repeats'] for side in trials) and all(
                 isinstance(t.get(m),(int,float)) and math.isfinite(t[m]) for side in trials for t in side for m in metric_names)
             complete&=all(text is not None for side in outputs for run in side for text in run)
-            b_hw,c_hw=baseline_record['body'].get('hardware_ref'),candidate_record['body'].get('hardware_ref')
-            same_hardware=b_hw==c_hw
-            comparable=stable and baseline_spec.model==candidate_spec.model and same_hardware
+            comparable,comparability,identity=self.comparability(baseline_record,candidate_record,stable)
             gates={'correctness':correct,'quality':correct,'health':healthy,'complete':complete,'comparable':comparable}
-            verdict=evaluate(*trials,self.objectives,gates=gates)
+            gate_notes={}
+            for name in policy['required']:
+                if name in gates:continue
+                if name in SERVING_GATES:gates[name],gate_notes[name]=await self.serving_gate(name,target)
+                else:gates[name],gate_notes[name]=None,'not supported by EndpointVerifier'
+            if policy['problems']:
+                verdict={'decision':'inconclusive','reasons':['verification policy not satisfiable: '+
+                                                              '; '.join(policy['problems'])]}
+            else:
+                verdict=evaluate(*trials,self.objectives,gates=gates,required=policy['required'])
             fixture_sha=hashlib.sha256(self.repository.encode(self.cases).encode()).hexdigest()
             evidence={'baseline':baseline_record,'candidate':candidate,'workload':self.cases,
                       'trials':trials,'outputs':outputs,'gates':gates,'verdict':verdict,
                       'verifier':{'code_sha256':VERIFIER_CODE_SHA256,'fixture_sha256':fixture_sha,
-                                  'repeats':self.repeats,'order':'interleaved, warmup excluded'},
-                      'comparability':{'hardware':'same' if same_hardware and b_hw else
-                                       'unrecorded' if same_hardware else 'different',
-                                       'model':baseline_spec.model==candidate_spec.model,'records_stable':stable},
+                                  'repeats':policy['repeats'],'order':'interleaved, warmup excluded'},
+                      'policy':{**policy,'sha256':hashlib.sha256(self.repository.encode(policy).encode()).hexdigest()},
+                      'gate_notes':gate_notes,'comparability':comparability,'identity':identity,
                       'scope':'exact-match completion suite (quality gate = exact match); mean end-to-end latency only'}
             artifact=self.repository.artifact(self.repository.encode(evidence).encode())
             trial_refs=self.record_trials(plan,candidate,baseline_record,trials,artifact['sha256'])
-            return {**verdict,'evidence':artifact,'scope':evidence['scope'],'gates':gates,'trial_refs':trial_refs}
+            return {**verdict,'evidence':artifact,'scope':evidence['scope'],'gates':gates,'trial_refs':trial_refs,
+                    'policy_sha256':evidence['policy']['sha256']}
         finally:
             await baseline.close()

@@ -23,6 +23,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = ('environment', 'model_identity', 'test_suite', 'kernel_equivalence', 'native_smoke')
+OPTIONAL = ('vllm_conformance', 'provider_deepseek', 'provider_openrouter')
+# Every check the kernel-equivalence script must report, per seed. A report with a
+# missing, extra-empty or non-finite check is not evidence of equivalence.
+KERNEL_SEEDS = (123, 7, 2026)
+KERNEL_CHECKS = ('rmsnorm', 'add_rmsnorm.sum', 'add_rmsnorm.norm', 'gated_rmsnorm', 'silu_mul', 'beta_g.beta',
+                 'beta_g.g', 'grouped_gdn.output', 'grouped_gdn.state')
+EXPECTED_KERNEL_CHECKS = frozenset(f'{c}/seed{s}' for s in KERNEL_SEEDS for c in KERNEL_CHECKS)
+# Skip reasons that are acceptable on a GPU qualification host; any other skip
+# means required coverage did not run there.
+ACCEPTED_SKIP_MARKERS = ('PostgreSQL', 'initdb', 'pg_ctl', 'INFERSTACK_TEST_PG')
 
 
 def run(argv, log, timeout, env=None):
@@ -41,13 +51,61 @@ def gate(status, **detail):
     return {'status': status, **detail}
 
 
+def kernel_gate(code, text):
+    """Kernel equivalence passes only with exit 0, the complete check manifest and finite passing results."""
+    try:
+        report = json.loads(text[text.index('{'):text.rindex('}') + 1])
+        checks = report['checks']
+    except (ValueError, KeyError, TypeError):
+        return gate('failed', reason='no report produced', exit=code), None
+    import math
+    names = [c.get('check') for c in checks if isinstance(c, dict)]
+    missing = sorted(EXPECTED_KERNEL_CHECKS - set(names))
+    unexpected = sorted(set(names) - EXPECTED_KERNEL_CHECKS)
+    duplicate = sorted({n for n in names if names.count(n) > 1})
+    def finite(c):
+        keys = [k for k in ('max_ulp', 'mean_ulp', 'max_rel', 'mean_rel') if k in c]
+        return bool(keys) and all(isinstance(c[k], (int, float)) and math.isfinite(c[k]) for k in keys)
+    nonfinite = [c.get('check') for c in checks if isinstance(c, dict) and not finite(c)]
+    failed_checks = [c.get('check') for c in checks if not (isinstance(c, dict) and c.get('pass') is True)]
+    reasons = []
+    if code != 0:
+        reasons.append(f'kernel process exited {code}')
+    if missing:
+        reasons.append('missing checks')
+    if unexpected or duplicate:
+        reasons.append('unexpected or duplicate checks')
+    if nonfinite:
+        reasons.append('non-finite error statistics')
+    if failed_checks or report.get('pass') is not True:
+        reasons.append('checks failed')
+    status = 'failed' if reasons else 'passed'
+    return gate(status, exit=code, reasons=reasons, failed=failed_checks, missing=missing, unexpected=unexpected,
+                duplicate=duplicate, nonfinite=nonfinite, method=report.get('method'), checks=len(checks)), report
+
+
+def suite_gate(code, text, has_gpu):
+    summary = [l for l in text.splitlines() if ' passed' in l or ' failed' in l or ' error' in l][-1:]
+    skips = [l for l in text.splitlines() if l.startswith('SKIPPED')]
+    accepted = [l for l in skips if any(m in l for m in ACCEPTED_SKIP_MARKERS)]
+    blocking = [l for l in skips if l not in accepted] if has_gpu else []
+    reasons = ([f'pytest exited {code}'] if code != 0 else []) + \
+        (['required coverage skipped on GPU host'] if blocking else [])
+    return gate('failed' if reasons else 'passed', reasons=reasons, summary=summary[0] if summary else None,
+                skipped_accepted=accepted[:50], skipped_blocking=blocking[:50])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--out', default='results/v2-qualification')
     p.add_argument('--model-repo', default='Qwen/Qwen3.5-2B-Base')
     p.add_argument('--deepseek-model')
     p.add_argument('--openrouter-model')
+    p.add_argument('--require', action='append', default=[], choices=OPTIONAL,
+                   help='make an optional integration gate required for this deployment (repeatable); '
+                        'a required gate that is skipped blocks qualification')
     a = p.parse_args()
+    required = tuple(REQUIRED) + tuple(g for g in a.require if g not in REQUIRED)
     out = (ROOT / a.out)
     out.mkdir(parents=True, exist_ok=True)
     gates = {}
@@ -62,19 +120,12 @@ def main():
 
     code, text, secs = run([sys.executable, '-m', 'pytest', '-rs', '-p', 'no:cacheprovider'],
                            out / 'pytest.log', 3600)
-    summary = [l for l in text.splitlines() if ' passed' in l or ' failed' in l or ' error' in l][-1:]
-    skips = [l for l in text.splitlines() if l.startswith('SKIPPED')]
-    gates['test_suite'] = gate('passed' if code == 0 else 'failed', summary=summary[0] if summary else None,
-                               skipped=skips[:50], seconds=secs)
+    gates['test_suite'] = suite_gate(code, text, bool(hardware['gpus'])) | {'seconds': secs}
 
     code, text, secs = run([sys.executable, 'scripts/v160_kernel_equivalence.py'], out / 'kernel-equivalence.log', 1800)
-    try:
-        report = json.loads(text[text.index('{'):text.rindex('}') + 1])
-        gates['kernel_equivalence'] = gate('passed' if report['pass'] else 'failed', failed=report['failed'],
-                                           method=report['method'], checks=len(report['checks']))
+    gates['kernel_equivalence'], report = kernel_gate(code, text)
+    if report is not None:
         (out / 'kernel-equivalence.json').write_text(json.dumps(report, indent=2))
-    except (ValueError, KeyError):
-        gates['kernel_equivalence'] = gate('failed', reason='no report produced', exit=code)
 
     manifest_path = ROOT / 'examples/model_foundry/factorylm-2b/candidate/manifest.json'
     from inferstack.contracts.records import MUTABLE_REVISIONS
@@ -102,10 +153,11 @@ def main():
 
     try:
         import vllm  # noqa: F401
-        gates['vllm_conformance'] = gate('skipped', reason='vllm importable; launch-and-attest conformance must be '
-                                         'run with a pinned model revision (see COLAB_V2_QUALIFICATION.md)')
+        gates['vllm_conformance'] = gate('skipped', requirement='pinned vLLM launch-and-attest run',
+                                         reason='vllm importable but this runner does not launch it; run the '
+                                         'conformance cell in COLAB_V2_QUALIFICATION.md and record its evidence')
     except ImportError:
-        gates['vllm_conformance'] = gate('skipped', reason='vllm not installed')
+        gates['vllm_conformance'] = gate('skipped', requirement='vllm installed', reason='vllm not installed')
 
     for kind, model, env in (('deepseek', a.deepseek_model, 'DEEPSEEK_API_KEY'),
                              ('openrouter', a.openrouter_model, 'OPENROUTER_API_KEY')):
@@ -116,8 +168,10 @@ def main():
                                 '--key-env', env], out / f'provider-{kind}.log', 600)
         gates[f'provider_{kind}'] = gate('passed' if code == 0 else 'failed', seconds=secs)
 
-    required_failed = [g for g in REQUIRED if gates[g]['status'] != 'passed']
-    result = {'version': '2.0.0rc1', 'commit': commit, 'finished_at': time.time(), 'required': list(REQUIRED),
+    required_failed = [g for g in required if gates[g]['status'] != 'passed']
+    from inferstack import __version__
+    result = {'version': __version__, 'commit': commit, 'finished_at': time.time(), 'required': list(required),
+              'optional_not_required': [g for g in OPTIONAL if g not in required],
               'verdict': 'qualified' if not required_failed else 'not_qualified',
               'blocking': required_failed, 'gates': gates}
     (out / 'qualification.json').write_text(json.dumps(result, indent=2, default=str))

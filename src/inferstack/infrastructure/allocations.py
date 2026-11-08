@@ -16,6 +16,10 @@ import uuid
 LIVE_STATES = ('intent', 'active', 'releasing')
 
 
+class ResourceConflict(RuntimeError):
+    """The requested devices are held by another live allocation."""
+
+
 class AllocationManager:
     def __init__(self, store, worker_id, faults=None):
         self.store = store
@@ -36,6 +40,15 @@ class AllocationManager:
             existing = db.execute('SELECT * FROM allocations WHERE idempotency_key=?', (key,)).fetchone()
             if existing is not None:
                 return self._row(existing)
+            devices = set((spec or {}).get('gpu_devices') or [])
+            if devices:
+                # Exclusive device reservation: experiments never share a GPU with serving
+                # or with another experiment on the same provider.
+                for row in db.execute('SELECT id, spec FROM allocations WHERE provider=? AND state IN (?,?,?,?)',
+                                      (provider, *LIVE_STATES, 'orphaned')).fetchall():
+                    held = set((json.loads(row['spec']) or {}).get('gpu_devices') or [])
+                    if held & devices:
+                        raise ResourceConflict(f'devices {sorted(held & devices)} held by allocation {row["id"]}')
             now = self.store.clock()
             alloc_id = 'alloc-' + uuid.uuid4().hex[:20]
             db.execute('INSERT INTO allocations(id,idempotency_key,job_id,step_key,worker_id,provider,resource_type,'

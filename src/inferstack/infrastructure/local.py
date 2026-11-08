@@ -1,10 +1,17 @@
 """Attached-host process provider with verifiable process identity.
 
 Each launched process gets INFERSTACK_ALLOCATION_ID in its environment and runs
-in its own session (process group). Identity is (host, pid, pgid, start token);
+in its own session (process group). Identity is (host, pid, pgid, start token,
+allocation id);
 the start token is the kernel start time from /proc on Linux or `ps lstart` on
 macOS, so a reused PID is never mistaken for our process. A launch whose identity
 was not recorded before a crash can still be found by scanning for the tag.
+
+An allocation is the whole process group plus every process carrying its tag,
+not just the leader: engines fork workers, and a launcher may exit while its
+children keep the GPU. `stop` is confirmed only when no member remains. A process
+group id cannot be reused while the group has members, so killing the group of a
+recorded pgid cannot hit an unrelated process.
 """
 from __future__ import annotations
 
@@ -44,16 +51,22 @@ class LocalProcessProvider:
 
     def __init__(self, host=None):
         self.host = host or socket.gethostname()
+        self._allocation_of = {}
 
     def external_for(self, pid):
-        return {'host': self.host, 'pid': pid, 'pgid': os.getpgid(pid), 'start': _start_token(pid)}
+        external = {'host': self.host, 'pid': pid, 'pgid': os.getpgid(pid), 'start': _start_token(pid)}
+        if pid in self._allocation_of:
+            external['allocation_id'] = self._allocation_of[pid]
+        return external
 
     async def spawn(self, alloc_id, argv, log, env=None, inherit_env=True):
         """Launch tagged in a new session. With inherit_env=False the child gets exactly
         `env` (plus the tag): no worker credentials leak into candidates."""
         child_env = {**(os.environ if inherit_env else {}), **(env or {}), TAG: alloc_id}
-        return await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, env=child_env,
-                                                    start_new_session=True)
+        process = await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, env=child_env,
+                                                       start_new_session=True)
+        self._allocation_of[process.pid] = alloc_id
+        return process
 
     def owns(self, external):
         return isinstance(external, dict) and external.get('host') == self.host
@@ -91,20 +104,63 @@ class LocalProcessProvider:
                 found.append(int(line.split()[0]))
         return found
 
+    @staticmethod
+    def group_members(pgid):
+        """Live, non-zombie PIDs in a process group."""
+        if not pgid:
+            return []
+        try:
+            out = subprocess.run(['ps', '-ax', '-o', 'pid=,pgid=,stat='], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None  # unknown: never reported as empty
+        if out.returncode != 0:
+            return None
+        members = []
+        for line in out.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[1] == str(pgid) and not parts[2].startswith('Z'):
+                members.append(int(parts[0]))
+        return members
+
+    def members(self, external):
+        """Every live process belonging to the allocation, or None when membership is unknown."""
+        group = self.group_members(external.get('pgid'))
+        if group is None:
+            return None
+        tagged = self.find_tagged(external['allocation_id']) if external.get('allocation_id') else []
+        found = set(group) | set(tagged)
+        if self.alive(external):
+            found.add(external['pid'])
+        found.discard(os.getpid())
+        return sorted(found)
+
+    def residual(self, external):
+        """True when any member of the allocation is still running (or membership is unknown)."""
+        members = self.members(external)
+        return members is None or bool(members)
+
     def stop(self, external, grace_seconds=10.0):
-        """Terminate the process group; True only when the identified process is gone."""
-        if not self.alive(external):
+        """Terminate the whole allocation; True only when no member process remains."""
+        if not self.residual(external):
             return True
         for sig, wait in ((signal.SIGTERM, grace_seconds), (signal.SIGKILL, 5.0)):
+            members = self.members(external) or []
             try:
                 os.killpg(external['pgid'], sig)
             except ProcessLookupError:
-                return True
+                pass
             except PermissionError:
                 return False
+            for pid in members:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    return False
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline:
-                if not self.alive(external):
+                if not self.residual(external):
                     return True
                 time.sleep(0.05)
-        return not self.alive(external)
+        return not self.residual(external)

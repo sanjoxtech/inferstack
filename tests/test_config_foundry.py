@@ -5,7 +5,8 @@ from inferstack.foundry import FileSystemFoundryRepository,FoundryModelLoader
 
 
 def test_version_and_default_fusion_profile():
-    assert __version__=='1.6.0'
+    from importlib.metadata import version
+    assert __version__==version('inferstack')
     c=load_profile('configs/profiles/production-v1.6.0.toml')
     assert c.scheduler.decode_priority and c.native.live_batch_refill
     assert c.native.forward_fusion and c.native.fuse_mlp_gate_up and c.native.fuse_gdn_projections

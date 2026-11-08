@@ -215,6 +215,19 @@ class Store:
                  'error': json.loads(r['error']) if r['error'] else None}
                 for r in db.execute('SELECT * FROM job_steps WHERE job_id=? ORDER BY started_at,step_key', (job_id,))]
 
+    def step_succeeded(self, job_id, step_key):
+        """Read-only: the stored result of a succeeded step, or a sentinel when it has not succeeded.
+
+        Reading a durable result spends no budget, so a restarted worker can
+        rehydrate history before deciding whether new work may start.
+        """
+        with self.connection() as db:
+            row = db.execute('SELECT state,result FROM job_steps WHERE job_id=? AND step_key=?',
+                             (job_id, step_key)).fetchone()
+        if row is None or row['state'] != 'succeeded':
+            return False, None
+        return True, json.loads(row['result']) if row['result'] else None
+
     def step_begin(self, job_id, token, step_key, *, idempotent, worker_id=None):
         """Returns {'action': 'reuse'|'run'|'ambiguous', ...}.
 

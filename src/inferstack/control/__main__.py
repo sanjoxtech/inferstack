@@ -31,7 +31,10 @@ def main():
             from inferstack.releases.rollout import http_observer
             observer=http_observer(repo,os.environ['INFERSTACK_GATEWAY_URL'],
                                    os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
-        app=create_control_app(repo,token,rollout_observer=observer) if args.action=='serve' else create_gateway(repo,token)
+        from inferstack.releases.attestation import release_attestor
+        attest=release_attestor(repo)
+        app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest) if args.action=='serve' \
+            else create_gateway(repo,token)
         uvicorn.run(app,host=args.host,port=args.port)
     elif args.action=='retention':
         from inferstack.contracts.redaction import RetentionPolicy

@@ -16,12 +16,18 @@ class ReleaseManager:
         evidence=json.loads(self.repository.read_artifact(evidence_ref['sha256']))
         if evidence['verdict']['decision']!='keep' or evidence['candidate']!=candidate:
             raise ValueError('evidence does not verify candidate')
+        # The release must be covered by the bound verification policy: every
+        # required gate recorded True in the evidence itself.
+        policy=evidence.get('policy') or {}
+        required=policy.get('required') or []
+        if not required or any(evidence.get('gates',{}).get(g) is not True for g in required):
+            raise ValueError('evidence does not cover its verification policy')
         record=self.repository.read('deployment',candidate['deployment_id'])
         digest=hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest()
         if record['revision']!=candidate['revision'] or digest!=candidate['spec_sha256']:
             raise ValueError('deployment changed after verification')
         manifest={'deployment':record,'evidence':evidence_ref,'job_id':job_id,
-                  'verification_scope':evidence['scope']}
+                  'verification_scope':evidence['scope'],'verification_policy_sha256':policy.get('sha256')}
         artifact=self.repository.artifact(self.repository.encode(manifest).encode())
         identifier=artifact['sha256']
         # Idempotent by immutable manifest digest.

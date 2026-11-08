@@ -64,7 +64,11 @@ async def test_stages_advance_only_on_evidence_then_promote(env):
     assert await c.step('r1') == 'promoted'
     assert repo.read('route', 'm')['body'] == {'stable': 'rel-cand', 'candidate': None, 'weight': 0,
                                                'previous': 'rel-stable'}
-    states = [(h['body']['state'], h['body']['current_stage']) for h in repo.history('rollout', 'r1')]
+    history = repo.history('rollout', 'r1')
+    # Each route change is two-phase: an intent revision precedes the committed one.
+    intents = [h for h in history if h['body'].get('transition')]
+    assert len(intents) == 4 and all(h['body']['transition']['route'] for h in intents)
+    states = [(h['body']['state'], h['body']['current_stage']) for h in history if not h['body'].get('transition')]
     assert states == [('pending', 0), ('progressing', 0), ('progressing', 1), ('progressing', 2), ('promoted', 2)]
     assert await c.step('r1') == 'promoted'  # terminal is stable
 
@@ -119,7 +123,10 @@ def test_real_gateway_failures_trigger_rollback(tmp_path, servers):  # noqa: F81
     setup_release(repo, base_urls=(stable_url, cand_url))
     admission = AdmissionController(failure_threshold=1000)
     with GatewayServer(create_gateway(repo, 'gw', admission=admission)) as gw:
-        control = TestClient(create_control_app(repo, 'ctl', rollout_observer=http_observer(repo, gw, 'gw')))
+        async def attested(release):  # attestation itself is covered in test_attestation.py
+            return {'status': 'attested', 'checks': {}}
+        control = TestClient(create_control_app(repo, 'ctl', rollout_observer=http_observer(repo, gw, 'gw'),
+                                                rollout_attest=attested))
         h = {'Authorization': 'Bearer ctl'}
         started = control.post('/control/rollouts', headers=h, json={
             'rollout_id': 'r1', 'model': 'm', 'release_id': 'rel-cand', 'min_requests': 5,

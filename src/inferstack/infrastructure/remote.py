@@ -25,6 +25,9 @@ import subprocess
 import time
 
 LABEL = 'inferstack.allocation'
+INSTANCE_LABEL = 'inferstack.instance'
+# Every kind an allocation may own; discovery and cleanup cover all of them.
+K8S_KINDS = ('deployment', 'replicaset', 'pod', 'service', 'networkpolicy')
 _NAME = re.compile(r'[^a-z0-9-]')
 
 
@@ -119,7 +122,8 @@ class KubernetesProvider(_CLIProvider):
         image = spec['image']
         if not re.search(r'@sha256:[0-9a-f]{64}$', image):
             raise ValueError('container image must be pinned by digest (image@sha256:...)')
-        name, labels = k8s_name(alloc_id), {LABEL: alloc_id, 'app.kubernetes.io/managed-by': 'inferstack'}
+        name = k8s_name(alloc_id)
+        labels = {LABEL: alloc_id, INSTANCE_LABEL: name, 'app.kubernetes.io/managed-by': 'inferstack'}
         port = int(spec['container_port'])
         resources = {'limits': {'memory': spec.get('memory', '32Gi'), 'cpu': str(spec.get('cpu', 8))},
                      'requests': {'memory': spec.get('memory', '32Gi'), 'cpu': str(spec.get('cpu', 8))}}
@@ -159,7 +163,7 @@ class KubernetesProvider(_CLIProvider):
         _, out, _ = self.run(self.base + ['get', 'deployment', k8s_name(alloc_id), '-o', 'json'])
         meta = json.loads(out)['metadata']
         return {'provider': self.name, 'namespace': self.namespace, 'name': meta['name'], 'uid': meta['uid'],
-                'service': f"{meta['name']}.{self.namespace}.svc"}
+                'service': f"{meta['name']}.{self.namespace}.svc", 'allocation_id': alloc_id}
 
     def owns(self, external):
         return isinstance(external, dict) and external.get('provider') == self.name and \
@@ -178,14 +182,69 @@ class KubernetesProvider(_CLIProvider):
         _, out, _ = self.run(self.base + ['get', 'deployment', '-l', f'{LABEL}={alloc_id}', '-o', 'json'])
         return [item['metadata']['name'] for item in json.loads(out).get('items', [])]
 
+    def _selector(self, external):
+        if external.get('allocation_id'):
+            return f"{LABEL}={external['allocation_id']}"
+        return f"{INSTANCE_LABEL}={external['name']}"
+
+    def _list(self, kind, external):
+        code, out, _ = self.run(self.base + ['get', kind, '-l', self._selector(external), '-o', 'json'], check=False)
+        if code != 0:
+            return None
+        try:
+            return json.loads(out).get('items', [])
+        except (ValueError, AttributeError):
+            return None
+
+    def pods(self, external):
+        """Non-terminated Pods of this allocation's Deployment UID; None when the API cannot answer.
+
+        A Pod whose owner chain (Pod -> ReplicaSet -> Deployment) leads to a
+        different Deployment UID belongs to a same-name replacement, not to us.
+        Pods without owner references are counted as ours (conservative).
+        """
+        pods = self._list('pods', external)
+        if pods is None:
+            return None
+        try:
+            sets = self._list('replicasets', external) or []
+        except Exception:  # noqa: BLE001 - unknown ownership only makes cleanup more conservative
+            sets = []
+        foreign_sets = {r['metadata'].get('uid') for r in sets
+                        if any(o.get('kind') == 'Deployment' and o.get('uid') != external['uid']
+                               for o in r['metadata'].get('ownerReferences') or [])}
+        live = []
+        for pod in pods:
+            owners = pod.get('metadata', {}).get('ownerReferences') or []
+            if any(o.get('kind') == 'ReplicaSet' and o.get('uid') in foreign_sets for o in owners):
+                continue
+            if (pod.get('status') or {}).get('phase') not in ('Succeeded', 'Failed'):
+                live.append(pod)
+        return live
+
+    def residual(self, external):
+        """True while the Deployment or any of its Pods (GPU work) still exists, or when unknown."""
+        pods = self.pods(external)
+        return self.alive(external) or pods is None or bool(pods)
+
     def stop(self, external, grace_seconds=30.0):
-        if not self.alive(external):
-            return True
-        for kind in ('deployment', 'service', 'networkpolicy'):
-            self.run(self.base + ['delete', kind, external['name'], '--ignore-not-found', '--wait=false'], check=False)
+        """Delete the allocation's objects and wait for its Pods to terminate.
+
+        Deleting a Deployment only starts garbage collection; ReplicaSets and Pods
+        (holding GPUs) may keep running. Release is confirmed only when the
+        Deployment is gone and no non-terminated Pod with the allocation label remains.
+        A same-name object with a different UID is not ours and is never deleted.
+        """
+        code, out, _ = self.run(self.base + ['get', 'deployment', external['name'], '-o', 'json'], check=False)
+        if code == 0 and json.loads(out)['metadata']['uid'] == external['uid']:
+            for kind in ('deployment', 'service', 'networkpolicy'):
+                self.run(self.base + ['delete', kind, external['name'], '--ignore-not-found', '--wait=false',
+                                      '--cascade=foreground'], check=False)
         deadline = time.monotonic() + grace_seconds
-        while time.monotonic() < deadline:
-            if not self.alive(external):
+        while True:
+            pods = self.pods(external)
+            if not self.alive(external) and pods == []:
                 return True
-            time.sleep(0.5)
-        return not self.alive(external)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))

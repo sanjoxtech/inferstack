@@ -45,13 +45,24 @@ def ulp_error(value, oracle, dtype):
 
 
 def check(name, value, oracle, *, dtype, max_ulp=1.0, max_mean_ulp=0.5, reference=None):
+    oracle_finite = bool(np.all(np.isfinite(as_array(oracle))))
     errors = ulp_error(value, oracle, dtype)
     result = {'check': name, 'dtype': dtype, 'max_ulp': float(errors.max()), 'mean_ulp': float(errors.mean()),
               'frac_over_1ulp': float((errors > 1.0 + 1e-9).mean()), 'bound_max_ulp': max_ulp,
               'bound_mean_ulp': max_mean_ulp, 'elements': int(errors.size)}
+    if errors.size == 0 or not oracle_finite or not np.all(np.isfinite(errors)):
+        # Non-finite candidate/oracle values or an empty comparison can never pass,
+        # including through the no-worse-than-reference branch (inf <= inf).
+        result.update({'basis': 'nonfinite' if errors.size else 'empty', 'pass': False})
+        return result
     within = math.isfinite(result['max_ulp']) and result['max_ulp'] <= max_ulp and result['mean_ulp'] <= max_mean_ulp
     if reference is not None:
         ref = ulp_error(reference, oracle, dtype)
+        if not np.all(np.isfinite(ref)):
+            result.update({'reference_max_ulp': None, 'reference_mean_ulp': None})
+            result['basis'] = 'ulp_bound' if within else 'failed'
+            result['pass'] = bool(within)
+            return result
         result.update({'reference_max_ulp': float(ref.max()), 'reference_mean_ulp': float(ref.mean())})
         no_worse = result['max_ulp'] <= result['reference_max_ulp'] + 1e-9 and \
             result['mean_ulp'] <= result['reference_mean_ulp'] + 1e-9
@@ -66,6 +77,9 @@ def check(name, value, oracle, *, dtype, max_ulp=1.0, max_mean_ulp=0.5, referenc
 def check_relative(name, value, oracle, *, max_rel=1e-4, floor=1e-6):
     """For FP32-computed outputs (e.g. recurrent state): max relative error with an absolute floor."""
     v, o = as_array(value), as_array(oracle)
+    if v.size == 0 or not (np.all(np.isfinite(v)) and np.all(np.isfinite(o))):
+        return {'check': name, 'dtype': 'float32', 'max_rel': None, 'mean_rel': None, 'bound_max_rel': max_rel,
+                'elements': int(v.size), 'pass': False, 'basis': 'nonfinite' if v.size else 'empty'}
     rel = np.abs(v - o) / np.maximum(np.abs(o), floor)
     result = {'check': name, 'dtype': 'float32', 'max_rel': float(rel.max()), 'mean_rel': float(rel.mean()),
               'bound_max_rel': max_rel, 'elements': int(rel.size)}

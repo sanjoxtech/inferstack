@@ -364,6 +364,7 @@ class Release(Record):
     evidence: ArtifactRef
     job_id: str
     verification_scope: str
+    verification_policy_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
 
     def references(self):
         snapshot = self.deployment
@@ -421,6 +422,16 @@ class RolloutV2(Rollout):
     observations: dict = Field(default_factory=dict)
 
 
+class RolloutV3(RolloutV2):
+    """v3: route ownership, two-phase transition intent and retained stable baseline."""
+    VERSION = 3
+    state: Literal['pending', 'progressing', 'paused', 'promoted', 'rolled_back', 'failed', 'conflict'] = 'pending'
+    route_revision: int | None = Field(default=None, ge=1)
+    route_body: dict | None = None
+    transition: dict | None = None
+    stable_baseline: dict | None = None
+
+
 # --- allocation, feedback -------------------------------------------------------
 
 class Budget(BaseModel):
@@ -464,7 +475,7 @@ class InferenceIssue(Record):
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
 for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
              Technique, TechniqueV2,
-             Plan, Trial, Release, Route, Rollout, RolloutV2, ResourceAllocation, InferenceIssue):
+             Plan, Trial, Release, Route, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}
 

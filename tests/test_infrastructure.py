@@ -80,8 +80,9 @@ class FakeKubectl:
             return 0, 'applied', ''
         if verb == 'get' and '-l' in args:
             label = args[args.index('-l') + 1].split('=', 1)[1]
+            wanted = {'pods': 'pod', 'replicasets': 'replicaset'}.get(args[1], args[1])
             items = [o for (kind, _), o in self.objects.items()
-                     if kind == 'deployment' and o['metadata']['labels'].get(LABEL) == label]
+                     if kind == wanted and o['metadata']['labels'].get(LABEL) == label]
             return 0, json.dumps({'items': items}), ''
         if verb == 'get':
             obj = self.objects.get((args[1], args[2]))

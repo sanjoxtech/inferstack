@@ -67,6 +67,11 @@ class OptimizationWorker:
                                                {'allocations': len(live), 'outcomes': outcomes})
 
     async def step(self, job, step_key, fn, *, idempotent):
+        # Durable results are reused before budget checks: rehydrating history after a
+        # restart must not be blocked by a budget that the original work consumed.
+        done, result = self.repository.step_succeeded(job['id'], step_key)
+        if done:
+            return result
         exhausted = self.repository.exhausted(job['id'])
         if exhausted:
             raise BudgetExhausted('budget exhausted: ' + ','.join(exhausted))

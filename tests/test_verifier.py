@@ -111,14 +111,17 @@ def servers():
         p.wait()
 
 
-async def run_verifier(tmp_path, servers, *, answer='four', candidate_hw=None, baseline_hw=None):
+async def run_verifier(tmp_path, servers, *, answer='four', candidate_hw=None, baseline_hw=None, model_ref='qwen'):
     repo = Repository(tmp_path / 'db', tmp_path / 'a')
     for hw in {candidate_hw, baseline_hw} - {None}:
         repo.put_record('hardware', hw, {'provider': 'colab', 'observed_at': 1.0, 'gpus': []})
+    if model_ref:
+        repo.put_record('model', model_ref, {'source': 'huggingface', 'repo_id': 'Qwen/x', 'revision': 'b' * 40})
     repo.put_record('deployment', 'base', {'id': 'base', 'engine': 'generic_openai', 'model': 'm',
-                                           'base_url': servers(), 'hardware_ref': baseline_hw})
+                                           'base_url': servers(), 'hardware_ref': baseline_hw, 'model_ref': model_ref})
     repo.put_record('deployment', 'cand', {'id': 'cand', 'engine': 'generic_openai', 'model': 'm',
-                                           'base_url': servers(answer), 'hardware_ref': candidate_hw})
+                                           'base_url': servers(answer), 'hardware_ref': candidate_hw,
+                                           'model_ref': model_ref})
     executor = EndpointExecutor(repo, tmp_path / 'logs')
     cases = [{'prompt': '2+2', 'expected': 'four', 'max_tokens': 4}]
     verifier = EndpointVerifier(repo, executor, 'base', cases, [{'metric': 'e2e_ms', 'direction': 'min'}], repeats=3)
@@ -132,7 +135,7 @@ async def run_verifier(tmp_path, servers, *, answer='four', candidate_hw=None, b
 
 @pytest.mark.asyncio
 async def test_gates_are_computed_and_trials_recorded(tmp_path, servers):
-    repo, verdict = await run_verifier(tmp_path, servers)
+    repo, verdict = await run_verifier(tmp_path, servers, baseline_hw='a100', candidate_hw='a100')
     assert verdict['gates'] == GATES and verdict['decision'] in {'keep', 'reject', 'retest', 'inconclusive'}
     assert len(verdict['trial_refs']) == 6
     trial = repo.read_typed('trial', 'exp-candidate-0')
@@ -140,7 +143,17 @@ async def test_gates_are_computed_and_trials_recorded(tmp_path, servers):
     assert repo.read_typed('trial', 'exp-baseline-2').deployment_ref == 'base@1'
     evidence = json.loads(repo.read_artifact(verdict['evidence']['sha256']))
     assert evidence['verifier']['code_sha256'] == VERIFIER_CODE_SHA256 and len(evidence['verifier']['fixture_sha256']) == 64
-    assert evidence['comparability']['hardware'] == 'unrecorded'
+    assert evidence['comparability']['hardware_ref'] == 'same' and evidence['identity']['hardware_ref'] == ['a100@1'] * 2
+    assert evidence['policy']['required'] == sorted(GATES) and len(evidence['policy']['sha256']) == 64
+
+
+@pytest.mark.asyncio
+async def test_missing_identity_is_not_comparable(tmp_path, servers):
+    # V04: absent hardware or model identity is unknown, never proven comparability.
+    _, no_hw = await run_verifier(tmp_path / 'a', servers)
+    assert no_hw['gates']['comparable'] is None and no_hw['decision'] == 'inconclusive'
+    _, no_model = await run_verifier(tmp_path / 'b', servers, baseline_hw='a100', candidate_hw='a100', model_ref=None)
+    assert no_model['gates']['comparable'] is None and no_model['decision'] == 'inconclusive'
 
 
 @pytest.mark.asyncio

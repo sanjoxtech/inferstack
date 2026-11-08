@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inferstack"
-version = "2.0.0rc1"
+dynamic = ["version"]
 description = "InferStack v1.6 Qwen forward-fusion inference engine"
 requires-python = ">=3.10"
 dependencies = ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2.8", "httpx>=0.27", "packaging>=23", "numpy>=1.26", "tomli>=2.0; python_version < '3.11'"]
@@ -18,6 +18,9 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 inferstack = "inferstack.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "inferstack.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

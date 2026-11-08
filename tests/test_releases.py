@@ -29,7 +29,9 @@ def test_release_pins_evidence_and_rejects_mutation(tmp_path):
     repo.put('deployment','d',spec)
     candidate={'id':'attempt','deployment_id':'d','revision':1,
                'spec_sha256':hashlib.sha256(repo.encode(spec).encode()).hexdigest()}
-    evidence={'verdict':{'decision':'keep'},'candidate':candidate,'scope':'test exact-match suite'}
+    gates={'correctness':True,'quality':True,'health':True,'comparable':True,'complete':True}
+    evidence={'verdict':{'decision':'keep'},'candidate':candidate,'scope':'test exact-match suite','gates':gates,
+              'policy':{'required':sorted(gates),'sha256':'e'*64}}
     artifact=repo.artifact(repo.encode(evidence).encode())
     job=repo.submit('a',{})
     lease=repo.claim()
@@ -41,3 +43,22 @@ def test_release_pins_evidence_and_rejects_mutation(tmp_path):
     repo.put('deployment','d',{**spec,'base_url':'http://changed'},1)
     with pytest.raises(ValueError,match='changed'):manager.create(job)
     assert repo.read('release',release)['body']['deployment']['body']==spec
+
+
+def test_release_requires_evidence_covering_its_policy(tmp_path):
+    """V02: a keep whose evidence lacks a required policy gate cannot become a release."""
+    import hashlib
+    repo=Repository(tmp_path/'db',tmp_path/'artifacts')
+    spec={'id':'d','model':'m','engine':'generic_openai','base_url':'http://candidate'}
+    repo.put('deployment','d',spec)
+    candidate={'id':'attempt','deployment_id':'d','revision':1,
+               'spec_sha256':hashlib.sha256(repo.encode(spec).encode()).hexdigest()}
+    gates={'correctness':True,'quality':True,'health':True,'comparable':True,'complete':True,'overload':None}
+    evidence={'verdict':{'decision':'keep'},'candidate':candidate,'scope':'s','gates':gates,
+              'policy':{'required':sorted(gates),'sha256':'e'*64}}
+    artifact=repo.artifact(repo.encode(evidence).encode())
+    job=repo.submit('a',{})
+    lease=repo.claim()
+    repo.finish(job,lease['lease_token'],{'decision':'keep','experiments':[
+        {'candidate':candidate,'verdict':{'decision':'keep','evidence':artifact}}]})
+    with pytest.raises(ValueError,match='verification policy'):ReleaseManager(repo).create(job)
