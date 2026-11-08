@@ -626,8 +626,8 @@ every acceptance probe passes. Some were checked live this time (details below).
   server); `docs/verification/v2_contract_probes.py`: 15/15 passed; CPU
   `v2_qualify.py` correctly `not_qualified` (no GPU).
 - Live: Docker daemon lifecycle (`tests/test_docker_live.py`); OpenRouter and
-  DeepSeek planning smoke (DeepSeek 1 of 2 runs valid); hosted PostgreSQL run
-  recorded below.
+  DeepSeek planning smoke (DeepSeek 1 of 2 runs valid); hosted PostgreSQL 18.6
+  (Neon, direct endpoint): 13/13 PostgreSQL variants passed, no test databases left.
 - Behavior changes operators will notice: rollouts through the API need an
   attestor; verdicts need pinned `hardware_ref` and `model_ref` on both
   deployments; plan gates the verifier cannot run make the verdict inconclusive;

@@ -412,7 +412,9 @@ Live evidence gathered in this pass (not CPU doubles):
   (6,875 tokens). DeepSeek (`deepseek-chat`) produced a validated plan (18,794 tokens)
   on one of two runs after the metric-list fix; the other exhausted 8 rounds. Treat
   DeepSeek planning as working but not yet reliable.
-- PostgreSQL: see the handoff ledger for the hosted-PostgreSQL run.
+- PostgreSQL 18.6 (hosted Neon, direct TLS endpoint): all 13 PostgreSQL store/lease/
+  fencing variants passed (26/26 with SQLite, 671 s over the network); the fixture
+  now drops every test database (0 left behind).
 
 Still open (unchanged by this pass): GPU qualification (native, vLLM, SGLang,
 kernel equivalence on A100), Kubernetes cluster run, candidate image build
