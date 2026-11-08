@@ -378,6 +378,42 @@ missing metrics as `null` and gives each lane a judge verdict (three runs per
 side required; single runs are `inconclusive_single_run`). The Colab matrix
 reports `liveness_pass` only and states that it makes no performance claim.
 
+## Infrastructure providers and spend
+
+Choose where candidates run in the worker config:
+
+```json
+"infrastructure": {
+  "provider": "kubernetes",
+  "kubernetes": {"namespace": "inferstack-exp", "context": "gke-a100", "egress_cidrs": ["10.20.0.0/16"]},
+  "gpu_name": "NVIDIA A100-SXM4-40GB",
+  "prices": {"kubernetes/NVIDIA A100-SXM4-40GB": {"usd_per_gpu_hour": 3.67, "source": "GCP on-demand quote", "as_of": "2026-11-01"}}
+}
+```
+
+`provider` is `local` (default), `docker` or `kubernetes`. Remote candidates
+declare `profile.container` on their deployment record: `image` pinned by digest
+(`repo@sha256:…`), `container_port`, `host_port` (Docker), `gpus`, `args`, and
+optionally `memory`, `cpu`, `node_selector`, `read_only_mounts`. The
+deployment's `base_url` must point at the published port or the Service. The
+executor launches through the provider, then attaches and waits for readiness
+(default 900 s); cleanup deletes the container or the Deployment, Service and
+NetworkPolicy and releases the allocation.
+
+Hardening applied by default — Docker: read-only root, `--cap-drop ALL`,
+no-new-privileges, PID and memory limits, explicit GPU devices, port bound to
+127.0.0.1. Kubernetes: non-root, no privilege escalation, read-only root, no
+service-account token, GPU requests/limits, NetworkPolicy with DNS-only egress
+plus `egress_cidrs` (pre-stage weights or allow your model cache). Reconciliation
+finds resources by the `inferstack.allocation` label and only deletes objects
+whose UID matches the recorded identity, so a recreated object with the same
+name is never removed.
+
+Spend: prices are operator configuration with a source and date, stamped on each
+allocation. Spend = active time x GPUs x price and counts against `spend_usd`. A
+job with a spend budget whose allocation has no known price is treated as
+exhausted. Verify current provider prices before relying on them.
+
 ## Release and route
 
 A kept experiment can create a manifest via

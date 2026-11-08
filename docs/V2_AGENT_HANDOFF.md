@@ -551,3 +551,22 @@ NOT yet run on GPU (J); its oracle library is tested on CPU with emulated BF16.
   quality oracle and semantic quality budgets for non-exact workloads; streaming
   TPOT and tail percentiles in the endpoint verifier; cancellation/overload
   probes as gates.
+
+### Package H — infrastructure providers and spend
+
+Status: implemented, CPU-tested with stateful Docker/kubectl CLI doubles (the
+Docker double runs real engine processes). NOT cloud-tested: no Docker daemon
+or Kubernetes cluster was available; live GKE/EKS/Colab qualification is J.
+
+- `infrastructure/remote.py`: DockerProvider and KubernetesProvider with
+  digest-pinned images, hardening defaults, allocation labels, UID identity,
+  label-based discovery and verified deletion; compatible with the reconciler.
+- `infrastructure/pricing.py`: price table with provenance, stamped on
+  allocations; spend derived in the store; unknown price exhausts spend budgets.
+- Executor launch-and-attach path for remote providers with readiness timeout
+  and release on failure; worker config selects provider and prices.
+- Checks: 173 CPU tests passed (5 new in `tests/test_infrastructure.py`),
+  including reconciliation that refuses to delete a same-name object with a new
+  UID.
+- Remaining: live cluster runs; GPU scheduling quotas and node pools; cloud
+  billing API reconciliation; image build pipeline for patched candidates.

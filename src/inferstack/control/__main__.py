@@ -38,7 +38,21 @@ def main():
             from inferstack.infrastructure import AllocationManager,LocalProcessProvider,reconcile
             lease=config.get('lease_seconds',30)
             worker_id=repo.register_worker(lease)
-            provider=LocalProcessProvider()
+            infra=config.get('infrastructure',{})
+            kind=infra.get('provider','local')
+            if kind=='docker':
+                from inferstack.infrastructure.remote import DockerProvider
+                provider=DockerProvider(**infra.get('docker',{}))
+            elif kind=='kubernetes':
+                from inferstack.infrastructure.remote import KubernetesProvider
+                provider=KubernetesProvider(**infra['kubernetes'])
+            elif kind=='local':
+                provider=LocalProcessProvider()
+            else:parser.error(f'unknown infrastructure provider {kind}')
+            pricing=None
+            if infra.get('prices'):
+                from inferstack.infrastructure.pricing import PriceTable
+                pricing=PriceTable(infra['prices'])
             # Resolve resources left by dead workers before taking new work.
             for action in reconcile(repo,provider):print(json.dumps({'reconciled':action}))
             allocations=AllocationManager(repo,worker_id)
@@ -49,7 +63,8 @@ def main():
                 planner=ToolPlanner(repo,create_provider(config['provider']),**config['planner'])
             else:
                 planner=ProviderPlanner(repo,**config['planner'])
-            executor=EndpointExecutor(repo,state/'logs',allocations=allocations,provider=provider)
+            executor=EndpointExecutor(repo,state/'logs',allocations=allocations,provider=provider,
+                                      pricing=pricing,gpu_name=infra.get('gpu_name'))
             verifier=EndpointVerifier(repo,executor,**config['verifier'])
             try:
                 result=await OptimizationWorker(repo,planner,executor,verifier,lease_seconds=lease,

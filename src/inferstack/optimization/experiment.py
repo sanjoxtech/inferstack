@@ -18,7 +18,9 @@ class EndpointExecutor:
     """
     accepts_context = True
 
-    def __init__(self, repository, log_root, engine_factory=ManagedEngine, *, allocations=None, provider=None):
+    def __init__(self, repository, log_root, engine_factory=ManagedEngine, *, allocations=None, provider=None,
+                 pricing=None, gpu_name=None, ready_timeout=900):
+        self.pricing,self.gpu_name,self.ready_timeout=pricing,gpu_name,ready_timeout
         self.repository=repository
         self.log_root=Path(log_root)
         self.engine_factory=engine_factory
@@ -30,9 +32,10 @@ class EndpointExecutor:
     def _spawner(self, context, spec, env=None):
         if self.allocations is None or not spec.command or context is None:return None
         async def spawn(argv, log):
+            gpus=context.get('gpu_count',0)
             alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
                 provider=self.provider.name, resource_type=self.provider.resource_type,
-                spec={'deployment_id':spec.id,'argv':argv}, gpu_count=context.get('gpu_count',0))
+                spec={'deployment_id':spec.id,'argv':argv,**self._price(gpus)}, gpu_count=gpus)
             if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
             process=await self.provider.spawn(alloc['id'], argv, log, env=env, inherit_env=env is None)
             self.allocations.faults('process_started')
@@ -53,8 +56,44 @@ class EndpointExecutor:
         if record['revision']!=plan['candidate_revision']:raise ValueError('candidate changed after planning')
         return await self.launch(record, plan, namespace, context)
 
+    def _price(self, gpus):
+        if self.pricing is None:
+            return {'price': None} if gpus else {}
+        return self.pricing.stamp(self.provider.name, self.gpu_name or '', gpus)
+
+    async def _launch_remote(self, record, spec, namespace, context, extra):
+        """Container/Kubernetes: launch through the provider, then attach and wait for readiness."""
+        container=dict((record['body'].get('profile') or {}).get('container') or {})
+        if not container:raise ValueError('remote providers need profile.container (image@sha256, ports, args)')
+        gpus=int(container.get('gpus') if isinstance(container.get('gpus'),int) else len(container.get('gpus') or []))
+        alloc=self.allocations.intent(context['job'],context['step_key'],purpose='candidate:'+spec.id,
+            provider=self.provider.name,resource_type=self.provider.resource_type,
+            spec={'deployment_id':spec.id,'container':container,**self._price(gpus)},gpu_count=gpus)
+        external=self.provider.launch(alloc['id'],container)
+        self.allocations.record_external(alloc['id'],external)
+        self.owned[namespace]=(alloc['id'],external)
+        self.allocations.activate(alloc['id'],context['job'],external)
+        engine=self.engine_factory(DeploymentSpec.from_record({**record['body'],'command':[]}))
+        deadline=time.monotonic()+self.ready_timeout
+        try:
+            while not await engine.ready():
+                if time.monotonic()>deadline or not self.provider.alive(external):
+                    raise RuntimeError(f'{self.provider.name} candidate {spec.id} did not become ready')
+                await asyncio.sleep(2)
+        except BaseException:
+            await engine.close()
+            self._release(namespace,'launch_failed')
+            raise
+        self.active[namespace]=engine
+        return {'id':namespace,'deployment_id':spec.id,'revision':record['revision'],'external':external,
+                'spec_sha256':hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest(),**(extra or {})}
+
     async def launch(self, record, plan, namespace, context, env=None, extra=None):
         spec=DeploymentSpec.from_record(record["body"])
+        if context is not None and getattr(self.provider,'launches_remotely',False):
+            baseline=self.repository.read('deployment',plan['baseline_id'])
+            if baseline['body']['model']!=spec.model:raise ValueError('candidate model mismatch')
+            return await self._launch_remote(record,spec,namespace,context,extra)
         baseline=self.repository.read('deployment',plan['baseline_id'])
         if baseline['body']['base_url'].rstrip('/')==spec.base_url.rstrip('/'):
             raise ValueError('candidate must use a separate endpoint before execution')

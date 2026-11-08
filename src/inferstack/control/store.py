@@ -266,7 +266,8 @@ class Store:
     def charge(self, job_id, token, amounts):
         """Add usage atomically under the lease. Returns the new usage totals."""
         for key, value in amounts.items():
-            if key not in BUDGET_KEYS or key in ('experiments', 'wall_seconds', 'gpu_seconds') or isinstance(value, bool) or not isinstance(value, (int, float)) \
+            if key not in BUDGET_KEYS or key in ('experiments', 'wall_seconds', 'gpu_seconds', 'spend_usd') \
+                    or isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(value) or value < 0:
                 raise ValueError(f'invalid usage charge {key}={value!r}')
         with self.transaction() as db:
@@ -284,7 +285,8 @@ class Store:
         if not job['budget']:
             return None
         usage = self._usage(job)
-        return {k: max(0.0, limit - usage.get(k, 0)) for k, limit in job['budget'].items()}
+        return {k: max(0.0, limit - usage.get(k, 0)) if math.isfinite(usage.get(k, 0)) else 0.0
+                for k, limit in job['budget'].items()}
 
     def exhausted(self, job_id):
         job = self.get(job_id)
@@ -304,10 +306,21 @@ class Store:
                                    if s['step_key'].endswith('.experiment') and s['state'] == 'succeeded')
         now = self.clock()
         with self.connection() as db:
-            rows = db.execute('SELECT active_at, released_at, gpu_count FROM allocations WHERE job_id=? '
+            rows = db.execute('SELECT active_at, released_at, gpu_count, spec FROM allocations WHERE job_id=? '
                               'AND active_at IS NOT NULL', (job_id,)).fetchall()
-        usage['gpu_seconds'] = usage.get('gpu_seconds', 0) + sum(
-            max(0.0, (r['released_at'] or now) - r['active_at']) * r['gpu_count'] for r in rows)
+        spend, unknown = 0.0, False
+        gpu_seconds = 0.0
+        for r in rows:
+            seconds = max(0.0, (r['released_at'] or now) - r['active_at']) * r['gpu_count']
+            gpu_seconds += seconds
+            price = (json.loads(r['spec']) or {}).get('price')
+            if r['gpu_count'] and not price:
+                unknown = True
+            elif price:
+                spend += seconds / 3600.0 * price['usd_per_gpu_hour']
+        usage['gpu_seconds'] = usage.get('gpu_seconds', 0) + gpu_seconds
+        # Unknown price under a spend budget is treated as exhausted, never guessed.
+        usage['spend_usd'] = math.inf if unknown else usage.get('spend_usd', 0) + spend
         return usage
 
     # --- worker registry ------------------------------------------------------
