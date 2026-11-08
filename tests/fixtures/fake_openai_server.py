@@ -35,7 +35,13 @@ def main():
     parser.add_argument('--version', default='0.11.0')
     parser.add_argument('--fail-status', type=int, default=0)
     parser.add_argument('--events', default=None)
-    args = parser.parse_args()
+    parser.add_argument('--dump-env', default=None)
+    args, unknown = parser.parse_known_args()  # engine flags (e.g. --max-num-seqs) are accepted and recorded
+    if args.dump_env:
+        import os
+        import sys
+        with open(args.dump_env, 'w') as f:
+            json.dump({'env': dict(os.environ), 'argv': sys.argv, 'executable': sys.executable, 'unknown': unknown}, f)
 
     def note(text):
         if args.events:

@@ -321,6 +321,42 @@ isolated executor (Package F) is present; until then they fail as unsupported.
 runs one real planning call and validation without contacting any serving
 endpoint.
 
+## Isolated execution (profile changes, plugins, source patches)
+
+`IsolatedExecutor` runs plans whose actions go beyond swapping in a registered
+candidate. `EndpointExecutor` refuses such plans with a clear error.
+
+- **profile_patch** (vLLM/SGLang): engine flags are mapped from the allowlisted
+  keys and replace existing values; the baseline command must contain `--port`
+  (a fresh port is assigned). Native profile patches are not yet supported.
+- **plugin_install**: `pip download --only-binary` of the exact pin into a
+  per-experiment wheelhouse (the only networked step), SHA-256 of every wheel
+  recorded, then offline install into a venv layered on the base environment
+  (`--system-site-packages`), and `pip freeze` captured. Point `pip_index_args`
+  at a mirror or `--no-index --find-links DIR` for air-gapped hosts.
+- **source_patch**: the plan must reference a stored diff (`patch_sha256`). It is
+  parsed before use: only regular source files under `src/inferstack/kernels/` or
+  `src/inferstack/runtime/` that the plan declared; no traversal, absolute paths,
+  symlinks, mode changes, binary hunks or renames out of bounds; tests, evaluator,
+  optimizer, control and execution code are never patchable. The diff is applied
+  to an export of the pinned `source_revision`; `tests/` and the evaluator are
+  then restored from that revision; touched files must compile and the declared
+  `tests` must pass, offline, before anything launches.
+- **Candidate launch**: a new deployment record snapshot (`<experiment>-candidate`)
+  with plugin refs and profile, a scrubbed environment (allowlist only; any
+  `*KEY*`, `*TOKEN*`, `*SECRET*`, … variables are dropped and refused), venv
+  first on PATH, patched source on PYTHONPATH, allocation tag and identity.
+- **Sandbox**: build/test steps run with rlimits (CPU, files, file size,
+  optional address space), wall timeout, and a private network namespace when
+  `unshare -n` is permitted (Linux as root, e.g. Colab). The isolation report on
+  each candidate says which controls applied; `Sandbox(require_network_isolation=True)`
+  refuses to run without the namespace. This is process-level isolation on an
+  attached host, not a VM/container boundary.
+- **Artifacts and cleanup**: diff, test log, wheel hashes, freeze and build log
+  are stored by hash and returned on the candidate; workspaces are deleted on
+  cleanup and on every build failure (nothing is launched and no record is
+  written for a failed build).
+
 ## Release and route
 
 A kept experiment can create a manifest via

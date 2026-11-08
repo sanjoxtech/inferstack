@@ -179,11 +179,18 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
                                        f'of {technique_id}')
             else:
                 files = p.get('files')
-                if set(p) - {'technique_id', 'files', 'description'} or not isinstance(files, list) or not files:
+                if set(p) - {'technique_id', 'files', 'description', 'patch_sha256', 'tests'} \
+                        or not isinstance(files, list) or not files:
                     raise PlanRejected(f'{action.id}: source_patch needs technique_id, files, description')
                 for path in files:
                     if not isinstance(path, str) or '..' in path.split('/') or not path.startswith(PATCH_ROOTS):
                         raise PlanRejected(f'{action.id}: patch path {path!r} outside {PATCH_ROOTS}')
+                if 'patch_sha256' in p:
+                    from inferstack.execution.patches import check_patch
+                    try:
+                        check_patch(repository.read_artifact(p['patch_sha256']).decode(), files)
+                    except (ValueError, FileNotFoundError, UnicodeDecodeError) as exc:
+                        raise PlanRejected(f'{action.id}: stored patch rejected: {exc}') from None
         elif action.type == 'measure':
             if set(p) - {'workload_ref', 'objective_ref', 'repeats'}:
                 raise PlanRejected(f'{action.id}: measure accepts workload_ref, objective_ref, repeats')

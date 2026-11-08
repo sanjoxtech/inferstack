@@ -48,8 +48,10 @@ class LocalProcessProvider:
     def external_for(self, pid):
         return {'host': self.host, 'pid': pid, 'pgid': os.getpgid(pid), 'start': _start_token(pid)}
 
-    async def spawn(self, alloc_id, argv, log, env=None):
-        child_env = {**os.environ, **(env or {}), TAG: alloc_id}
+    async def spawn(self, alloc_id, argv, log, env=None, inherit_env=True):
+        """Launch tagged in a new session. With inherit_env=False the child gets exactly
+        `env` (plus the tag): no worker credentials leak into candidates."""
+        child_env = {**(os.environ if inherit_env else {}), **(env or {}), TAG: alloc_id}
         return await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, env=child_env,
                                                     start_new_session=True)
 

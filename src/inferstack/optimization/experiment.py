@@ -26,14 +26,14 @@ class EndpointExecutor:
         self.active={}
         self.owned={}
 
-    def _spawner(self, context, spec):
+    def _spawner(self, context, spec, env=None):
         if self.allocations is None or not spec.command or context is None:return None
         async def spawn(argv, log):
             alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
                 provider=self.provider.name, resource_type=self.provider.resource_type,
                 spec={'deployment_id':spec.id,'argv':argv}, gpu_count=context.get('gpu_count',0))
             if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
-            process=await self.provider.spawn(alloc['id'], argv, log)
+            process=await self.provider.spawn(alloc['id'], argv, log, env=env, inherit_env=env is None)
             self.allocations.faults('process_started')
             external=self.provider.external_for(process.pid)
             self.allocations.record_external(alloc['id'], external)
@@ -44,8 +44,15 @@ class EndpointExecutor:
         return spawn
 
     async def execute(self, plan, namespace, context=None):
+        if any(a.get('type') in ('plugin_install','source_patch') for a in plan.get('actions',[])) or \
+                any('profile_patch' in a.get('params',{}) for a in plan.get('actions',[])):
+            raise ValueError('this executor only runs registered candidates; use IsolatedExecutor for '
+                             'profile_patch, plugin_install and source_patch actions')
         record=self.repository.read('deployment',plan['candidate_id'])
         if record['revision']!=plan['candidate_revision']:raise ValueError('candidate changed after planning')
+        return await self.launch(record, plan, namespace, context)
+
+    async def launch(self, record, plan, namespace, context, env=None, extra=None):
         spec=DeploymentSpec.from_record(record["body"])
         baseline=self.repository.read('deployment',plan['baseline_id'])
         if baseline['body']['base_url'].rstrip('/')==spec.base_url.rstrip('/'):
@@ -54,14 +61,15 @@ class EndpointExecutor:
         engine=self.engine_factory(spec)
         if context is not None:context={**context,'namespace':namespace}
         try:
-            await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec))
+            await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec,env))
         except BaseException:
             await engine.close()
             self._release(namespace,'launch_failed')
             raise
         self.active[namespace]=engine
         return {'id':namespace, 'deployment_id':spec.id, 'revision':record['revision'],
-                'spec_sha256':hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest()}
+                'spec_sha256':hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest(),
+                **(extra or {})}
 
     def _release(self, namespace, note):
         owned=self.owned.pop(namespace,None)

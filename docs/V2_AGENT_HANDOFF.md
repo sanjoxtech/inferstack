@@ -498,3 +498,30 @@ the live planning smoke test (`scripts/provider_smoke.py`) needs real keys.
 - Remaining: live DeepSeek/OpenRouter smoke runs; executor support for
   plugin_install/source_patch (F); telemetry tool wiring to live adapters in the
   CLI worker (currently reports "not configured").
+
+### Package F — isolated executor
+
+Status: implemented, CPU-tested with real processes, a real git repository, a
+real venv/pip install from a local wheelhouse and real network namespaces.
+Not tested: GPU candidates built this way, container/VM isolation (H), patch
+authoring by the provider (patches must be supplied as stored diffs).
+
+- `execution/patches.py`: diff parsing and confinement (roots, declared files,
+  source extensions, traversal/absolute/symlink/mode/binary/rename checks;
+  tests, evaluator, optimizer, control, execution never patchable). Also run
+  at planning time when a plan cites `patch_sha256`.
+- `execution/sandbox.py`: allowlisted environment with credential refusal,
+  netns via `unshare -n` (probed, reported, optionally required), rlimits and
+  wall timeout with process-group kill.
+- `execution/executor.py` `IsolatedExecutor`: profile flag mapping with port
+  relocation; plugin wheelhouse with hashes and offline venv install; pinned
+  source export, patch application, protected-path restore, compile and
+  declared tests offline; derived deployment snapshot; scrubbed launch through
+  allocation identity; artifacts by hash; cleanup on every path.
+- Provider spawn can now launch with an exact environment (no inheritance);
+  `EndpointExecutor` refuses DAG actions it cannot run.
+- Checks: 162 CPU tests passed (19 new in `tests/test_isolated_executor.py`).
+  Mutation: letting candidates inherit the worker environment fails the
+  end-to-end credential assertion.
+- Remaining: native-engine profile flags; provider-authored patches (would go
+  through the same inspection); container-level isolation and GPU limits (H).
