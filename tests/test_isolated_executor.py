@@ -117,9 +117,31 @@ def test_sandbox_limits(tmp_path):
 def test_required_network_isolation_is_enforced(monkeypatch):
     import inferstack.execution.sandbox as sb
     monkeypatch.setattr(sb, 'network_isolation_available', lambda: False)
+    monkeypatch.setattr(sb, 'filesystem_backend', lambda: None)
     with pytest.raises(RuntimeError, match='required but unavailable'):
         sb.Sandbox(require_network_isolation=True)
+    with pytest.raises(RuntimeError, match='filesystem isolation is required'):
+        sb.Sandbox(require_filesystem_isolation=True)
     assert sb.Sandbox().describe()['network_isolation'] == 'unavailable'
+    assert sb.Sandbox().describe()['filesystem_isolation'] == 'unavailable'
+
+
+def test_sandbox_confines_writes_reads_and_network(tmp_path):
+    # V01: the boundary itself (no monkeypatching). Skips name the missing backend.
+    import inferstack.execution.sandbox as sb
+    box = sb.Sandbox()
+    if not box.filesystem_isolated:
+        pytest.skip('no filesystem isolation backend (need sandbox-exec or bwrap)')
+    outside, ws = tmp_path / 'evaluator.py', tmp_path / 'ws'
+    outside.write_text('trusted')
+    ws.mkdir()
+    code, out = box.run([sys.executable, '-c',
+        'import socket\nfrom pathlib import Path\n'
+        f'try:\n    Path({str(outside)!r}).write_text("x"); print("WROTE")\nexcept PermissionError: print("fs-denied")\n'
+        'try:\n    socket.create_connection(("1.1.1.1", 80), timeout=3); print("NET")\n'
+        'except OSError: print("net-denied")'], cwd=ws, home=ws)
+    assert code == 0 and 'fs-denied' in out and 'net-denied' in out, out
+    assert outside.read_text() == 'trusted'
 
 
 # --- flags ------------------------------------------------------------------------------------
@@ -158,7 +180,7 @@ def setup(tmp_path, project, monkeypatch):
     repo.put_record('deployment', 'base', {
         'id': 'base', 'engine': 'vllm', 'model': 'm', 'base_url': f'http://127.0.0.1:{port}',
         'command': ['python3', str(FIXTURES / 'fake_openai_server.py'), '--port', str(port), '--max-num-seqs', '64',
-                    '--dump-env', str(tmp_path / 'env.json')], 'engine_version': '0.11.0',
+                    '--dump-env', '~/env.json'], 'engine_version': '0.11.0',
         'profile': {'dtype': 'bfloat16'}})
     repo.put_record('technique', 'fused', {'name': 'fused add', 'summary': 's', 'dtypes': ['bfloat16'],
                                            'engines': [{'engine': 'vllm', 'versions': '>=0.10'}],
@@ -203,7 +225,7 @@ async def test_isolated_candidate_end_to_end(setup):
         assert candidate['derived'] and record['id'] == 'exp1-candidate' and record['plugin_refs'] == ['fused']
         assert record['command'][record['command'].index('--max-num-seqs') + 1] == '256'
         assert record['base_url'] != repo.read('deployment', 'base')['body']['base_url']
-        dumped = json.loads((tmp / 'env.json').read_text())
+        dumped = json.loads((executor.workspaces['exp1'] / 'env.json').read_text())
         assert '/venv/bin/python' in dumped['executable'] and '--max-num-seqs' in dumped['unknown']
         assert not any('KEY' in k or 'SECRET' in k for k in dumped['env'])
         assert dumped['env']['PYTHONPATH'].endswith('/src/src') and 'INFERSTACK_ALLOCATION_ID' in dumped['env']
@@ -216,6 +238,8 @@ async def test_isolated_candidate_end_to_end(setup):
         assert list(wheels) == ['tinyplug-1.0.0-py3-none-any.whl']
         assert 'tinyplug==1.0.0' in repo.read_artifact(candidate['artifacts']['plug.freeze.txt']['sha256']).decode()
         assert candidate['isolation']['env'] == 'allowlisted'
+        if executor.sandbox.filesystem_isolated:  # V01: the server itself runs inside the boundary
+            assert record['command'][0] in ('sandbox-exec', 'bwrap')
     finally:
         await executor.cleanup(candidate)
     assert not Path(dumped['env']['HOME']).exists()  # workspace removed
@@ -231,7 +255,9 @@ async def test_failed_builds_launch_nothing_and_clean_up(setup, patch, message):
     with pytest.raises(BuildFailed, match=message):
         await executor.execute(plan, 'exp2', context)
     assert list((tmp / 'work').iterdir()) == [] and not (tmp / 'env.json').exists()
-    assert AllocationManager(repo, 't').list(job_id=context['job']['id']) == []
+    # Only the build's own allocation exists, and it is released; no candidate was launched.
+    allocations = AllocationManager(repo, 't').list(job_id=context['job']['id'])
+    assert [(a['spec']['kind'], a['state']) for a in allocations] == [('build', 'released')]
     with pytest.raises(KeyError):
         repo.read('deployment', 'exp2-candidate')
 

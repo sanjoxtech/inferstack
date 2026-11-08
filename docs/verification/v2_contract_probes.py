@@ -190,10 +190,17 @@ def test_sandbox_cannot_rewrite_files_outside_candidate_workspace(tmp_path):
     workspace = tmp_path / 'candidate'
     workspace.mkdir()
     sandbox = Sandbox()
+    # Amended after review: a deny-based boundary fails the write closed (the original
+    # `code == 0` precondition presumed a copy-on-write view). The candidate must still
+    # be able to write inside its workspace, and the outside write must be refused.
     code, output = sandbox.run([sys.executable, '-c',
-        f'from pathlib import Path; Path({str(protected)!r}).write_text("tampered")'],
+        'from pathlib import Path; Path("inside").write_text("ok")\n'
+        f'try:\n    Path({str(protected)!r}).write_text("tampered")\n'
+        'except PermissionError:\n    print("denied")'],
         cwd=workspace, home=workspace)
     assert code == 0, output
+    assert (workspace / 'inside').read_text() == 'ok', output
+    assert 'denied' in output, (output, sandbox.describe())
     assert protected.read_text() == 'trusted', sandbox.describe()
 
 
@@ -271,9 +278,13 @@ async def test_kept_owned_candidate_can_be_served_from_its_release(repo, tmp_pat
                 if sock.connect_ex(('127.0.0.1', base_port)) == 0:
                     break
             await asyncio.sleep(0.02)
+        # Amended after review: V04 requires pinned hardware and model identity for
+        # comparability, so this fixture declares them (otherwise the verdict is inconclusive).
+        repo.put_record('hardware', 'hw', {'provider': 'attached', 'observed_at': 1.0, 'gpus': []})
+        repo.put_record('model', 'mdl', {'source': 'huggingface', 'repo_id': 'org/m', 'revision': 'b' * 40})
         for name, port in (('base', base_port), ('cand', cand_port)):
             repo.put_record('deployment', name, {
-                'id': name, 'engine': 'generic_openai', 'model': 'm',
+                'id': name, 'engine': 'generic_openai', 'model': 'm', 'hardware_ref': 'hw', 'model_ref': 'mdl',
                 'base_url': f'http://127.0.0.1:{port}',
                 'command': [sys.executable, fixture, '--port', str(port)] if name == 'cand' else [],
             })
@@ -302,7 +313,11 @@ async def test_kept_owned_candidate_can_be_served_from_its_release(repo, tmp_pat
                                json={'model': 'm', 'prompt': '2+2'})
         assert response.status_code == 200, response.json()
     finally:
+        # Amended after review: kept runtimes are serving-owned; retire them explicitly.
+        from inferstack.releases.runtime import ReleaseRuntime
         if executor is not None:
+            for record in repo.list_records('release'):
+                await ReleaseRuntime(repo, LocalProcessProvider(), log_root=tmp_path / 'rt').retire(record['id'])
             for namespace in list(executor.active):
                 await executor.cleanup({'id': namespace})
         baseline.kill()

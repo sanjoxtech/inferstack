@@ -65,14 +65,21 @@ def postgres_server(tmp_path_factory):
 @pytest.fixture(params=['sqlite', 'postgres'])
 def database_url(request, tmp_path):
     if request.param == 'sqlite':
-        return str(tmp_path / 'control.db')
+        yield str(tmp_path / 'control.db')
+        return
     server = request.getfixturevalue('postgres_server')
     import psycopg
     name = 'test_' + uuid.uuid4().hex[:12]
     with psycopg.connect(server['base'], autocommit=True) as conn:
         conn.execute(f'CREATE DATABASE {name}')
-    if 'host' in server:
-        return f"postgresql://infer@/{name}?host={server['host']}&port={server['port']}"
-    from urllib.parse import urlparse, urlunparse
-    parsed = urlparse(server['base'])
-    return urlunparse(parsed._replace(path='/' + name))
+    try:
+        if 'host' in server:
+            yield f"postgresql://infer@/{name}?host={server['host']}&port={server['port']}"
+        else:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(server['base'])
+            yield urlunparse(parsed._replace(path='/' + name))
+    finally:
+        # External servers (CI service, hosted Postgres) keep nothing from the test run.
+        with psycopg.connect(server['base'], autocommit=True) as conn:
+            conn.execute(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')

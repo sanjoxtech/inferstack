@@ -365,6 +365,8 @@ class Release(Record):
     job_id: str
     verification_scope: str
     verification_policy_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    runnable: dict | None = None  # {'path', 'tree_sha256'}: immutable runnable workspace for isolated builds
+    serving_allocation_id: str | None = None  # the verified runtime kept serving for this release
 
     def references(self):
         snapshot = self.deployment

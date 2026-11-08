@@ -14,6 +14,7 @@ import json
 import uuid
 
 LIVE_STATES = ('intent', 'active', 'releasing')
+SERVING_PREFIX = 'serving:'  # owner of a kept candidate's runtime (not reconciled as a dead worker)
 
 
 class ResourceConflict(RuntimeError):
@@ -89,6 +90,22 @@ class AllocationManager:
                        (now, now, note, alloc_id))
             if row['job_id']:
                 self.store.event(db, row['job_id'], 'allocation_released', {'allocation_id': alloc_id, 'note': note})
+        return self.get(alloc_id)
+
+    def transfer_to_serving(self, alloc_id, deployment_id, job):
+        """Hand a kept candidate's live runtime from the experiment worker to serving ownership.
+
+        The job lease fences the transfer; afterwards worker reconciliation no longer
+        stops it. ReleaseRuntime owns its health, replacement and retirement.
+        """
+        owner = SERVING_PREFIX + deployment_id
+        with self.store.transaction() as db:
+            self.store.owned(db, job['id'], job['lease_token'])
+            cursor = db.execute("UPDATE allocations SET worker_id=?,updated_at=? WHERE id=? AND state='active'",
+                                (owner, self.store.clock(), alloc_id))
+            if not cursor.rowcount:
+                raise RuntimeError(f'allocation {alloc_id} is not active; cannot retain it for serving')
+            self.store.event(db, job['id'], 'allocation_retained', {'allocation_id': alloc_id, 'owner': owner})
         return self.get(alloc_id)
 
     def mark_orphaned(self, alloc_id, note):

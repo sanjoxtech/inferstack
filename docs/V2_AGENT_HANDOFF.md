@@ -611,6 +611,33 @@ Status: implemented; the GPU qualification run itself is pending (user runs it).
   of terminal jobs and unreferenced artifacts, with dry run.
 - Version `2.0.0rc1`.
 
+### Independent verification remediation — 8 November 2026
+
+Status: the 17 findings in `docs/V2_VERIFICATION_REPORT.md` are repaired;
+every acceptance probe passes. Some were checked live this time (details below).
+
+- Files: execution/sandbox.py (+limit_exec.py), execution/executor.py,
+  optimization/experiment.py, evaluation/{judge,numerical}.py, releases/{rollout,
+  manager,attestation,runtime}.py, infrastructure/{local,remote,allocations,
+  reconcile}.py, control/{worker,store,api,__main__,wiring}.py,
+  optimization/planner.py, contracts/records.py (Rollout v3, Release identity
+  fields), scripts/v2_qualify.py, pyproject/version.
+- Checks: `pytest tests/`: 218 passed, 13 skipped (PostgreSQL variants without a
+  server); `docs/verification/v2_contract_probes.py`: 15/15 passed; CPU
+  `v2_qualify.py` correctly `not_qualified` (no GPU).
+- Live: Docker daemon lifecycle (`tests/test_docker_live.py`); OpenRouter and
+  DeepSeek planning smoke (DeepSeek 1 of 2 runs valid); hosted PostgreSQL run
+  recorded below.
+- Behavior changes operators will notice: rollouts through the API need an
+  attestor; verdicts need pinned `hardware_ref` and `model_ref` on both
+  deployments; plan gates the verifier cannot run make the verdict inconclusive;
+  plugin/source experiments need sandbox-exec or bwrap and the local provider;
+  kept candidates keep running until a rollout retires them or
+  `ReleaseRuntime.retire` is called.
+- Remaining: GPU/vLLM/SGLang qualification, Kubernetes cluster run, container
+  image build for patched candidates, quality oracles beyond exact match,
+  FactoryOS end-to-end, CI and dependency lock.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |
@@ -627,6 +654,8 @@ Status: implemented; the GPU qualification run itself is pending (user runs it).
 | J qualification | yes | GPU-less dry run | Colab A100 `qualified` verdict |
 
 CPU test suite: 183 passed, 1 deselected (torch-dependent tests run in qualification).
+Superseded 8 November 2026 by the verification remediation: 218 passed, 13 skipped,
+15/15 acceptance probes; see the ledger entry above.
 Release `v2.0.0` should be tagged only after `scripts/v2_qualify.py` returns
 `qualified` on the target GPU and the optional gates relevant to the deployment
 (provider smoke, cluster) have been run.

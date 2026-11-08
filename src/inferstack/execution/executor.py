@@ -13,9 +13,18 @@ For one experiment:
 Artifacts (diff, wheel hashes, freeze, build/test logs, isolation report) are
 stored by hash and returned with the candidate. Workspaces are removed on
 cleanup and on every failure path.
+
+Untrusted code (plugins, patched source, their tests and the derived candidate
+server) only runs inside the sandbox's filesystem boundary; without one, those
+experiments are refused. Builds run off the worker's event loop so lease
+heartbeats, cancellation and deadlines keep running; cancellation kills the
+build's process group and waits for it. Build steps carry a build allocation
+(intent before the first process, tag on every process) so a crash mid-build is
+reconciled like any other launch.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -180,11 +189,37 @@ class IsolatedExecutor(EndpointExecutor):
 
     # --- execution ------------------------------------------------------------------
 
+    async def _offload(self, fn, *args):
+        """Run a blocking build step in a thread; on cancellation kill it and wait for cleanup."""
+        task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.sandbox.terminate_all()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    def _build_allocation(self, context, namespace):
+        if self.allocations is None or not context or 'job' not in context:
+            return None
+        alloc = self.allocations.intent(context['job'], context['step_key'], purpose='build:' + namespace,
+                                        provider='local', resource_type='process',
+                                        spec={'kind': 'build', 'namespace': namespace}, gpu_count=0)
+        return alloc['id']
+
     async def execute(self, plan, namespace, context=None):
         if not plan.get('actions'):
             return await super().execute(plan, namespace, context)
         if context is None:
             raise ValueError('isolated execution requires a job context (allocation ownership)')
+        untrusted = [a['id'] for a in plan['actions'] if a.get('type') in ('plugin_install', 'source_patch')]
+        if untrusted and getattr(self.provider, 'launches_remotely', False):
+            # A local build cannot change the pinned image a container provider launches.
+            raise BuildFailed(f'actions {untrusted} need a candidate image build, which is not implemented for '
+                              f'{self.provider.name}; run them with the local provider or supply a built image digest')
+        if untrusted and not self.sandbox.filesystem_isolated:
+            raise BuildFailed(f'actions {untrusted} run untrusted code but this host has no filesystem isolation '
+                              'boundary (sandbox-exec or bwrap); refusing')
         actions = {a['id']: a for a in plan['actions']}
         baseline = self.repository.read('deployment', plan['baseline_id'])
         if baseline['revision'] != plan['baseline_revision']:
@@ -194,7 +229,10 @@ class IsolatedExecutor(EndpointExecutor):
         artifacts, log, src, venv = {}, [], None, None
         source = baseline
         body = dict(baseline['body'])
+        build_alloc = None
         try:
+            if untrusted:
+                build_alloc = self._build_allocation(context, namespace)
             for action_id in plan['action_order']:
                 action = actions[action_id]
                 params = action['params']
@@ -207,10 +245,13 @@ class IsolatedExecutor(EndpointExecutor):
                     body['command'] = with_flags(body.get('command') or [], body['engine'], params['profile_patch'])
                     body['profile'] = {**(body.get('profile') or {}), **params['profile_patch']}
                 elif action['type'] == 'plugin_install':
-                    venv = self.build_plugin(ws, action, artifacts, log)
+                    venv = await self._offload(self.build_plugin, ws, action, artifacts, log)
                     body['plugin_refs'] = sorted({*body.get('plugin_refs', []), params['technique_id']})
                 elif action['type'] == 'source_patch':
-                    src = self.build_source(ws, action, artifacts, log)
+                    src = await self._offload(self.build_source, ws, action, artifacts, log)
+            if build_alloc is not None:
+                self.allocations.release(build_alloc, 'build_complete')
+                build_alloc = None
             derived = source is baseline or venv is not None or src is not None or body != source['body']
             env = {}
             if venv is not None:
@@ -222,6 +263,9 @@ class IsolatedExecutor(EndpointExecutor):
                 env['PYTHONPATH'] = str(src / 'src')
             if derived:
                 body['command'], body['base_url'] = relocate(body, free_port())
+                if venv is not None or src is not None:
+                    # The candidate server runs untrusted code: launch it inside the boundary.
+                    body['command'] = self.sandbox.launcher(body['command'], workspace=ws)
                 body['id'] = f'{namespace}-candidate'
                 self.repository.put_record('deployment', body['id'], body)
                 record = self.repository.read('deployment', body['id'])
@@ -233,8 +277,33 @@ class IsolatedExecutor(EndpointExecutor):
             return await self.launch(record, plan, namespace, context, env=scrubbed_env(env, home=ws),
                                      extra={'artifacts': artifacts, 'isolation': isolation, 'derived': derived})
         except BaseException:
+            if build_alloc is not None:
+                self.sandbox.terminate_all()
+                self.allocations.release(build_alloc, 'build_aborted')
             self._discard(namespace)
             raise
+
+    @staticmethod
+    def tree_sha256(root):
+        """Content digest of a runnable workspace (paths, modes and bytes), excluding logs/tmp."""
+        digest = hashlib.sha256()
+        root = Path(root)
+        for path in sorted(p for p in root.rglob('*') if p.is_file() and not p.is_symlink()):
+            rel = path.relative_to(root).as_posix()
+            if rel.startswith('.tmp/') or '__pycache__' in rel or rel == 'env.json':
+                continue
+            digest.update(rel.encode() + b'\0' + oct(path.stat().st_mode & 0o777).encode() + b'\0')
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest()
+
+    async def retain(self, candidate, context):
+        """Keep the candidate serving and its workspace as the release's runnable artifact."""
+        serving = await super().retain(candidate, context)
+        ws = self.workspaces.pop(candidate['id'], None)
+        if ws is None:
+            return serving
+        runnable = {'path': str(ws), 'tree_sha256': await asyncio.to_thread(self.tree_sha256, ws)}
+        return {**(serving or {}), 'runnable': runnable}
 
     def _discard(self, namespace):
         ws = self.workspaces.pop(namespace, None)

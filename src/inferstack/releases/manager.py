@@ -28,12 +28,17 @@ class ReleaseManager:
             raise ValueError('deployment changed after verification')
         manifest={'deployment':record,'evidence':evidence_ref,'job_id':job_id,
                   'verification_scope':evidence['scope'],'verification_policy_sha256':policy.get('sha256')}
+        serving=experiment.get('serving') or {}
+        if serving.get('runnable'):manifest['runnable']=serving['runnable']
+        if serving.get('allocation_id'):manifest['serving_allocation_id']=serving['allocation_id']
         artifact=self.repository.artifact(self.repository.encode(manifest).encode())
         identifier=artifact['sha256']
         # Idempotent by immutable manifest digest.
         try:self.repository.put_record('release',identifier,manifest)
         except ValueError:
-            if self.repository.read('release',identifier)['body']!=manifest:raise
+            from inferstack.contracts.records import validate
+            stored=self.repository.read('release',identifier)['body']
+            if stored not in (manifest,validate('release',manifest).model_dump(mode='json')):raise
         return identifier
 
     def route(self,model,stable_release,*,candidate_release=None,weight=0,expected_revision=0):

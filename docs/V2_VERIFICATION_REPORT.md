@@ -370,3 +370,51 @@ Keep the substantial working foundations. Do not interpret green unit/integratio
 tests or the current “implemented: yes” ledger as certification of A–J acceptance.
 The review supports continued integration work; it does not support a v2.0 final
 release or a production-qualified claim.
+
+## Remediation — 8 November 2026
+
+Implementation agent response to V01–V17. Every probe in
+`docs/verification/v2_contract_probes.py` now passes (15/15). Two probes were
+amended, both marked in the probe source with "Amended after review":
+
+- `test_sandbox_cannot_rewrite_files_outside_candidate_workspace` asserted the
+  tampering command exits 0. That presumes a copy-on-write view; a deny boundary
+  fails the write closed. The amended probe requires the outside write to be
+  refused, a write inside the workspace to succeed, and the sentinel to be unchanged.
+- `test_kept_owned_candidate_can_be_served_from_its_release` used deployments with
+  no hardware/model identity, which V04 (correctly) makes inconclusive. The fixture
+  now declares pinned identities. Its cleanup retires the retained runtime.
+
+| Finding | Repair | Evidence |
+| --- | --- | --- |
+| V01 | Sandbox has a real write boundary: macOS Seatbelt or Linux bubblewrap; writes confined to the workspace, credential paths unreadable, offline steps have no network. Candidate servers launch inside it with rlimits (trusted `limit_exec`, `python -I`). Plugin/source experiments are refused without a boundary. | probe; `test_sandbox_confines_writes_reads_and_network`; isolated end-to-end test asserts the server command is wrapped |
+| V02 | Verification policy = mandatory gates + every plan gate + measure params. Cancellation and overload run as probes; other gates are unsupported (None → inconclusive). Unsatisfiable repeats/workload/objective/measurements → inconclusive. Policy hash in evidence; releases require every policy gate True. | probe; `test_release_requires_evidence_covering_its_policy` |
+| V03 | Non-finite candidate, oracle, reference or empty comparison never passes (also `check_relative`). | probe |
+| V04 | Comparability needs pinned, equal hardware and model identities resolved to revisions; missing → None (inconclusive), different → False. A failed gate rejects even when others are unknown. | probe; `test_missing_identity_is_not_comparable` |
+| V05 | Control API refuses rollouts without an attestor; CLI wires `release_attestor`, which checks served model, model/tokenizer revision, engine version, image or build digest and plugins. Unpinned manifest fields are unverified. | probe; `tests/test_attestation.py` |
+| V06 | Rollout records route body + revision it wrote; any other writer moves it to `conflict` without touching the route. | probe |
+| V07 | Two-phase route transitions (intent persisted, route written, progress recorded); a restarted controller completes or rejects the intent idempotently. Rollout schema v3. | probe; audit-trail test |
+| V08 | A kept candidate's process is retained under `serving:<deployment>` ownership; isolated builds keep the workspace as a tree-hashed runnable artifact in the release. `ReleaseRuntime` reuses, replaces (warm + attest), and retires (drain + verified stop) runtimes; rollout uses it before traffic and after promotion/rollback. | probe; `tests/test_release_runtime.py` |
+| V09 | Local stop covers the process group and tagged descendants; reconciler checks residual members. | probe |
+| V10 | Kubernetes stop waits for the allocation's Pods (owner-chain aware, same-name replacements excluded); unknown API state is never "released". | probe; reconciliation test |
+| V11 | GPU reservation resolved from reservation → deployment `resources` → engine minimum (GPU engines ≥ 1, zero refused); exclusive device reservation across live allocations; `CUDA_VISIBLE_DEVICES` set. | probe |
+| V12 | Builds run in a worker thread; cancellation kills the build process group and waits; a build allocation (intent + tag) precedes the first build process. | probe; failed-build cleanup test |
+| V13 | Durable step results are read before budget checks. | probe |
+| V14 | 100% stage compares with the stable latency retained from the last stage with stable traffic; no baseline → hold. | probe |
+| V15 | Kernel gate requires exit 0, the full 27-check manifest, finite statistics; test-suite skips classified; `--require` makes integration gates blocking. | probe |
+| V16 | `control/wiring.py`: isolated executor selection with pinned clean source revision, SSRF-safe retrieval by default, adapter-backed planner telemetry; container providers refuse locally built candidates (no image pipeline). Planner prompt lists registered metrics. | `tests/test_wiring.py` |
+| V17 | One version source (`inferstack.__version__`, dynamic in pyproject). | `tests/test_version.py` |
+
+Live evidence gathered in this pass (not CPU doubles):
+- Docker daemon 29.9.2: `DockerProvider` launch → readiness → label discovery →
+  observed image digest equals pinned digest → verified stop (`tests/test_docker_live.py`).
+- Providers: OpenRouter (`deepseek/deepseek-chat`, tools) produced a validated plan
+  (6,875 tokens). DeepSeek (`deepseek-chat`) produced a validated plan (18,794 tokens)
+  on one of two runs after the metric-list fix; the other exhausted 8 rounds. Treat
+  DeepSeek planning as working but not yet reliable.
+- PostgreSQL: see the handoff ledger for the hosted-PostgreSQL run.
+
+Still open (unchanged by this pass): GPU qualification (native, vLLM, SGLang,
+kernel equivalence on A100), Kubernetes cluster run, candidate image build
+pipeline for container providers, logit/semantic quality oracles, FactoryOS
+end-to-end, CI workflows and dependency lock.

@@ -48,7 +48,7 @@ def _route_view(body):
 
 
 class RolloutController:
-    def __init__(self, repository, *, observe, attest=None, clock=time.time):
+    def __init__(self, repository, *, observe, attest=None, clock=time.time, runtime=None):
         """observe(release_id, since) -> {'requests','errors','ttfb_p50_ms'}; attest(release) -> dict with 'status'.
 
         Library callers may omit `attest` (tests, offline tooling); the control API
@@ -56,6 +56,9 @@ class RolloutController:
         """
         self.repository, self.observe, self.attest, self.clock = repository, observe, attest, clock
         self.releases = ReleaseManager(repository)
+        # Optional ReleaseRuntime: launches/warms the candidate before traffic and
+        # drains + stops the losing release after promotion or rollback.
+        self.runtime = runtime
 
     def _read(self, rollout_id):
         record = self.repository.read('rollout', rollout_id)
@@ -124,6 +127,12 @@ class RolloutController:
                 'route_revision': route['revision'], 'route_body': _route_view(route['body']),
                 'transition': None, 'stable_baseline': None}
         revision = self.repository.put_record('rollout', rollout_id, body)
+        if self.runtime is not None:
+            try:
+                await self.runtime.ensure(release_id)
+            except Exception as exc:
+                self._write(rollout_id, body, revision, state='failed', reason=f'candidate runtime unavailable: {exc}')
+                raise RolloutError(f'candidate runtime unavailable: {exc}') from exc
         if self.attest is not None:
             result = await self.attest(self.repository.read('release', release_id))
             if result.get('status') != 'attested':
@@ -145,7 +154,12 @@ class RolloutController:
                   'previous': route['body'].get('previous')}
         revision, body = self._transition(rollout_id, revision, body, target, {'state': 'rolled_back',
                                                                                  'reason': reason})
+        await self._retire(body['release_ref'])
         return body['state']
+
+    async def _retire(self, release_id):
+        if self.runtime is not None:
+            await self.runtime.retire(release_id)
 
     async def step(self, rollout_id):
         revision, body = self._read(rollout_id)
@@ -203,6 +217,7 @@ class RolloutController:
         target = {'stable': body['release_ref'], 'candidate': None, 'weight': 0, 'previous': body['stable_ref']}
         self._transition(rollout_id, revision, body, target,
                          {'state': 'promoted', 'observations': observations, 'reason': 'all stages passed'})
+        await self._retire(body['stable_ref'])  # drain in-flight streams, then stop the old stable
         return 'promoted'
 
     def pause(self, rollout_id):

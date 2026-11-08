@@ -115,7 +115,15 @@ class OptimizationWorker:
             if verdict.get('decision') not in {'keep', 'reject', 'retest', 'inconclusive'}:
                 raise ValueError('invalid verifier decision')
             self.record(job, 'verified', {'iteration': iteration, 'verdict': verdict})
-            return {'plan': plan, 'candidate': candidate, 'verdict': verdict}
+            outcome = {'plan': plan, 'candidate': candidate, 'verdict': verdict}
+            if verdict['decision'] == 'keep' and hasattr(self.executor, 'retain'):
+                # The verified runtime stays up under serving ownership for its release.
+                serving = await self.executor.retain(candidate, {'job': job})
+                candidate = None
+                if serving:
+                    outcome['serving'] = serving
+                    self.record(job, 'retained', {'iteration': iteration, 'serving': serving})
+            return outcome
         finally:
             if candidate is not None:
                 await self.executor.cleanup(candidate)

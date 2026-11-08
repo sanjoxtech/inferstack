@@ -1,0 +1,73 @@
+"""Worker composition from configuration: the supported path for all three entry points.
+
+`build_worker_parts(repo, config, ...)` selects the executor, retrieval and the
+planner's live telemetry from one explicit configuration so that optimize,
+technique-investigation and feedback-diagnosis jobs run through the same worker:
+
+- executor: `{"executor": {"kind": "isolated", "source_root": ".", "work_root": ...}}`
+  selects IsolatedExecutor (config/plugin/source actions). The source revision is
+  resolved once to a full commit hash; a dirty tree is refused because it is not a
+  reproducible identity. Default `endpoint` runs registered candidates only.
+- retrieval: SafeFetcher (SSRF-guarded) unless `{"research": {"retrieval": false}}`.
+- telemetry: adapter-backed snapshots of registered deployments for the planner's
+  `query_telemetry` tool, unless `{"planner_telemetry": false}`.
+"""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+
+def pinned_source_revision(source_root):
+    root = Path(source_root)
+    head = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    if head.returncode:
+        raise ValueError(f'{root} is not a git checkout; isolated execution needs a pinned source revision')
+    dirty = subprocess.run(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no'],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        raise ValueError('source tree has uncommitted changes; commit them so the candidate source is pinned')
+    return head.stdout.strip()
+
+
+def telemetry_source(repository, transport=None):
+    """async (deployment_id) -> normalized telemetry snapshot from the deployment's engine adapter."""
+    import httpx
+
+    from inferstack.engines.adapters import adapter_for
+
+    async def snapshot(deployment_id):
+        body = repository.read('deployment', deployment_id)['body']
+        async with httpx.AsyncClient(base_url=body['base_url'].rstrip('/') + '/', timeout=10,
+                                     transport=transport) as client:
+            result = await adapter_for(body['engine'], client).telemetry(engine_version=body.get('engine_version'))
+        result.pop('raw_text', None)
+        return result
+    return snapshot
+
+
+def build_executor(repository, config, *, state, allocations, provider, pricing=None, gpu_name=None):
+    from inferstack.optimization.experiment import EndpointExecutor
+    spec = dict(config.get('executor') or {'kind': 'endpoint'})
+    kind = spec.pop('kind', 'endpoint')
+    common = dict(allocations=allocations, provider=provider, pricing=pricing, gpu_name=gpu_name)
+    if kind == 'endpoint':
+        return EndpointExecutor(repository, Path(state) / 'logs', **common)
+    if kind != 'isolated':
+        raise ValueError(f'unknown executor kind {kind!r}')
+    from inferstack.execution.executor import IsolatedExecutor
+    from inferstack.execution.sandbox import Sandbox
+    source_root = Path(spec.pop('source_root', '.')).resolve()
+    revision = spec.pop('source_revision', None) or pinned_source_revision(source_root)
+    sandbox = Sandbox(require_filesystem_isolation=spec.pop('require_filesystem_isolation', True),
+                      require_network_isolation=spec.pop('require_network_isolation', False))
+    work_root = Path(spec.pop('work_root', Path(state) / 'work'))
+    return IsolatedExecutor(repository, Path(state) / 'logs', work_root=work_root, source_root=source_root,
+                            source_revision=revision, sandbox=sandbox, **spec, **common)
+
+
+def build_fetcher(config):
+    if not (config.get('research') or {}).get('retrieval', True):
+        return None
+    from inferstack.research.fetch import SafeFetcher
+    return SafeFetcher(**{k: v for k, v in (config.get('research') or {}).items() if k != 'retrieval'})

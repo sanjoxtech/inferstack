@@ -13,7 +13,7 @@ Allocations owned by other hosts are left for that host's reconciler.
 """
 from __future__ import annotations
 
-from .allocations import LIVE_STATES, AllocationManager
+from .allocations import LIVE_STATES, SERVING_PREFIX, AllocationManager
 
 
 def _stop(provider, external):
@@ -55,7 +55,9 @@ def reconcile(store, provider, *, reconciler_id='reconciler') -> list[dict]:
     with store.connection() as db:
         rows = db.execute('SELECT id, worker_id FROM allocations WHERE state IN (?,?,?) AND provider=?',
                           (*LIVE_STATES, provider.name)).fetchall()
-        stale = [r['id'] for r in rows if not store.worker_alive(db, r['worker_id'])]
+        # Serving runtimes (kept candidates) are owned by ReleaseRuntime, not by a worker lease.
+        stale = [r['id'] for r in rows if not (r['worker_id'] or '').startswith(SERVING_PREFIX)
+                 and not store.worker_alive(db, r['worker_id'])]
     for alloc_id in stale:
         alloc = manager.get(alloc_id)
         actions.append({'allocation_id': alloc_id, 'job_id': alloc['job_id'],

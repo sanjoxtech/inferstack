@@ -40,7 +40,9 @@ def main():
     if args.dump_env:
         import os
         import sys
-        with open(args.dump_env, 'w') as f:
+        # '~/' is the candidate's HOME (its sandboxed workspace): writes elsewhere are refused.
+        path = os.path.join(os.environ['HOME'], args.dump_env[2:]) if args.dump_env.startswith('~/') else args.dump_env
+        with open(path, 'w') as f:
             json.dump({'env': dict(os.environ), 'argv': sys.argv, 'executable': sys.executable, 'unknown': unknown}, f)
 
     def note(text):

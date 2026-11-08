@@ -153,6 +153,26 @@ class EndpointExecutor:
         if self.provider.stop(external):self.allocations.release(alloc_id,note)
         else:self.allocations.mark_orphaned(alloc_id,'stop_failed_during_'+note)
 
+    async def retain(self, candidate, context):
+        """Keep a verified candidate's runtime serving after the experiment.
+
+        The process keeps running under serving ownership (its allocation is
+        transferred, not released), so the release created from this candidate
+        points at the exact runtime that was verified. Returns serving identity, or
+        None when the candidate was not launched by this executor (attached endpoint).
+        """
+        owned=self.owned.pop(candidate['id'],None)
+        engine=self.active.pop(candidate['id'],None)
+        if owned is None:
+            if engine:await engine.close()
+            return None
+        alloc_id,external=owned
+        if engine is not None:
+            engine.process=None  # detach: closing the client must not stop the retained process
+            await engine.close()
+        self.allocations.transfer_to_serving(alloc_id,candidate['deployment_id'],context['job'])
+        return {'allocation_id':alloc_id,'external':external,'owner':'serving:'+candidate['deployment_id']}
+
     async def cleanup(self, candidate):
         engine=self.active.pop(candidate['id'],None)
         if engine:await engine.close()

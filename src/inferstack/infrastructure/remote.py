@@ -88,6 +88,21 @@ class DockerProvider(_CLIProvider):
     def owns(self, external):
         return isinstance(external, dict) and external.get('provider') == self.name
 
+    def observed_image_digest(self, external):
+        """Repository digest of the image the container actually runs (attestation evidence), or None."""
+        code, image_id, _ = self.run([self.docker, 'inspect', '--format', '{{.Image}}', external['container_id']],
+                                     check=False)
+        if code != 0:
+            return None
+        code, out, _ = self.run([self.docker, 'image', 'inspect', '--format', '{{json .RepoDigests}}',
+                                 image_id.strip()], check=False)
+        try:
+            digests = json.loads(out) if code == 0 else []
+        except ValueError:
+            return None
+        found = sorted({d.split('@', 1)[1] for d in digests or [] if '@sha256:' in d})
+        return found[0] if len(found) == 1 else None
+
     def external_for(self, container_id):
         return {'provider': self.name, 'container_id': container_id}
 
