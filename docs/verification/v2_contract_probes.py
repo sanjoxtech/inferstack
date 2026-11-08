@@ -405,7 +405,11 @@ async def test_native_local_gpu_launch_does_not_default_gpu_usage_to_zero(repo, 
     job_id = repo.submit('gpu', {}, budget={'gpu_seconds': 1})
     claim = repo.claim(100)
     allocations = AllocationManager(repo, 'worker')
-    executor = EndpointExecutor(repo, tmp_path / 'logs', allocations=allocations, provider=Provider())
+    # Amended after the second review (R12): a GPU launch without identified devices is now
+    # refused (fail closed), so the probe supplies one identified device; it still checks
+    # that GPU accounting is never silently zero.
+    executor = EndpointExecutor(repo, tmp_path / 'logs', allocations=allocations, provider=Provider(),
+                                gpu_devices=['GPU-probe-0'])
     spawn = executor._spawner({'job': claim, 'step_key': 'iter0.experiment', 'namespace': 'probe'},
         DeploymentSpec('candidate', 'inferstack_native', 'm', 'http://candidate', command=('inferstack', 'serve')))
     await spawn(['inferstack', 'serve'], None)

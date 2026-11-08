@@ -80,3 +80,15 @@ Docker and Kubernetes (`INFERSTACK_TEST_K8S_CONTEXT`) — are reported and only
 block when named with `--require`.
 Native lane performance verdicts are informational: a `keep` needs three runs
 per side. Zip `results/v2-qualification` and attach it to the release ledger.
+
+Skips are classified by the integration that owns them: a Docker/Kubernetes/PostgreSQL
+test skipped because that integration is absent is recorded under
+`skipped_optional` and does not fail `test_suite`, unless that integration was
+named with `--require` (then its skip blocks).
+
+GPU placement for workers and release runtimes: GPU-engine launches (native, vLLM,
+SGLang) reserve specific devices and run with `CUDA_VISIBLE_DEVICES` set to them.
+The local worker takes device UUIDs from the `nvidia-smi` inventory automatically;
+set `infrastructure.gpu_devices` in the worker config (or `INFERSTACK_GPU_DEVICES`
+for the control server) to restrict them. Without identified devices a GPU launch
+is refused rather than sharing an unknown device.

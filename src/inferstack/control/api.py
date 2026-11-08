@@ -339,10 +339,35 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
         except ValueError as exc:raise HTTPException(409,str(exc))
 
     @app.post('/control/routes/{model}/rollback',dependencies=auth)
-    def rollback(model:str,expected_revision:int):
-        try:return {'revision':releases.rollback(model,expected_revision)}
+    async def rollback(model:str,expected_revision:int):
+        """Safe rollback: warm (and attest) the target runtime and restore its admission
+        before traffic moves; retire the losing runtime only after the route changed."""
+        try:
+            current=repository.read('route',model)
+        except KeyError:raise HTTPException(404,'unknown route')
+        if current['revision']!=expected_revision:raise HTTPException(409,'revision conflict')
+        body=current['body']
+        target=body['stable'] if body.get('candidate') else body.get('previous')
+        loser=body.get('candidate') or body.get('stable')
+        if target is None:raise HTTPException(409,'no rollback target')
+        warmed=None
+        if release_runtime is not None:
+            try:warmed=await release_runtime.ensure(target)
+            except Exception as exc:  # noqa: BLE001 - traffic stays where it is
+                raise HTTPException(503,f'rollback target runtime unavailable, route unchanged: {exc}')
+            if rollout_attest is not None:
+                attested=await rollout_attest(repository.read('release',target))
+                if attested.get('status')!='attested':
+                    raise HTTPException(503,f"rollback target not attested ({attested.get('status')}), route unchanged")
+        try:revision=releases.rollback(model,expected_revision)
         except KeyError:raise HTTPException(404,'unknown route')
         except ValueError as exc:raise HTTPException(409,str(exc))
+        retirement=None
+        if release_runtime is not None and loser and loser!=target:
+            try:retirement=await release_runtime.retire(loser)
+            except Exception as exc:  # noqa: BLE001 - route is already safe; report the cleanup failure
+                retirement={'error':f'{type(exc).__name__}: {exc}'[:500],'release_id':loser}
+        return {'revision':revision,'target':target,'runtime':warmed,'retirement':retirement}
 
     @app.put('/control/routes/{model}',dependencies=auth)
     def route(model:str,stable_release:str,expected_revision:int,candidate_release:str|None=None,weight:int=0):

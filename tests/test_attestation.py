@@ -31,7 +31,7 @@ def test_missing_observation_or_unpinned_manifest_is_unverified():
 async def test_attestor_reads_runtime_and_launch_observation(tmp_path):
     repo = Repository(tmp_path / 'db', tmp_path / 'a')
     repo.put_record('model', 'qwen', {'source': 'huggingface', 'repo_id': 'Qwen/x', 'revision': REV})
-    deployment = {'id': 'd', 'engine': 'vllm', 'model': 'm', 'base_url': 'http://cand', 'model_ref': 'qwen',
+    deployment = {'id': 'd', 'engine': 'vllm', 'model': 'm', 'base_url': 'http://cand', 'model_ref': 'qwen@1',
                   'engine_version': '0.9.1', 'image_digest': 'sha256:' + 'a' * 64}
     repo.put_record('deployment', 'd', deployment)
     release = {'body': {'deployment': repo.read('deployment', 'd')}}
@@ -69,7 +69,7 @@ async def test_live_runtime_is_attested_from_observed_launch(tmp_path):
     repo.put_record('model', 'qwen', {'source': 'huggingface', 'repo_id': 'Qwen/x', 'revision': REV})
     fixture = str(Path(__file__).parent / 'fixtures/fake_openai_server.py')
     repo.put_record('deployment', 'd', {
-        'id': 'd', 'engine': 'generic_openai', 'model': 'm', 'base_url': f'http://127.0.0.1:{port}', 'model_ref': 'qwen',
+        'id': 'd', 'engine': 'generic_openai', 'model': 'm', 'base_url': f'http://127.0.0.1:{port}', 'model_ref': 'qwen@1',
         'command': [sys.executable, fixture, '--port', str(port), '--revision', REV, '--tokenizer-revision', REV],
         'profile': {'build_sha256': 'c' * 64}})
     repo.put('release', 'rel', {'deployment': repo.read('deployment', 'd'), 'evidence': {'sha256': 'f' * 64, 'bytes': 0},

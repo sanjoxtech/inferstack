@@ -28,8 +28,12 @@ import signal
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+_ALLOCATION: ContextVar[str | None] = ContextVar('inferstack_build_allocation', default=None)
 
 ENV_ALLOW = ('PATH', 'LANG', 'LC_ALL', 'TZ', 'CUDA_VISIBLE_DEVICES', 'NVIDIA_VISIBLE_DEVICES',
              'CUDA_HOME', 'LD_LIBRARY_PATH', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'PYTHONHASHSEED')
@@ -73,16 +77,92 @@ def _sb_quote(path):
     return '"' + str(path).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def seatbelt_profile(writable, *, offline, home=None):
+# System locations untrusted code may read (contents). Everything else is denied:
+# reads are an allowlist, not a blacklist of known credential directories.
+SYSTEM_READ_ROOTS = ('/System', '/usr', '/bin', '/sbin', '/Library/Frameworks', '/Library/Developer/CommandLineTools',
+                     '/private/etc', '/etc', '/private/var/db/timezone', '/private/var/db/dyld', '/opt/homebrew',
+                     '/usr/local', '/lib', '/lib64', '/lib32', '/opt/conda', '/opt/nvidia', '/var/lib/dpkg')
+
+
+def _python_roots():
+    roots = set()
+    for value in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        roots.add(Path(value))
+        roots.add(Path(value).resolve())
+    executable = Path(sys.executable)
+    roots.add(executable.parent)
+    roots.add(executable.resolve().parents[1])
+    return roots
+
+
+def read_roots(readable=()):
+    """Directories whose contents a confined process may read.
+
+    System libraries, this Python installation and its site-packages, the installed
+    InferStack package directory (trusted launcher, not the surrounding project), the
+    Hugging Face model cache (weights; the token file is denied separately) and the
+    caller's explicit `readable` paths. Project directories, home config and any other
+    host files are unreadable, so a host project's `.env` is not reachable."""
+    roots = {Path(p) for p in SYSTEM_READ_ROOTS}
+    roots |= _python_roots()
+    roots.add(Path(__file__).resolve().parents[1])  # the inferstack package itself
+    hub = Path(os.environ.get('HF_HUB_CACHE') or Path(os.environ.get('HF_HOME') or
+               Path(os.path.expanduser('~')) / '.cache' / 'huggingface') / 'hub')
+    roots.add(hub)
+    roots |= {Path(p) for p in readable}
+    return sorted({r for r in roots if r.exists()} | {r.resolve() for r in roots if r.exists()})
+
+
+def seatbelt_profile(writable, *, offline, home=None, readable=()):
     home = Path(home or os.path.expanduser('~'))
+    roots = read_roots(readable) + [Path(w).resolve() for w in writable]
     rules = ['(version 1)', '(allow default)', '(deny file-write*)',
              '(allow file-write* ' + ' '.join(f'(subpath {_sb_quote(Path(w).resolve())})' for w in writable) +
-             ' (regex #"^/dev/"))']
+             ' (regex #"^/dev/"))',
+             # Contents are an allowlist; metadata (stat/path traversal) stays allowed so
+             # interpreters can resolve paths, but no file outside the roots can be read.
+             '(deny file-read-data)',
+             '(allow file-read-data (literal "/") (regex #"^/dev/") ' +
+             ' '.join(f'(subpath {_sb_quote(r)})' for r in roots) +
+             # directory listing (names only) of the package's parent so imports resolve
+             f' (literal {_sb_quote(Path(__file__).resolve().parents[2])}))',
+             # Process credentials: no keychain access and no other process's details.
+             '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))']
     secrets = [home / p for p in SECRET_PATHS]
     rules.append('(deny file-read* ' + ' '.join(f'(subpath {_sb_quote(p)})' for p in secrets) + ')')
     if offline:
         rules.append('(deny network-outbound (remote ip))')
     return ''.join(rules)
+
+
+def bwrap_prefix(writable, *, offline, readable=(), home=None):
+    """bubblewrap mount namespace with only the read roots visible (read-only), the
+    writable paths bound read-write, fresh /dev, /proc (own PID namespace, so other
+    processes' environments are not visible), /tmp, and credential paths masked."""
+    home = Path(home or os.path.expanduser('~'))
+    prefix = ['bwrap', '--die-with-parent', '--new-session', '--unshare-pid', '--unshare-ipc',
+              '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp']
+    seen = set()
+    for root in read_roots(readable):
+        source = Path(root)
+        if source in seen:
+            continue
+        seen.add(source)
+        if source.is_symlink():  # e.g. /bin -> usr/bin on merged-/usr systems
+            prefix += ['--symlink', os.readlink(source), str(source)]
+        else:
+            prefix += ['--ro-bind-try', str(source), str(source)]
+    for secret in SECRET_PATHS:
+        path = home / secret
+        if path.is_dir():
+            prefix += ['--tmpfs', str(path)]
+        elif path.exists():
+            prefix += ['--ro-bind', '/dev/null', str(path)]
+    for w in writable:
+        prefix += ['--bind', str(Path(w).resolve()), str(Path(w).resolve())]
+    if offline:
+        prefix.append('--unshare-net')
+    return prefix
 
 
 def network_isolation_available():
@@ -121,6 +201,7 @@ class Sandbox:
         if require_network_isolation and not self.network_isolated:
             raise RuntimeError('network isolation is required but unavailable on this host')
         self.limits = limits
+        self.readable = []  # operator-declared read roots for every step (e.g. a local wheel index)
         self._live, self._lock = set(), threading.Lock()
 
     def describe(self):
@@ -128,38 +209,29 @@ class Sandbox:
                 'network_isolation': self.backend or ('netns' if self.netns else 'unavailable'),
                 'env': 'allowlisted', 'limits': asdict(self.limits)}
 
-    def wrap(self, argv, *, workspace, offline, extra_writable=()):
-        """Prefix argv with the isolation boundary: writes confined to the workspace."""
+    def wrap(self, argv, *, workspace, offline, extra_writable=(), readable=()):
+        """Prefix argv with the isolation boundary: writes confined to the workspace, reads to
+        `read_roots(readable)` plus the writable paths."""
         writable = [Path(workspace), *map(Path, extra_writable)]
         argv = list(argv)
         if self.backend == 'seatbelt':
-            return ['sandbox-exec', '-p', seatbelt_profile(writable, offline=offline), *argv]
+            return ['sandbox-exec', '-p', seatbelt_profile(writable, offline=offline, readable=readable), *argv]
         if self.backend == 'bwrap':
-            prefix = ['bwrap', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
-                      '--die-with-parent', '--new-session']
-            home = Path(os.path.expanduser('~'))
-            for secret in SECRET_PATHS:
-                if (home / secret).is_dir():
-                    prefix += ['--tmpfs', str(home / secret)]
-                elif (home / secret).exists():
-                    prefix += ['--ro-bind', '/dev/null', str(home / secret)]
-            for w in writable:
-                prefix += ['--bind', str(w.resolve()), str(w.resolve())]
-            if offline:
-                prefix.append('--unshare-net')
-            return [*prefix, '--', *argv]
+            return [*bwrap_prefix(writable, offline=offline, readable=readable), '--', *argv]
         if offline and self.netns:
             return ['unshare', '-n', '--', *argv]
         return argv
 
-    def launcher(self, argv, *, workspace, offline=False):
+    def launcher(self, argv, *, workspace, offline=False, readable=()):
         """argv for a long-running candidate server: isolation boundary plus rlimits."""
         limits = self.limits
         # The trusted launcher runs isolated (-I) from this installation, never from the
         # candidate's PYTHONPATH, so patched source cannot replace it.
         applied = [sys.executable, '-I', str(Path(__file__).with_name('limit_exec.py')), str(limits.cpu_seconds),
                    str(limits.open_files), str(limits.file_bytes), str(limits.address_space_bytes or 0), '--', *argv]
-        return self.wrap(applied, workspace=workspace, offline=offline)
+        # The declared program files of the command are readable (their directories only).
+        programs = [Path(a).parent for a in argv if isinstance(a, str) and a.startswith('/') and Path(a).is_file()]
+        return self.wrap(applied, workspace=workspace, offline=offline, readable=[*readable, *programs])
 
     def terminate_all(self):
         """Kill every running step's process group (cancellation/deadline)."""
@@ -171,17 +243,33 @@ class Sandbox:
             except (ProcessLookupError, PermissionError):
                 pass
 
-    def run(self, argv, *, cwd, home, env=None, offline=True, timeout=None, log=None, extra_writable=()):
+    @staticmethod
+    @contextmanager
+    def owned_by(allocation_id):
+        """Tag every step run in this context (including threads started from it, which copy
+        the context) with its persisted allocation identity, so a crashed worker's build
+        processes are found by the reconciler through the same tag as launched servers."""
+        token = _ALLOCATION.set(allocation_id)
+        try:
+            yield
+        finally:
+            _ALLOCATION.reset(token)
+
+    def run(self, argv, *, cwd, home, env=None, offline=True, timeout=None, log=None, extra_writable=(), readable=()):
         """Run a build/test step inside the boundary. Returns (returncode, output). Never raises on non-zero."""
         argv = self.wrap(argv, workspace=home, offline=offline,
                          extra_writable=[cwd, *extra_writable] if Path(cwd).resolve() != Path(home).resolve()
-                         else extra_writable)
+                         else extra_writable, readable=[*self.readable, *readable])
         limits = self.limits
 
         def preexec():
             os.setsid()
             limits.apply()
-        proc = subprocess.Popen(argv, cwd=cwd, env=scrubbed_env(env, home=home), stdout=subprocess.PIPE,
+        child_env = scrubbed_env(env, home=home)
+        if _ALLOCATION.get() is not None:
+            from inferstack.infrastructure.local import TAG
+            child_env[TAG] = _ALLOCATION.get()
+        proc = subprocess.Popen(argv, cwd=cwd, env=child_env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, preexec_fn=preexec, text=True)
         with self._lock:
             self._live.add(proc)

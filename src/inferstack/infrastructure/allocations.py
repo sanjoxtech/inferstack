@@ -25,6 +25,44 @@ class QuotaExceeded(ResourceConflict):
     """A provider quota (live allocations or GPUs) would be exceeded."""
 
 
+def held_devices(db, provider):
+    """Device identifiers held by live (or orphaned, i.e. unproven-free) allocations of a provider."""
+    held = {}
+    for row in db.execute('SELECT id, spec FROM allocations WHERE provider=? AND state IN (?,?,?,?)',
+                          (provider, *LIVE_STATES, 'orphaned')).fetchall():
+        for device in (json.loads(row['spec']) or {}).get('gpu_devices') or []:
+            held[device] = row['id']
+    return held
+
+
+def place_devices(db, provider, spec, gpu_count):
+    """Resolve and exclusively reserve identified devices inside the caller's writer transaction.
+
+    `spec['gpu_devices']`: explicit devices, checked for exclusivity.
+    `spec['gpu_pool']`: the host's identified devices; `gpu_count` free ones are chosen.
+    Returns the spec with `gpu_devices` set. A GPU reservation without identified devices
+    fails closed: a count alone is accounting, not an exclusive lease."""
+    spec = dict(spec or {})
+    held = held_devices(db, provider)
+    explicit = list(spec.get('gpu_devices') or [])
+    if explicit:
+        clash = sorted(d for d in explicit if d in held)
+        if clash:
+            raise ResourceConflict(f'devices {clash} held by allocation {held[clash[0]]}')
+        return spec
+    if not gpu_count:
+        return spec
+    pool = list(spec.pop('gpu_pool', None) or [])
+    if not pool:
+        raise ResourceConflict(f'{gpu_count} GPU(s) requested without identified devices; configure the '
+                               'host GPU inventory (device UUIDs) or an explicit gpu_devices reservation')
+    free = [d for d in pool if d not in held]
+    if len(free) < gpu_count:
+        raise ResourceConflict(f'{gpu_count} GPU(s) requested, {len(free)} of {len(pool)} identified devices free')
+    spec['gpu_devices'] = free[:gpu_count]
+    return spec
+
+
 class AllocationManager:
     def __init__(self, store, worker_id, faults=None, quotas=None):
         """quotas: {provider: {'max_live': int, 'max_gpus': int}} enforced at intent time."""
@@ -55,15 +93,11 @@ class AllocationManager:
                     raise QuotaExceeded(f'{provider}: {live[0]} live allocations, quota {quota["max_live"]}')
                 if quota.get('max_gpus') is not None and live[1] + gpu_count > quota['max_gpus']:
                     raise QuotaExceeded(f'{provider}: {live[1]}+{gpu_count} GPUs exceeds quota {quota["max_gpus"]}')
-            devices = set((spec or {}).get('gpu_devices') or [])
-            if devices:
+            if (spec or {}).get('gpu_devices') or (spec or {}).get('gpu_pool'):
                 # Exclusive device reservation: experiments never share a GPU with serving
-                # or with another experiment on the same provider.
-                for row in db.execute('SELECT id, spec FROM allocations WHERE provider=? AND state IN (?,?,?,?)',
-                                      (provider, *LIVE_STATES, 'orphaned')).fetchall():
-                    held = set((json.loads(row['spec']) or {}).get('gpu_devices') or [])
-                    if held & devices:
-                        raise ResourceConflict(f'devices {sorted(held & devices)} held by allocation {row["id"]}')
+                # or with another experiment on the same provider; placement is chosen
+                # atomically under the writer lock.
+                spec = place_devices(db, provider, spec, gpu_count)
             now = self.store.clock()
             alloc_id = 'alloc-' + uuid.uuid4().hex[:20]
             db.execute('INSERT INTO allocations(id,idempotency_key,job_id,step_key,worker_id,provider,resource_type,'

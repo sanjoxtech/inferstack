@@ -41,6 +41,10 @@ def resolve_gpu_reservation(context, spec, resources=None):
     return 0, None, 'cpu_engine'
 
 
+class UnidentifiedGPU(ValueError):
+    """A GPU launch without identified devices: refused (fail closed)."""
+
+
 class EndpointExecutor:
     """Runs registered candidates in separate processes or attaches to test endpoints.
 
@@ -51,8 +55,12 @@ class EndpointExecutor:
     accepts_context = True
 
     def __init__(self, repository, log_root, engine_factory=ManagedEngine, *, allocations=None, provider=None,
-                 pricing=None, gpu_name=None, ready_timeout=900):
+                 pricing=None, gpu_name=None, ready_timeout=900, gpu_devices=None):
+        """gpu_devices: identified devices of this host (e.g. GPU UUIDs from the inventory).
+        A GPU launch reserves specific free devices from it atomically and pins the child
+        to them with CUDA_VISIBLE_DEVICES; without identified devices it is refused."""
         self.pricing,self.gpu_name,self.ready_timeout=pricing,gpu_name,ready_timeout
+        self.gpu_devices=list(gpu_devices or [])
         self.repository=repository
         self.log_root=Path(log_root)
         self.engine_factory=engine_factory
@@ -65,11 +73,16 @@ class EndpointExecutor:
         if self.allocations is None or not spec.command or context is None:return None
         async def spawn(argv, log):
             gpus,devices,basis=resolve_gpu_reservation(context,spec,resources)
+            if gpus and not devices and not self.gpu_devices:
+                raise UnidentifiedGPU(f'{spec.engine} launch needs {gpus} identified GPU device(s); configure the '
+                                      'executor gpu_devices (host inventory UUIDs) or an explicit reservation')
+            placement={'gpu_devices':devices} if devices else ({'gpu_pool':self.gpu_devices} if gpus else {})
             alloc=self.allocations.intent(context['job'], context['step_key'], purpose='candidate:'+spec.id,
                 provider=self.provider.name, resource_type=self.provider.resource_type,
-                spec={'deployment_id':spec.id,'argv':argv,'gpu_basis':basis,
-                      **({'gpu_devices':devices} if devices else {}),**self._price(gpus)}, gpu_count=gpus)
+                spec={'deployment_id':spec.id,'argv':argv,'gpu_basis':basis,**placement,**self._price(gpus)},
+                gpu_count=gpus)
             if alloc['state']!='intent':raise RuntimeError(f"allocation {alloc['id']} already {alloc['state']}")
+            devices=alloc['spec'].get('gpu_devices') or devices
             child_env,inherit=env,env is None
             if devices:child_env={**(env or {}),'CUDA_VISIBLE_DEVICES':','.join(devices)}
             process=await self.provider.spawn(alloc['id'], argv, log, env=child_env, inherit_env=inherit)
@@ -292,7 +305,15 @@ class EndpointVerifier:
         expected=set((measure or {}).get('expected_measurements') or plan.get('expected_measurements') or [])
         unmeasured=sorted(expected-MEASURED_METRICS)
         if unmeasured:problems.append('measurements not produced by this verifier: '+','.join(unmeasured))
-        return {'required':required,'repeats':repeats,'problems':problems,
+        objectives=[{'metric':o.metric,'direction':o.direction,'limit':o.limit,'epsilon':o.epsilon}
+                    for o in self.objectives]
+        # Every measurement the frozen policy depends on must be observed, finite, on
+        # every scored trial (or, for logprob divergence, in the gate evidence).
+        measurements=sorted(expected|{o.metric for o in self.objectives})
+        return {'required':required,'repeats':repeats,'problems':problems,'measurements':measurements,
+                'objectives':objectives,'quality_budget':self.quality_budget,
+                'max_logprob_divergence':self.max_logprob_divergence,
+                'fixture_sha256':hashlib.sha256(self.repository.encode(self.cases).encode()).hexdigest(),
                 'unsupported':sorted(set(required)-{'correctness','quality','health','comparable','complete'}-SERVING_GATES)}
 
     def comparability(self,baseline_record,candidate_record,stable):
@@ -379,26 +400,40 @@ class EndpointVerifier:
     async def phases(self,engine):
         """Streaming pass: client TTFT and content-chunk gaps (chunks are NOT tokens). None when unsupported."""
         if not self.phase_timing or not hasattr(engine,'stream'):return {}
+        from inferstack.evaluation.metrics import StreamMeasurement
+        unavailable={'ttft_client_ms':None,'chunk_gap_client_ms':None,'ttft_client_p95_ms':None}
         ttfts,gaps=[],[]
         for case in self.cases:
             payload={'prompt':case['prompt'],'max_tokens':case['max_tokens'],'temperature':0}
-            start=time.perf_counter();last=None;seen=0
+            start=time.perf_counter()
+            measurement=StreamMeasurement(started=start)
+            buffer=b'';truncated=False
             stream=engine.stream(payload)
             try:
                 async for chunk in stream:
-                    # Count SSE content events (several may arrive in one read); [DONE] is not content.
-                    events=[e for e in chunk.split(b'data:')[1:] if e.strip() and not e.strip().startswith(b'[DONE]')]
-                    if not events:continue
-                    now=time.perf_counter()
-                    for _ in events:
-                        if last is None:ttfts.append((now-start)*1000)
-                        else:gaps.append((now-last)*1000)
-                        last=now;seen+=1
-                    if seen>=self.phase_max_chunks:break
-            except Exception:  # noqa: BLE001 - streaming failure leaves phase metrics unavailable
-                return {'ttft_client_ms':None,'chunk_gap_client_ms':None,'ttft_client_p95_ms':None}
+                    # Buffer until a complete SSE event (blank-line terminated); fragmented
+                    # events are timed when they complete. Only non-empty generated content
+                    # counts: role, usage and finish events are metadata, not tokens.
+                    buffer+=chunk.replace(b'\r\n',b'\n')
+                    *events,buffer=buffer.split(b'\n\n')
+                    payloads=[]
+                    for event in events:
+                        data=[line[5:].strip() for line in event.split(b'\n') if line.startswith(b'data:')]
+                        if data:payloads.append(b'\n'.join(data).decode())
+                    if not payloads:continue
+                    now=None if all(p=='[DONE]' for p in payloads) else time.perf_counter()
+                    for item in payloads:measurement.feed(item,now)
+                    if measurement.done or len(measurement.content_times)>=self.phase_max_chunks:
+                        truncated=not measurement.done;break
+            except Exception:  # noqa: BLE001 - malformed, error or failed stream leaves phase metrics unavailable
+                return unavailable
             finally:
                 await stream.aclose()
+            if not (measurement.done or truncated) or not measurement.content_times:
+                return unavailable  # incomplete stream or no generated content: no TTFT evidence
+            times=measurement.content_times
+            ttfts.append((times[0]-start)*1000)
+            gaps.extend((b-a)*1000 for a,b in zip(times,times[1:]))
         import statistics as _st
         return {'ttft_client_ms':_st.median(ttfts) if ttfts else None,
                 'chunk_gap_client_ms':_st.median(gaps) if gaps else None,
@@ -432,16 +467,28 @@ class EndpointVerifier:
         return out
 
     def logit_agreement(self,base,cand):
+        """Greedy selected-token logprob agreement over the complete workload.
+
+        Scope: selected-token logprobs of greedy decoding, not a full-distribution or
+        teacher-forced numerical oracle. Missing or malformed evidence (case count,
+        token/logprob length, non-finite values) is None; a different greedy token
+        sequence, including a different length, is a genuine disagreement (False)."""
         if base is None or cand is None:return None,None,'engine does not return logprobs'
+        if len(base)!=len(self.cases) or len(cand)!=len(self.cases):
+            return None,None,f'logprob evidence covers {len(base)}/{len(cand)} of {len(self.cases)} cases'
+        finite=lambda v:isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v)
         diffs=[];mismatch=0
         for (bt,bl),(ct,cl) in zip(base,cand):
-            for i,(a,b) in enumerate(zip(bt,ct)):
-                if a!=b:mismatch+=1;break
-                if isinstance(bl[i],(int,float)) and isinstance(cl[i],(int,float)):diffs.append(abs(bl[i]-cl[i]))
+            if len(bt)!=len(bl) or len(ct)!=len(cl) or not all(map(finite,bl)) or not all(map(finite,cl)):
+                return None,None,'malformed logprob evidence: token/logprob lengths differ or values not finite'
+            if list(bt)!=list(ct):
+                mismatch+=1;continue
+            diffs.extend(abs(a-b) for a,b in zip(bl,cl))
+        coverage=f'{len(self.cases)-mismatch}/{len(self.cases)} cases token-identical, {len(diffs)} positions'
+        if mismatch:return False,None,f'{mismatch} cases diverged in greedy tokens; {coverage}'
         if not diffs:return None,None,'no comparable token positions'
         divergence=sum(diffs)/len(diffs)
-        return divergence<=self.max_logprob_divergence and mismatch==0,divergence,\
-            f'mean |dlogprob| {divergence:.4f} over {len(diffs)} tokens; {mismatch} cases diverged in greedy tokens'
+        return divergence<=self.max_logprob_divergence,divergence,f'mean |dlogprob| {divergence:.4f}; {coverage}'
 
     def record_trials(self,plan,candidate,baseline_record,trials,raw_sha256):
         """Persist each scored trial as a typed `trial` record pinned to exact deployment revisions."""
@@ -493,12 +540,19 @@ class EndpointVerifier:
             stable &= self.repository.read('deployment',candidate['deployment_id'])['revision']==candidate['revision']
             # Gates are computed from evidence, never asserted.
             metric_names={o.metric for o in self.objectives}
-            complete=all(len(side)==policy['repeats'] for side in trials) and all(
-                isinstance(t.get(m),(int,float)) and math.isfinite(t[m]) for side in trials for t in side for m in metric_names)
+            observed=lambda m:all(isinstance(t.get(m),(int,float)) and not isinstance(t.get(m),bool)
+                                  and math.isfinite(t[m]) for side in trials for t in side)
+            complete=all(len(side)==policy['repeats'] for side in trials) and all(observed(m) for m in metric_names)
             complete&=all(text is not None for side in outputs for run in side for text in run)
+            missing_measurements=[m for m in policy['measurements'] if m not in metric_names and m!='logprob_divergence'
+                                  and not observed(m)]
             comparable,comparability,identity=self.comparability(baseline_record,candidate_record,stable)
             gates={'correctness':correct,'quality':correct,'health':healthy,'complete':complete,'comparable':comparable}
             gate_notes={}
+            if complete and missing_measurements:
+                # A declared measurement that was never observed is missing evidence, not a pass.
+                gates['complete']=None
+                gate_notes['complete']='declared measurements not observed on every trial: '+','.join(missing_measurements)
             graded=any('reference' in c for c in self.cases)
             mean=lambda side,key:(sum(t[key] for t in side if isinstance(t.get(key),(int,float)))/
                                   max(1,sum(1 for t in side if isinstance(t.get(key),(int,float)))))
@@ -520,6 +574,12 @@ class EndpointVerifier:
                     gates[name],logit,gate_notes[name]=self.logit_agreement(await self.logprobs(baseline),
                                                                             await self.logprobs(target))
                 else:gates[name],gate_notes[name]=None,'not supported by EndpointVerifier'
+            if 'logprob_divergence' in policy['measurements'] and gates.get('complete'):
+                if 'logit_agreement' not in policy['required']:
+                    _,logit,_=self.logit_agreement(await self.logprobs(baseline),await self.logprobs(target))
+                if not (isinstance(logit,(int,float)) and math.isfinite(logit)):
+                    gates['complete']=None
+                    gate_notes['complete']='declared measurement logprob_divergence not observed'
             if policy['problems']:
                 verdict={'decision':'inconclusive','reasons':['verification policy not satisfiable: '+
                                                               '; '.join(policy['problems'])]}

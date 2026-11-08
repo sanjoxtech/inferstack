@@ -33,7 +33,7 @@ def engine_app(answer, *, logprobs=None, delta_ttft=0.05, stream_chunks=4):
         state['count'] += 1
         if body.get('stream'):
             chunks = b''.join(f'data: {json.dumps({"choices": [{"text": str(i)}]})}\n\n'.encode()
-                              for i in range(stream_chunks))
+                              for i in range(stream_chunks)) + b'data: [DONE]\n\n'
             return httpx.Response(200, content=chunks, headers={'Content-Type': 'text/event-stream'})
         choice = {'text': answer, 'finish_reason': 'stop'}
         if body.get('logprobs') and logprobs is not None:

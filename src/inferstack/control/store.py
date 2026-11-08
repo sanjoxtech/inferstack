@@ -67,6 +67,12 @@ class Store:
         return budget
 
     def submit(self, request_key, payload, *, budget=None, deadline_at=None, max_attempts=1):
+        with self.transaction() as db:
+            return self.submit_in(db, request_key, payload, budget=budget, deadline_at=deadline_at,
+                                  max_attempts=max_attempts)
+
+    def submit_in(self, db, request_key, payload, *, budget=None, deadline_at=None, max_attempts=1):
+        """Submit inside a caller's writer transaction (admission checks + insert atomically)."""
         if not isinstance(request_key, str) or not request_key.strip():
             raise ValueError('nonempty request_key required')
         budget = self.validate_budget(budget)
@@ -76,23 +82,22 @@ class Store:
             raise ValueError('max_attempts must be in [1,10]')
         encoded = self.encode(payload)
         controls = self.encode({'budget': budget, 'deadline_at': deadline_at, 'max_attempts': max_attempts})
-        with self.transaction() as db:
-            existing = db.execute('SELECT * FROM jobs WHERE request_key=?', (request_key,)).fetchone()
-            if existing:
-                same = self.encode({'budget': json.loads(existing['budget']) if existing['budget'] else None,
-                                    'deadline_at': existing['deadline_at'],
-                                    'max_attempts': existing['max_attempts'] or 1}) == controls
-                if existing['payload'] != encoded or not same:
-                    raise ValueError('idempotency key reused with different payload')
-                return existing['id']
-            job_id = uuid.uuid4().hex
-            now = self.clock()
-            db.execute('INSERT INTO jobs(id,request_key,payload,state,created,updated,budget,usage,deadline_at,'
-                       'max_attempts) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                       (job_id, request_key, encoded, 'pending', now, now,
-                        self.encode(budget) if budget else None, self.encode({}), deadline_at, max_attempts))
-            self.event(db, job_id, 'submitted', payload)
-            return job_id
+        existing = db.execute('SELECT * FROM jobs WHERE request_key=?', (request_key,)).fetchone()
+        if existing:
+            same = self.encode({'budget': json.loads(existing['budget']) if existing['budget'] else None,
+                                'deadline_at': existing['deadline_at'],
+                                'max_attempts': existing['max_attempts'] or 1}) == controls
+            if existing['payload'] != encoded or not same:
+                raise ValueError('idempotency key reused with different payload')
+            return existing['id']
+        job_id = uuid.uuid4().hex
+        now = self.clock()
+        db.execute('INSERT INTO jobs(id,request_key,payload,state,created,updated,budget,usage,deadline_at,'
+                   'max_attempts) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (job_id, request_key, encoded, 'pending', now, now,
+                    self.encode(budget) if budget else None, self.encode({}), deadline_at, max_attempts))
+        self.event(db, job_id, 'submitted', payload)
+        return job_id
 
     # --- leases ---------------------------------------------------------------
 
@@ -117,6 +122,7 @@ class Store:
                                "result=?,updated=? WHERE id=?",
                                (self.encode(error), self.encode({'error': error}), now, row['id']))
                     self.event(db, row['id'], 'failed', {'error': error})
+                    self._enqueue_outcome(db, row, 'failed', {'error': error})
                     continue
                 token = uuid.uuid4().hex
                 db.execute("UPDATE jobs SET state='running',lease_token=?,lease_until=?,attempt=attempt+1,"
@@ -191,11 +197,16 @@ class Store:
     def cancel(self, job_id):
         # The lease token is retained (state no longer 'running', so it fences nothing)
         # so the cancelled worker can attach partial evidence exactly once.
+        # Every terminal transition writes its outcome callback in the same transaction.
+        # Partial evidence attached later is a job event; the callback reports the terminal
+        # state and is not re-sent (the outbox key is idempotent per job).
         with self.transaction() as db:
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             cursor = db.execute("UPDATE jobs SET state='cancelled',lease_until=NULL,updated=? "
                                 "WHERE id=? AND state IN ('pending','running')", (self.clock(), job_id))
             if cursor.rowcount:
                 self.event(db, job_id, 'cancelled', {})
+                self._enqueue_outcome(db, row, 'cancelled', {'cancelled': True})
             return bool(cursor.rowcount)
 
     def attach_partial(self, job_id, token, body):

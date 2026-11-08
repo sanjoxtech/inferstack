@@ -36,9 +36,14 @@ class ImageBuilder:
         self.docker, self.registry, self.timeout = docker, registry, timeout
         self.runner = runner or self._run
 
-    def _run(self, argv, cwd=None):
+    def _run(self, argv, cwd=None, allocation_id=None):
+        env = None
+        if allocation_id:
+            import os
+            from inferstack.infrastructure.local import TAG
+            env = {**os.environ, TAG: allocation_id}  # the docker CLI process carries the build's identity
         try:
-            proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=self.timeout)
+            proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired:
             return 124, 'timeout'
         return proc.returncode, proc.stdout + proc.stderr
@@ -60,7 +65,7 @@ class ImageBuilder:
         lines.append('LABEL inferstack.candidate=true')
         return '\n'.join(lines) + '\n'
 
-    def build(self, workspace, base_image, *, tag, dependencies=(), with_src=False):
+    def build(self, workspace, base_image, *, tag, dependencies=(), with_src=False, allocation_id=None):
         """Build from `workspace/{wheelhouse,src}`. Returns identity and hashed build inputs."""
         workspace = Path(workspace)
         context = workspace / 'image'
@@ -75,7 +80,12 @@ class ImageBuilder:
         inputs = hashlib.sha256()
         for path in sorted(p for p in context.rglob('*') if p.is_file()):
             inputs.update(path.relative_to(context).as_posix().encode() + b'\0' + path.read_bytes())
-        code, log = self.runner([self.docker, 'build', '--network', 'none', '--pull=false', '-t', tag, str(context)])
+        argv = [self.docker, 'build', '--network', 'none', '--pull=false', '-t', tag]
+        if allocation_id:
+            argv += ['--label', f'inferstack.allocation={allocation_id}']
+        argv.append(str(context))
+        code, log = (self.runner(argv, allocation_id=allocation_id) if allocation_id and self.runner == self._run
+                     else self.runner(argv))
         if code:
             raise ImageBuildFailed(f'image build failed:\n{log[-1500:]}')
         code, image_id = self.runner([self.docker, 'image', 'inspect', '--format', '{{.Id}}', tag])

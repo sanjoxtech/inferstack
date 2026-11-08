@@ -72,7 +72,9 @@ class LocalProcessProvider:
         return isinstance(external, dict) and external.get('host') == self.host
 
     def alive(self, external):
-        pid = external['pid']
+        pid = external.get('pid')
+        if pid is None:
+            return False  # tag-identified allocation (build steps): no single leader process
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -136,17 +138,34 @@ class LocalProcessProvider:
                 members.append(int(parts[0]))
         return members
 
-    def members(self, external):
-        """Every live process belonging to the allocation, or None when membership is unknown."""
+    def ownership(self, external):
+        """(owned_pids, uncertain_pids, group_verified) or None when membership is unknown.
+
+        Ownership is proven only by durable identity: the leader with a matching start
+        token (which also pins its process group, since a live leader holds its PGID),
+        or a process carrying this allocation's tag. A historical numeric PGID alone
+        proves nothing once its leader is gone: the ID may belong to an unrelated,
+        reused group, so its untagged members are reported as uncertain, never signalled.
+        """
         group = self.group_members(external.get('pgid'))
         if group is None:
             return None
-        tagged = self.find_tagged(external['allocation_id']) if external.get('allocation_id') else []
-        found = set(group) | set(tagged)
-        if self.alive(external):
-            found.add(external['pid'])
-        found.discard(os.getpid())
-        return sorted(found)
+        tagged = set(self.find_tagged(external['allocation_id'])) if external.get('allocation_id') else set()
+        leader = self.alive(external)
+        owned = set(tagged)
+        if leader:
+            owned |= set(group) | {external['pid']}
+        uncertain = set() if leader else set(group) - tagged
+        owned.discard(os.getpid())
+        uncertain.discard(os.getpid())
+        return sorted(owned), sorted(uncertain), leader
+
+    def members(self, external):
+        """Every live process provably belonging to the allocation, or None when unknown/uncertain."""
+        found = self.ownership(external)
+        if found is None or found[1]:
+            return None
+        return found[0]
 
     def residual(self, external):
         """True when any member of the allocation is still running (or membership is unknown)."""
@@ -154,18 +173,28 @@ class LocalProcessProvider:
         return members is None or bool(members)
 
     def stop(self, external, grace_seconds=10.0):
-        """Terminate the whole allocation; True only when no member process remains."""
+        """Terminate the whole allocation; True only when no member process remains.
+
+        Signals go only to provably owned processes (and to the process group only while
+        its verified leader holds it). Uncertain ownership returns False so the caller
+        records an operator-visible orphaned/unresolved allocation."""
         if not self.residual(external):
             return True
         for sig, wait in ((signal.SIGTERM, grace_seconds), (signal.SIGKILL, 5.0)):
-            members = self.members(external) or []
-            try:
-                os.killpg(external['pgid'], sig)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
+            found = self.ownership(external)
+            if found is None:
                 return False
-            for pid in members:
+            owned, uncertain, group_verified = found
+            if not owned:
+                return not uncertain  # nothing of ours left; uncertain processes are never signalled
+            if group_verified:
+                try:
+                    os.killpg(external['pgid'], sig)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    return False
+            for pid in owned:
                 try:
                     os.kill(pid, sig)
                 except ProcessLookupError:

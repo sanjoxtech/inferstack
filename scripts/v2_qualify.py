@@ -43,7 +43,21 @@ KERNEL_CHECKS = ('rmsnorm', 'add_rmsnorm.sum', 'add_rmsnorm.norm', 'gated_rmsnor
 EXPECTED_KERNEL_CHECKS = frozenset(f'{c}/seed{s}' for s in KERNEL_SEEDS for c in KERNEL_CHECKS)
 # Skip reasons that are acceptable on a GPU qualification host; any other skip
 # means required coverage did not run there.
-ACCEPTED_SKIP_MARKERS = ('PostgreSQL', 'initdb', 'pg_ctl', 'INFERSTACK_TEST_PG')
+# Skips owned by an optional integration gate. They are accepted (and reported separately)
+# unless that integration was made required with --require, in which case they block.
+INTEGRATION_SKIP_MARKERS = {
+    'postgresql': ('PostgreSQL', 'initdb', 'pg_ctl', 'INFERSTACK_TEST_PG', 'INFERSTACK_TEST_POSTGRES'),
+    'docker': ('test_docker_live', 'Docker daemon'),
+    'kubernetes': ('test_kubernetes_live', 'INFERSTACK_TEST_K8S'),
+}
+ACCEPTED_SKIP_MARKERS = INTEGRATION_SKIP_MARKERS['postgresql']
+
+
+def skip_integration(line):
+    for gate_name, markers in INTEGRATION_SKIP_MARKERS.items():
+        if any(m in line for m in markers):
+            return gate_name
+    return None
 
 
 def run(argv, log, timeout, env=None):
@@ -95,15 +109,29 @@ def kernel_gate(code, text):
                 duplicate=duplicate, nonfinite=nonfinite, method=report.get('method'), checks=len(checks)), report
 
 
-def suite_gate(code, text, has_gpu):
+def suite_gate(code, text, has_gpu, required=()):
+    """Skips are classified by the integration that owns them and the selected profile.
+
+    A skip of an optional integration that was not required is recorded, not blocking.
+    A skip of a required integration always blocks. Any other skip blocks on a GPU host,
+    where the whole suite is expected to run."""
     summary = [l for l in text.splitlines() if ' passed' in l or ' failed' in l or ' error' in l][-1:]
     skips = [l for l in text.splitlines() if l.startswith('SKIPPED')]
-    accepted = [l for l in skips if any(m in l for m in ACCEPTED_SKIP_MARKERS)]
-    blocking = [l for l in skips if l not in accepted] if has_gpu else []
+    accepted, optional, blocking = [], {}, []
+    for line in skips:
+        owner = skip_integration(line)
+        if owner is not None and owner in required:
+            blocking.append(line)
+        elif owner is not None:
+            optional.setdefault(owner, []).append(line)
+            accepted.append(line)
+        elif has_gpu:
+            blocking.append(line)
     reasons = ([f'pytest exited {code}'] if code != 0 else []) + \
-        (['required coverage skipped on GPU host'] if blocking else [])
+        (['required coverage skipped'] if blocking else [])
     return gate('failed' if reasons else 'passed', reasons=reasons, summary=summary[0] if summary else None,
-                skipped_accepted=accepted[:50], skipped_blocking=blocking[:50])
+                skipped_accepted=accepted[:50], skipped_optional={k: v[:20] for k, v in optional.items()},
+                skipped_blocking=blocking[:50])
 
 
 def main():
@@ -131,7 +159,7 @@ def main():
 
     code, text, secs = run([sys.executable, '-m', 'pytest', '-rs', '-p', 'no:cacheprovider'],
                            out / 'pytest.log', 3600)
-    gates['test_suite'] = suite_gate(code, text, bool(hardware['gpus'])) | {'seconds': secs}
+    gates['test_suite'] = suite_gate(code, text, bool(hardware['gpus']), required) | {'seconds': secs}
 
     code, text, secs = run([sys.executable, 'scripts/v160_kernel_equivalence.py'], out / 'kernel-equivalence.log', 1800)
     gates['kernel_equivalence'], report = kernel_gate(code, text)

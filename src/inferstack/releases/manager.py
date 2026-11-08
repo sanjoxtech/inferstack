@@ -27,7 +27,8 @@ class ReleaseManager:
         if record['revision']!=candidate['revision'] or digest!=candidate['spec_sha256']:
             raise ValueError('deployment changed after verification')
         manifest={'deployment':record,'evidence':evidence_ref,'job_id':job_id,
-                  'verification_scope':evidence['scope'],'verification_policy_sha256':policy.get('sha256')}
+                  'verification_scope':evidence['scope'],'verification_policy_sha256':policy.get('sha256'),
+                  'identity':self.freeze_identity(record['body'],evidence)}
         serving=experiment.get('serving') or {}
         if serving.get('runnable'):manifest['runnable']=serving['runnable']
         if serving.get('allocation_id'):manifest['serving_allocation_id']=serving['allocation_id']
@@ -40,6 +41,39 @@ class ReleaseManager:
             stored=self.repository.read('release',identifier)['body']
             if stored not in (manifest,validate('release',manifest).model_dump(mode='json')):raise
         return identifier
+
+    def freeze_identity(self,deployment,evidence):
+        """Resolve every identity reference to the exact revision that was verified.
+
+        Uses the candidate pins recorded in the verification evidence (falling back to
+        an explicitly pinned `ref@revision`). A declared reference that cannot be
+        resolved to a pinned revision is rejected: a release never carries a mutable
+        identity."""
+        from inferstack.contracts.records import parse_ref
+        pins=evidence.get('identity') or {}
+        frozen={'plugin_refs':sorted(deployment.get('plugin_refs') or []),
+                'engine_version':deployment.get('engine_version'),'image_digest':deployment.get('image_digest')}
+        for key,kind in (('model_ref','model'),('hardware_ref','hardware')):
+            ref=deployment.get(key)
+            if not ref:
+                frozen[key]=None;continue
+            pinned=(pins.get(key) or [None,None])[-1]
+            if pinned is None:
+                identifier,revision=parse_ref(ref)
+                if revision is None:
+                    raise ValueError(f'{key} {ref!r} was not resolved to a pinned revision during verification')
+                pinned=f'{identifier}@{revision}'
+            identifier,revision=parse_ref(pinned)
+            if revision is None:raise ValueError(f'{key} pin {pinned!r} has no revision')
+            body=self.repository.read(kind,identifier,revision)['body']
+            frozen[key]=pinned
+            if kind=='model':
+                if not body.get('revision'):raise ValueError(f'model record {pinned} has no weights revision')
+                frozen['model_revision']=body['revision']
+                frozen['tokenizer_revision']=body.get('tokenizer_revision') or body['revision']
+                if body.get('config_revision'):frozen['config_revision']=body['config_revision']
+        frozen.setdefault('model_revision',None);frozen.setdefault('tokenizer_revision',None)
+        return frozen
 
     def route(self,model,stable_release,*,candidate_release=None,weight=0,expected_revision=0):
         if isinstance(weight,bool) or not isinstance(weight,int) or not 0<=weight<=100:

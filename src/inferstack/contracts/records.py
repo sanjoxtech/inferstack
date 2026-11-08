@@ -367,6 +367,10 @@ class Release(Record):
     verification_policy_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
     runnable: dict | None = None  # {'path', 'tree_sha256'}: immutable runnable workspace for isolated builds
     serving_allocation_id: str | None = None  # the verified runtime kept serving for this release
+    # Resolved identity frozen at release creation (model/tokenizer revisions, pinned
+    # model/hardware record revisions, plugins). Attestation and deployment use these
+    # exact values; later updates to the referenced records never change them.
+    identity: dict | None = None
 
     def references(self):
         snapshot = self.deployment
@@ -432,6 +436,9 @@ class RolloutV3(RolloutV2):
     route_body: dict | None = None
     transition: dict | None = None
     stable_baseline: dict | None = None
+    # Durable cleanup obligation written with the terminal route transition:
+    # {'release_id', 'state': 'pending'|'done', 'attempts', 'last_error', 'outcome'}.
+    retirement: dict | None = None
 
 
 # --- allocation, feedback -------------------------------------------------------

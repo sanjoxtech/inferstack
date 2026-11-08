@@ -104,6 +104,8 @@ def main():
                     self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
                     self.wfile.flush()
                     time.sleep(0.02)
+                done = b'data: [DONE]\n\n'
+                self.wfile.write(b'%x\r\n%s\r\n' % (len(done), done))
                 self.wfile.write(b'0\r\n\r\n')
                 note('stream completed')
             except (BrokenPipeError, ConnectionResetError):

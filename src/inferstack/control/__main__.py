@@ -50,10 +50,18 @@ def main():
             # Releases are launched/warmed before traffic and drained/stopped after promotion or rollback.
             from inferstack.releases.runtime import ReleaseRuntime
             from inferstack.releases.rollout import http_drain
-            drain=None
+            from inferstack.releases.rollout import http_undrain
+            drain=undrain=None
             if os.environ.get('INFERSTACK_GATEWAY_URL'):
-                drain=http_drain(os.environ['INFERSTACK_GATEWAY_URL'],os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
-            runtime=ReleaseRuntime(repo,providers['local'],log_root=state/'release-logs',attest=attest,drain=drain)
+                gateway_token=os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token
+                drain=http_drain(os.environ['INFERSTACK_GATEWAY_URL'],gateway_token)
+                undrain=http_undrain(os.environ['INFERSTACK_GATEWAY_URL'],gateway_token)
+            # Every configured provider: retirement dispatches to the allocation's own provider.
+            from inferstack.control.wiring import host_gpu_devices
+            gpu_devices=[d for d in os.environ.get('INFERSTACK_GPU_DEVICES','').split(',') if d] or \
+                host_gpu_devices({},'local')
+            runtime=ReleaseRuntime(repo,providers['local'],providers=providers,log_root=state/'release-logs',
+                                   attest=attest,drain=drain,undrain=undrain,gpu_devices=gpu_devices)
         app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest,release_runtime=runtime) \
             if args.action=='serve' \
             else create_gateway(repo,token)
@@ -119,8 +127,10 @@ def main():
                 planner=ToolPlanner(repo,create_provider(config['provider']),telemetry=telemetry,**config['planner'])
             else:
                 planner=ProviderPlanner(repo,**config['planner'])
+            from inferstack.control.wiring import host_gpu_devices
             executor=build_executor(repo,config,state=state,allocations=allocations,provider=provider,
-                                    pricing=pricing,gpu_name=infra.get('gpu_name'))
+                                    pricing=pricing,gpu_name=infra.get('gpu_name'),
+                                    gpu_devices=host_gpu_devices(config,provider.name))
             verifier=EndpointVerifier(repo,executor,**config['verifier'])
             try:
                 result=await OptimizationWorker(repo,planner,executor,verifier,lease_seconds=lease,

@@ -76,10 +76,18 @@ def _expected(repository, deployment, release=None):
                 'build_sha256': ((release or {}).get('body', {}).get('runnable') or {}).get('tree_sha256')
                 or (deployment.get('profile') or {}).get('build_sha256'),
                 'model_revision': None, 'tokenizer_revision': None}
+    frozen = ((release or {}).get('body') or {}).get('identity')
+    if frozen:
+        # The release's frozen identity is authoritative; record updates never move it.
+        expected['model_revision'] = frozen.get('model_revision')
+        expected['tokenizer_revision'] = frozen.get('tokenizer_revision')
+        return expected
     if deployment.get('model_ref'):
         from inferstack.contracts.records import parse_ref
         identifier, revision = parse_ref(deployment['model_ref'])
-        model = repository.read('model', identifier, revision=revision) if revision else repository.read('model', identifier)
+        if revision is None:
+            return expected  # mutable reference without a frozen identity: not attestable (unverified)
+        model = repository.read('model', identifier, revision=revision)
         expected['model_revision'] = model['body']['revision']
         expected['tokenizer_revision'] = model['body'].get('tokenizer_revision') or model['body']['revision']
     return expected

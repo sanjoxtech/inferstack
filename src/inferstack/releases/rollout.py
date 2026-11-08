@@ -27,6 +27,14 @@ progress. A controller that finds an unfinished intent completes it idempotently
 (route already applied -> record progress; route not applied -> apply it).
 Every transition is a new revision of the rollout record (audit trail).
 `pause`, `resume` and `abort` are operator controls.
+
+Ownership is re-checked after every observation await, immediately before the
+transition, and a transition that ends in `conflict` never has physical side
+effects. Retiring the losing runtime is a durable obligation: the terminal
+transition records `retirement: pending` atomically with the new state, the
+runtime is drained and stopped afterwards, and the obligation is marked done only
+after it completes. A controller that finds a terminal rollout with a pending
+retirement (crash, exception) resumes it on the next `step`.
 """
 from __future__ import annotations
 
@@ -152,20 +160,51 @@ class RolloutController:
             return self._conflict(rollout_id, revision, body)
         target = {'stable': body['stable_ref'], 'candidate': None, 'weight': 0,
                   'previous': route['body'].get('previous')}
-        revision, body = self._transition(rollout_id, revision, body, target, {'state': 'rolled_back',
-                                                                                 'reason': reason})
-        await self._retire(body['release_ref'])
+        revision, body = self._transition(rollout_id, revision, body, target, {
+            'state': 'rolled_back', 'reason': reason, **self._retirement(body['release_ref'])})
+        if body['state'] == 'rolled_back':
+            await self._settle_retirement(rollout_id)
         return body['state']
 
-    async def _retire(self, release_id):
-        if self.runtime is not None:
-            await self.runtime.retire(release_id)
+    def _retirement(self, release_id):
+        """Follow-up fields recording the retirement obligation with the terminal transition."""
+        if self.runtime is None:
+            return {}
+        return {'retirement': {'release_id': release_id, 'state': 'pending', 'attempts': 0, 'last_error': None}}
+
+    async def _settle_retirement(self, rollout_id):
+        """Run a pending retirement obligation; it is marked done only after the runtime confirms."""
+        revision, body = self._read(rollout_id)
+        obligation = body.get('retirement') or {}
+        if obligation.get('state') != 'pending' or self.runtime is None:
+            return obligation or None
+        route = self.repository.read('route', body['model'])['body']
+        if obligation['release_id'] in (route.get('stable'), route.get('candidate')):
+            # Never stop a runtime the live route still serves (operator restored it).
+            revision, body = self._write(rollout_id, body, revision, retirement={
+                **obligation, 'state': 'skipped', 'last_error': 'release is serving on the live route'})
+            return body['retirement']
+        attempt = {**obligation, 'attempts': obligation.get('attempts', 0) + 1}
+        try:
+            outcome = await self.runtime.retire(obligation['release_id'])
+        except Exception as exc:
+            self._write(rollout_id, body, revision,
+                        retirement={**attempt, 'last_error': f'{type(exc).__name__}: {exc}'[:500]})
+            raise
+        orphaned = [a for a in (outcome or {}).get('allocations', []) if a.get('state') != 'released']
+        state = 'done' if not orphaned else 'pending'
+        self._write(rollout_id, body, revision, retirement={**attempt, 'state': state, 'outcome': outcome,
+                    'last_error': None if not orphaned else 'allocations not confirmed stopped'})
+        return {**attempt, 'state': state}
 
     async def step(self, rollout_id):
         revision, body = self._read(rollout_id)
         if body.get('transition'):
             # Recover an interrupted route transition before evaluating anything else.
             revision, body = self._complete(rollout_id, revision, body)
+        if body['state'] in ('promoted', 'rolled_back') and (body.get('retirement') or {}).get('state') == 'pending':
+            await self._settle_retirement(rollout_id)  # resume an interrupted cleanup obligation
+            return body['state']
         if body['state'] in TERMINAL or body['state'] in ('paused', 'pending'):
             return body['state']
         if self._owned_route(body) is None:
@@ -205,19 +244,25 @@ class RolloutController:
             hold = 'latency evidence unavailable for the stage window'
         if hold:
             return 'holding: ' + hold
+        # Observation awaited: another writer may have changed the route meanwhile.
+        if self._owned_route(body) is None:
+            return self._conflict(rollout_id, revision, body)
         if body['current_stage'] + 1 < len(body['stages']):
             nxt = body['current_stage'] + 1
             target = {'stable': body['stable_ref'], 'candidate': body['release_ref'],
                       'weight': body['stages'][nxt]['weight'], 'previous': body['route_body'].get('previous')}
-            self._transition(rollout_id, revision, body, target,
-                             {'current_stage': nxt, 'stage_started_at': NOW, 'observations': observations,
-                              'stable_baseline': body.get('stable_baseline'),
-                              'reason': f"stage {nxt} at {body['stages'][nxt]['weight']}%"})
-            return 'advanced'
+            _, body = self._transition(rollout_id, revision, body, target,
+                                       {'current_stage': nxt, 'stage_started_at': NOW, 'observations': observations,
+                                        'stable_baseline': body.get('stable_baseline'),
+                                        'reason': f"stage {nxt} at {body['stages'][nxt]['weight']}%"})
+            return 'conflict' if body['state'] == 'conflict' else 'advanced'
         target = {'stable': body['release_ref'], 'candidate': None, 'weight': 0, 'previous': body['stable_ref']}
-        self._transition(rollout_id, revision, body, target,
-                         {'state': 'promoted', 'observations': observations, 'reason': 'all stages passed'})
-        await self._retire(body['stable_ref'])  # drain in-flight streams, then stop the old stable
+        _, body = self._transition(rollout_id, revision, body, target,
+                                   {'state': 'promoted', 'observations': observations, 'reason': 'all stages passed',
+                                    **self._retirement(body['stable_ref'])})
+        if body['state'] != 'promoted':
+            return body['state']  # conflict: the route is not ours, so nothing is stopped
+        await self._settle_retirement(rollout_id)  # drain in-flight streams, then stop the old stable
         return 'promoted'
 
     def pause(self, rollout_id):
@@ -233,6 +278,10 @@ class RolloutController:
         # The stage window restarts: evidence gathered while paused is not reused.
         self._write(rollout_id, body, revision, state='progressing', stage_started_at=self.clock(),
                     reason='resumed by operator')
+
+    async def settle(self, rollout_id):
+        """Resume a pending retirement obligation (recovery loop / operator)."""
+        return await self._settle_retirement(rollout_id)
 
     async def abort(self, rollout_id, reason='aborted by operator'):
         revision, body = self._read(rollout_id)
@@ -263,6 +312,19 @@ def http_observer(repository, gateway_url, token, transport=None):
             response.raise_for_status()
             return response.json()
     return observe
+
+
+def http_undrain(gateway_url, token, transport=None):
+    """undrain(deployment_id) against a separate gateway process (for ReleaseRuntime.ensure)."""
+    import httpx
+
+    async def undrain(deployment_id):
+        async with httpx.AsyncClient(base_url=gateway_url, transport=transport, timeout=10,
+                                     headers={'Authorization': 'Bearer ' + token}) as client:
+            response = await client.post(f'/gateway/undrain/{deployment_id}')
+            response.raise_for_status()
+            return response.json()
+    return undrain
 
 
 def http_drain(gateway_url, token, transport=None):

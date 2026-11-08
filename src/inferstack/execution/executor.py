@@ -106,6 +106,9 @@ class IsolatedExecutor(EndpointExecutor):
             raise ValueError('source_revision must be a full commit hash')
         self.sandbox = sandbox or Sandbox()
         self.pip_index_args, self.test_timeout = tuple(pip_index_args), test_timeout
+        # A local package index named in pip_index_args must be readable inside the boundary.
+        self.sandbox.readable = [*self.sandbox.readable,
+                                 *(Path(a) for a in self.pip_index_args if not a.startswith('-') and Path(a).is_dir())]
         self.keep_workspaces = keep_workspaces
         self.workspaces = {}
         self.image_builder = image_builder  # required for plugin/source candidates on container providers
@@ -201,12 +204,33 @@ class IsolatedExecutor(EndpointExecutor):
             raise
 
     def _build_allocation(self, context, namespace):
+        """Persisted, active build allocation identified by its tag (no single leader process).
+
+        Every build/test/image step runs inside `Sandbox.owned_by(id)`, so each subprocess
+        carries INFERSTACK_ALLOCATION_ID; the reconciler finds and stops them after a crash."""
         if self.allocations is None or not context or 'job' not in context:
             return None
+        from inferstack.infrastructure.local import LocalProcessProvider
         alloc = self.allocations.intent(context['job'], context['step_key'], purpose='build:' + namespace,
                                         provider='local', resource_type='process',
                                         spec={'kind': 'build', 'namespace': namespace}, gpu_count=0)
+        if alloc['state'] != 'intent':
+            raise RuntimeError(f"build allocation {alloc['id']} already {alloc['state']}")
+        host = self.provider.host if getattr(self.provider, 'name', None) == 'local' else LocalProcessProvider().host
+        external = {'host': host, 'kind': 'build', 'allocation_id': alloc['id']}
+        self.allocations.record_external(alloc['id'], external)
+        self.allocations.activate(alloc['id'], context['job'], external)
         return alloc['id']
+
+    def _end_build(self, alloc_id, note):
+        """Release the build allocation only after no tagged build process remains."""
+        from inferstack.infrastructure.local import LocalProcessProvider
+        external = self.allocations.get(alloc_id)['external'] or {'allocation_id': alloc_id}
+        provider = self.provider if getattr(self.provider, 'name', None) == 'local' else LocalProcessProvider()
+        if provider.stop(external, grace_seconds=5.0):
+            self.allocations.release(alloc_id, note)
+        else:
+            self.allocations.mark_orphaned(alloc_id, note + '_stop_failed')
 
     async def execute(self, plan, namespace, context=None):
         if not plan.get('actions'):
@@ -231,10 +255,12 @@ class IsolatedExecutor(EndpointExecutor):
         artifacts, log, src, venv = {}, [], None, None
         source = baseline
         body = dict(baseline['body'])
-        build_alloc = None
+        build_alloc = owner = None
         try:
             if untrusted:
                 build_alloc = self._build_allocation(context, namespace)
+            owner = Sandbox.owned_by(build_alloc)
+            owner.__enter__()  # every build/test/image subprocess below carries the build allocation tag
             for action_id in plan['action_order']:
                 action = actions[action_id]
                 params = action['params']
@@ -251,9 +277,6 @@ class IsolatedExecutor(EndpointExecutor):
                     body['plugin_refs'] = sorted({*body.get('plugin_refs', []), params['technique_id']})
                 elif action['type'] == 'source_patch':
                     src = await self._offload(self.build_source, ws, action, artifacts, log)
-            if build_alloc is not None:
-                self.allocations.release(build_alloc, 'build_complete')
-                build_alloc = None
             derived = source is baseline or venv is not None or src is not None or body != source['body']
             env = {}
             if venv is not None:
@@ -264,8 +287,15 @@ class IsolatedExecutor(EndpointExecutor):
             if src is not None:
                 env['PYTHONPATH'] = str(src / 'src')
             if derived and remote:
-                body = await self._containerize(body, ws, namespace, plan, actions, src, artifacts)
-            elif derived:
+                body = await self._containerize(body, ws, namespace, plan, actions, src, artifacts,
+                                                allocation_id=build_alloc)
+            if owner is not None:
+                owner.__exit__(None, None, None)
+                owner = None
+            if build_alloc is not None:
+                self._end_build(build_alloc, 'build_complete')  # confirmed no tagged build process remains
+                build_alloc = None
+            if derived and not remote:
                 body['command'], body['base_url'] = relocate(body, free_port())
                 if venv is not None or src is not None:
                     # The candidate server runs untrusted code: launch it inside the boundary.
@@ -282,13 +312,15 @@ class IsolatedExecutor(EndpointExecutor):
             return await self.launch(record, plan, namespace, context, env=scrubbed_env(env, home=ws),
                                      extra={'artifacts': artifacts, 'isolation': isolation, 'derived': derived})
         except BaseException:
+            if owner is not None:
+                owner.__exit__(None, None, None)
             if build_alloc is not None:
                 self.sandbox.terminate_all()
-                self.allocations.release(build_alloc, 'build_aborted')
+                self._end_build(build_alloc, 'build_aborted')
             self._discard(namespace)
             raise
 
-    async def _containerize(self, body, ws, namespace, plan, actions, src, artifacts):
+    async def _containerize(self, body, ws, namespace, plan, actions, src, artifacts, allocation_id=None):
         """Derived candidate for a container provider: build its image (if code changed) and relocate its port."""
         container = dict((body.get('profile') or {}).get('container') or {})
         if not container.get('image'):
@@ -298,7 +330,7 @@ class IsolatedExecutor(EndpointExecutor):
         if deps or src is not None:
             identity = await self._offload(lambda: self.image_builder.build(
                 ws, container['image'], tag=f'inferstack-candidate:{namespace[:60].lower()}', dependencies=deps,
-                with_src=src is not None))
+                with_src=src is not None, **({'allocation_id': allocation_id} if allocation_id else {})))
             self._artifact(artifacts, 'image.Dockerfile', identity['dockerfile'])
             self._artifact(artifacts, 'image.json', json.dumps({k: v for k, v in identity.items()
                                                                 if k not in ('dockerfile', 'log_tail')}, sort_keys=True))

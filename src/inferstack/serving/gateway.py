@@ -58,6 +58,12 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
             raise HTTPException(422, 'deadline_seconds must be in (0, 3600]')
         return await admission.drain(deployment_id, deadline_seconds)
 
+    @app.post('/gateway/undrain/{deployment_id}')
+    def undrain(deployment_id: str):
+        """Admit requests again (a rollback target restored to service)."""
+        admission.undrain(deployment_id)
+        return admission.status(deployment_id)
+
     def rejected(exc: Rejected, headers):
         extra = {'Retry-After': str(exc.retry_after)} if exc.retry_after else {}
         return JSONResponse({'error': {'message': exc.reason, 'type': 'admission'}}, status_code=exc.status,

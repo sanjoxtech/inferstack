@@ -46,11 +46,28 @@ def telemetry_source(repository, transport=None):
     return snapshot
 
 
-def build_executor(repository, config, *, state, allocations, provider, pricing=None, gpu_name=None):
+def host_gpu_devices(config, provider_name):
+    """Identified GPU devices for exclusive placement: explicit config, else the local inventory (UUIDs)."""
+    infra = config.get('infrastructure') or {}
+    if infra.get('gpu_devices') is not None:
+        return list(infra['gpu_devices'])
+    if provider_name != 'local':
+        return []
+    from inferstack.infrastructure.inventory import collect
+    try:
+        hardware, _ = collect(provider='attached')
+    except Exception:  # noqa: BLE001 - no inventory means no identified devices (GPU launches refused)
+        return []
+    return [g['uuid'] for g in hardware.get('gpus') or [] if g.get('uuid')]
+
+
+def build_executor(repository, config, *, state, allocations, provider, pricing=None, gpu_name=None,
+                   gpu_devices=None):
     from inferstack.optimization.experiment import EndpointExecutor
     spec = dict(config.get('executor') or {'kind': 'endpoint'})
     kind = spec.pop('kind', 'endpoint')
-    common = dict(allocations=allocations, provider=provider, pricing=pricing, gpu_name=gpu_name)
+    common = dict(allocations=allocations, provider=provider, pricing=pricing, gpu_name=gpu_name,
+                  gpu_devices=gpu_devices)
     if kind == 'endpoint':
         return EndpointExecutor(repository, Path(state) / 'logs', **common)
     if kind != 'isolated':

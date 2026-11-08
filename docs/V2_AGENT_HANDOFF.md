@@ -650,6 +650,26 @@ verification report, "Remediation, second pass").
   native_smoke, vLLM/SGLang conformance), a GPU Kubernetes node pool, a first
   GitHub Actions run of `.github/workflows/ci.yml`, FactoryOS end-to-end.
 
+### Second independent review remediated — 8 November 2026
+
+Status: all fifteen findings in `docs/V2_SECOND_REVIEW.md` (R01–R15) fixed; the
+fifteen second-pass probes and the fifteen original probes pass, and CI now runs
+both probe files. One original probe (GPU accounting) was amended because R12
+makes GPU launches without identified devices fail closed. Details and evidence:
+"Remediation" section of the second review.
+- Serving: rollout re-checks route ownership after every observation await;
+  `conflict` never retires anything; retirement is a durable obligation resumed
+  by `step`/`settle`; the rollback API warms/attests/undrains the target first.
+- Isolation: sandbox reads are an allowlist (Seatbelt and bwrap, verified on
+  macOS and in a Linux container); keychain lookups and other PIDs are hidden.
+- Measurement: declared measurements must be observed; buffered content-aware
+  SSE parsing; logprob gate requires complete coverage.
+- Identity/ownership: releases freeze resolved model/tokenizer/hardware pins;
+  build steps carry their allocation tag; PGID reuse never signalled; GPU
+  launches reserve identified devices atomically (host inventory UUIDs).
+- Integrations: atomic trigger admission; every terminal transition writes the
+  outcome callback; qualification classifies skips by required integration.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |

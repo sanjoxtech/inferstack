@@ -10,6 +10,10 @@ A trigger is a stored spec: `{"deployment_id", "goal", "interval_s"}` (periodic)
   jobs across all triggers (TriggerService argument).
 `tick()` is idempotent per evaluation window: the job request key includes the
 trigger id and the window index, so concurrent tickers or retries create one job.
+Admission is atomic: the cooldown/in-flight/global/daily checks, the job insert and
+the firing-state update run in one writer transaction (SQLite BEGIN IMMEDIATE /
+PostgreSQL writer advisory lock), re-reading the trigger row inside it, so tickers
+straddling a window boundary cannot both pass admission.
 SLO evaluation uses an observe(deployment_id, metric, window_s) callback that
 returns a number or None; None (missing telemetry) never fires.
 """
@@ -115,7 +119,17 @@ class TriggerService:
             if not due:
                 outcomes.append({'trigger': tid, 'action': 'not_due', 'observed': value})
                 continue
+            payload = {'deployment_id': spec['deployment_id'], 'goal': spec['goal'], 'source': f'trigger:{trigger["kind"]}',
+                       'trigger_id': tid, 'evidence_ids': [], **({'observed': {spec['metric']: value}}
+                                                                  if trigger['kind'] == 'slo' else {})}
             with self.store.transaction() as db:
+                current = db.execute('SELECT state,last_fired_at FROM triggers WHERE id=?', (tid,)).fetchone()
+                if current is None or current['state'] != 'active':
+                    outcomes.append({'trigger': tid, 'action': 'paused'})
+                    continue
+                if current['last_fired_at'] is not None and now - current['last_fired_at'] < spec['cooldown_s']:
+                    outcomes.append({'trigger': tid, 'action': 'cooldown'})
+                    continue
                 fired_today = db.execute("SELECT COUNT(*) FROM jobs WHERE request_key LIKE ? AND created>?",
                                          (f'trigger:{tid}:%', now - 86400)).fetchone()[0]
                 if self._unfinished(db, tid):
@@ -127,11 +141,7 @@ class TriggerService:
                 if fired_today >= spec['max_jobs_per_day']:
                     outcomes.append({'trigger': tid, 'action': 'daily_limit'})
                     continue
-            payload = {'deployment_id': spec['deployment_id'], 'goal': spec['goal'], 'source': f'trigger:{trigger["kind"]}',
-                       'trigger_id': tid, 'evidence_ids': [], **({'observed': {spec['metric']: value}}
-                                                                  if trigger['kind'] == 'slo' else {})}
-            job_id = self.store.submit(f'trigger:{tid}:{window}', payload, budget=spec['budget'])
-            with self.store.transaction() as db:
+                job_id = self.store.submit_in(db, f'trigger:{tid}:{window}', payload, budget=spec['budget'])
                 db.execute('UPDATE triggers SET last_fired_at=?,last_job_id=?,fired_count=fired_count+1,updated_at=? '
                            'WHERE id=? AND (last_job_id IS NULL OR last_job_id<>?)', (now, job_id, now, tid, job_id))
             outcomes.append({'trigger': tid, 'action': 'fired', 'job_id': job_id, 'observed': value})

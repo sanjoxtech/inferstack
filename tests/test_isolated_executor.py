@@ -194,7 +194,8 @@ def setup(tmp_path, project, monkeypatch):
     allocations = AllocationManager(repo, 'w')
     executor = IsolatedExecutor(repo, tmp_path / 'logs', work_root=tmp_path / 'work', source_root=root,
                                 source_revision=revision, allocations=allocations, provider=LocalProcessProvider(),
-                                pip_index_args=('--no-index', '--find-links', str(wheels)))
+                                pip_index_args=('--no-index', '--find-links', str(wheels)),
+                                gpu_devices=['GPU-test-0', 'GPU-test-1'])  # identified (fake) devices
     context = {'job': {**claim, 'id': job, 'step_attempt': 1}, 'step_key': 'iter0.experiment'}
     return repo, executor, context, tmp_path
 
