@@ -15,7 +15,9 @@ deployment-level admission only; engines keep their own token schedulers.
 from __future__ import annotations
 
 import asyncio
+import statistics
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -37,6 +39,8 @@ class DeploymentState:
     draining: bool = False
     totals: dict = field(default_factory=lambda: {'admitted': 0, 'succeeded': 0, 'failed': 0, 'rejected': 0})
     idle: asyncio.Event = field(default_factory=asyncio.Event)
+    # (wall time, ok, time to first byte in ms or None) for rollout observation windows
+    events: deque = field(default_factory=lambda: deque(maxlen=20000))
 
     def __post_init__(self):
         self.idle.set()
@@ -90,8 +94,9 @@ class AdmissionController:
         s.totals['admitted'] += 1
         return probe
 
-    def release(self, key, *, ok, probe=False):
+    def release(self, key, *, ok, probe=False, ttfb_ms=None):
         s = self.state(key)
+        s.events.append((time.time(), bool(ok), ttfb_ms))
         s.inflight = max(0, s.inflight - 1)
         if s.inflight == 0:
             s.idle.set()
@@ -105,6 +110,14 @@ class AdmissionController:
             s.failures += 1
             if probe or s.failures >= s.failure_threshold:
                 s.opened_at = self.clock()
+
+    def observe(self, key, since):
+        """Requests, errors and median time-to-first-byte for one deployment since a wall time."""
+        window = [e for e in self.state(key).events if e[0] >= since]
+        latencies = [e[2] for e in window if e[1] and e[2] is not None]
+        return {'requests': len(window), 'errors': sum(1 for e in window if not e[1]),
+                'ttfb_p50_ms': statistics.median(latencies) if latencies else None,
+                'latency_samples': len(latencies)}
 
     async def drain(self, key, deadline_seconds):
         s = self.state(key)

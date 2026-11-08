@@ -414,6 +414,26 @@ allocation. Spend = active time x GPUs x price and counts against `spend_usd`. A
 job with a spend budget whose allocation has no known price is treated as
 exhausted. Verify current provider prices before relying on them.
 
+## Progressive rollout and FactoryOS feedback
+
+Run the control server with `INFERSTACK_GATEWAY_URL` (and
+`INFERSTACK_GATEWAY_TOKEN` if the gateway uses a different token) so the
+rollout controller can read the gateway's per-deployment observations
+(`GET /gateway/observe`). Start with `POST /control/rollouts` (stages with
+`weight`, `min_duration_s`, optional `max_error_rate`, `max_latency_regression`;
+weights non-decreasing, last 100) and call `POST /control/rollouts/{id}/step`
+periodically; `pause`, `resume` (restarts the stage window) and `abort` are
+available. A breach rolls back immediately; too few candidate requests
+(`min_requests`), unknown latency or an unfinished stage holds; the 100% stage
+promotes. Each transition is a revision of the rollout record
+(`GET /control/records/rollout/{id}/history`). Latency here is gateway
+time-to-first-byte per deployment, measured over the current stage window.
+
+FactoryOS integration is specified in `docs/FACTORYOS_CONTRACT.md`
+(`POST /control/feedback`, `GET /control/feedback/{issue_id}`): actionable
+categories create one optimization job per idempotency key; a kept candidate is
+never routed automatically.
+
 ## Release and route
 
 A kept experiment can create a manifest via

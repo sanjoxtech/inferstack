@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import hmac
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
@@ -51,7 +52,18 @@ class RecordBody(BaseModel):
 PUBLIC_KINDS={'deployment','model','hardware','workload','objective','technique','evidence','feedback'}
 
 
-def create_control_app(repository:Repository,token:str,fetcher=None):
+class RolloutStart(BaseModel):
+    rollout_id:str=Field(min_length=1,max_length=200)
+    model:str=Field(min_length=1,max_length=300)
+    release_id:str=Field(min_length=1,max_length=200)
+    stages:list[dict]=Field(min_length=1,max_length=10)
+    min_requests:int=Field(default=20,ge=1)
+
+
+ACTIONABLE={'latency','throughput','capacity','cost'}
+
+
+def create_control_app(repository:Repository,token:str,fetcher=None,rollout_observer=None,rollout_attest=None):
     if not token:raise ValueError('control API token required')
     from inferstack.research import EvidenceStore,EvidenceIntegrityError,SafeFetcher
     evidence_store=EvidenceStore(repository)
@@ -163,6 +175,67 @@ def create_control_app(repository:Repository,token:str,fetcher=None):
         try:revision=repository.put_record('hardware',hardware_id,body,expected_revision)
         except ValueError as exc:raise HTTPException(409,str(exc))
         return {'revision':revision,'hardware':body,'notes':notes}
+
+    from inferstack.releases.rollout import RolloutController,RolloutError
+
+    def controller():
+        if rollout_observer is None:raise HTTPException(503,'rollout observation is not configured (gateway URL)')
+        return RolloutController(repository,observe=rollout_observer,attest=rollout_attest)
+
+    @app.post('/control/rollouts',dependencies=auth)
+    async def rollout_start(body:RolloutStart):
+        try:return await controller().start(body.rollout_id,body.model,body.release_id,body.stages,
+                                            min_requests=body.min_requests)
+        except KeyError:raise HTTPException(404,'unknown route or release')
+        except (RolloutError,ValueError) as exc:raise HTTPException(409,str(exc))
+
+    @app.post('/control/rollouts/{rollout_id}/{action}',dependencies=auth)
+    async def rollout_action(rollout_id:str,action:str):
+        c=controller()
+        try:
+            if action=='step':outcome=await c.step(rollout_id)
+            elif action=='pause':outcome=c.pause(rollout_id) or 'paused'
+            elif action=='resume':outcome=c.resume(rollout_id) or 'progressing'
+            elif action=='abort':outcome=await c.abort(rollout_id)
+            else:raise HTTPException(404,'unknown rollout action')
+        except KeyError:raise HTTPException(404,'unknown rollout')
+        except (RolloutError,ValueError) as exc:raise HTTPException(409,str(exc))
+        return {'outcome':outcome,'rollout':repository.read('rollout',rollout_id)}
+
+    @app.post('/control/feedback',dependencies=auth)
+    def feedback(body:dict):
+        """FactoryOS InferenceIssue intake (contract version = feedback schema version)."""
+        from pydantic import ValidationError
+        from inferstack.contracts.records import parse_ref,validate
+        try:issue=validate('feedback',body)
+        except (ValidationError,ValueError) as exc:raise HTTPException(422,str(exc)[:1000])
+        try:repository.put_record('feedback',issue.issue_id,body)
+        except ValueError as exc:
+            if 'expected_revision' not in str(exc):raise HTTPException(409,str(exc))
+            if repository.read('feedback',issue.issue_id)['body']!=issue.model_dump(mode='json'):
+                raise HTTPException(409,'issue_id reused with different content')
+        record=repository.read('feedback',issue.issue_id)
+        job_id=None
+        if issue.category in ACTIONABLE and issue.deployment_ref:
+            deployment_id,_=parse_ref(issue.deployment_ref)
+            goal=(f'Address {issue.category} issue {issue.issue_id} reported by {issue.source}. '
+                  f'Observations: {json.dumps(issue.observations,sort_keys=True)[:2000]}')
+            job_id=repository.submit('feedback:'+issue.idempotency_key,{'deployment_id':deployment_id,'goal':goal,
+                'source':issue.source,'feedback_ref':f'{issue.issue_id}@{record["revision"]}','evidence_ids':[]})
+        return {'issue_id':issue.issue_id,'contract_version':record['schema_version'],'job_id':job_id,
+                'status':'queued' if job_id else 'recorded_not_actionable'}
+
+    @app.get('/control/feedback/{issue_id}',dependencies=auth)
+    def feedback_status(issue_id:str):
+        try:record=repository.read('feedback',issue_id)
+        except KeyError:raise HTTPException(404,'unknown issue')
+        with repository.connection() as db:
+            row=db.execute('SELECT id FROM jobs WHERE request_key=?',('feedback:'+record['body']['idempotency_key'],)).fetchone()
+        if row is None:return {'issue_id':issue_id,'status':'recorded_not_actionable'}
+        job=repository.get(row['id'])
+        outcome=(job['result'] or {}).get('decision') if job['state']=='completed' else None
+        return {'issue_id':issue_id,'job_id':job['id'],'status':job['state'],'decision':outcome,
+                'release':None,'note':'a kept candidate still requires an explicit progressive rollout'}
 
     @app.get('/control/allocations',dependencies=auth)
     def allocations(state:str|None=None,job_id:str|None=None):

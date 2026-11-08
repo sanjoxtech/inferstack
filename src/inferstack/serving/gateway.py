@@ -12,6 +12,7 @@ how engines receive cancellation.
 import asyncio
 import hmac
 import re
+import time
 import uuid
 
 import httpx
@@ -46,6 +47,10 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
     def status():
         return {'deployments': {key: admission.status(key) for key in sorted(admission.states)}}
 
+    @app.get('/gateway/observe')
+    def observe(deployment_id: str, since: float):
+        return admission.observe(deployment_id, since)
+
     def rejected(exc: Rejected, headers):
         extra = {'Retry-After': str(exc.retry_after)} if exc.retry_after else {}
         return JSONResponse({'error': {'message': exc.reason, 'type': 'admission'}}, status_code=exc.status,
@@ -74,6 +79,8 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
             return rejected(exc, headers)
         engine = engine_factory(DeploymentSpec.from_record(spec_body))
         ok = False
+        started = time.perf_counter()
+        ttfb = lambda: (time.perf_counter() - started) * 1000
 
         def upstream_error(exc):
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
@@ -93,6 +100,7 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
                 admission.release(key, ok=ok, probe=probe)
                 await engine.close()
                 return response
+            first_byte_ms = ttfb()
 
             async def generate():
                 upstream_failed = False
@@ -109,18 +117,20 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
                 finally:
                     await chunks.aclose()
                     await engine.close()
-                    admission.release(key, ok=not upstream_failed, probe=probe)
+                    admission.release(key, ok=not upstream_failed, probe=probe, ttfb_ms=first_byte_ms)
             # Existing streams remain pinned during route changes; no worker is killed.
             return StreamingResponse(generate(), media_type='text/event-stream', headers=headers)
         try:
             result = await engine.complete(body, chat=chat, headers=upstream)
             ok = True
+            latency = ttfb()
             return JSONResponse(result, headers=headers)
         except (httpx.HTTPError, OSError, ValueError) as exc:
             ok, response = upstream_error(exc)
+            latency = None
             return response
         finally:
-            admission.release(key, ok=ok, probe=probe)
+            admission.release(key, ok=ok, probe=probe, ttfb_ms=latency if ok else None)
             await engine.close()
 
     @app.post('/v1/completions')

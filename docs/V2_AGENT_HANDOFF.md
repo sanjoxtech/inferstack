@@ -570,3 +570,23 @@ or Kubernetes cluster was available; live GKE/EKS/Colab qualification is J.
   UID.
 - Remaining: live cluster runs; GPU scheduling quotas and node pools; cloud
   billing API reconciliation; image build pipeline for patched candidates.
+
+### Package I — progressive rollout and FactoryOS contract
+
+Status: implemented, CPU-tested, including a real gateway (uvicorn) driving an
+automatic rollback from real failing traffic. Not tested with FactoryOS itself.
+
+- `releases/rollout.py`: staged canary controller — attestation gate, per-stage
+  error-rate and TTFB-regression checks over the stage window, hold on missing
+  evidence, rollback on breach, promotion after the 100% stage, pause/resume/
+  abort, every transition a rollout record revision (Rollout schema v2).
+- Gateway records per-deployment time-to-first-byte and outcomes;
+  `/gateway/observe` serves windowed observations; `http_observer` connects a
+  separate control process.
+- Control API: rollout start/step/pause/resume/abort; FactoryOS feedback
+  intake (strict schema, idempotent, actionable categories queue one job) and
+  status. Contract documented in `docs/FACTORYOS_CONTRACT.md`.
+- Checks: 181 CPU tests passed (8 new in `tests/test_rollout.py`).
+- Remaining: scheduled automatic stepping (currently operator/cron driven);
+  SLO-based gates from engine telemetry in addition to gateway TTFB; FactoryOS
+  client and end-to-end test against a FactoryOS instance.

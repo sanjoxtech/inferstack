@@ -410,6 +410,17 @@ class Rollout(Record):
         return self
 
 
+class RolloutV2(Rollout):
+    """v2: controller state for progressive delivery (each transition is a revision)."""
+    VERSION = 2
+    REFS = {**Rollout.REFS, 'stable_ref': 'release'}
+    stable_ref: str | None = None
+    stage_started_at: float | None = Field(default=None, gt=0)
+    min_requests: int = Field(default=20, ge=1)
+    reason: str | None = Field(default=None, max_length=2000)
+    observations: dict = Field(default_factory=dict)
+
+
 # --- allocation, feedback -------------------------------------------------------
 
 class Budget(BaseModel):
@@ -453,7 +464,7 @@ class InferenceIssue(Record):
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
 for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
              Technique, TechniqueV2,
-             Plan, Trial, Release, Route, Rollout, ResourceAllocation, InferenceIssue):
+             Plan, Trial, Release, Route, Rollout, RolloutV2, ResourceAllocation, InferenceIssue):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}
 

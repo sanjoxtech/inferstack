@@ -23,7 +23,12 @@ def main():
         from inferstack.control.api import create_control_app
         token=os.environ.get('INFERSTACK_CONTROL_TOKEN','')
         from inferstack.serving.gateway import create_gateway
-        app=create_control_app(repo,token) if args.action=='serve' else create_gateway(repo,token)
+        observer=None
+        if args.action=='serve' and os.environ.get('INFERSTACK_GATEWAY_URL'):
+            from inferstack.releases.rollout import http_observer
+            observer=http_observer(repo,os.environ['INFERSTACK_GATEWAY_URL'],
+                                   os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
+        app=create_control_app(repo,token,rollout_observer=observer) if args.action=='serve' else create_gateway(repo,token)
         uvicorn.run(app,host=args.host,port=args.port)
     elif args.action=='reconcile':
         from inferstack.infrastructure import LocalProcessProvider,reconcile
