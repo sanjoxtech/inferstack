@@ -638,6 +638,18 @@ every acceptance probe passes. Some were checked live this time (details below).
   image build for patched candidates, quality oracles beyond exact match,
   FactoryOS end-to-end, CI and dependency lock.
 
+### Remaining scope closed — 8 November 2026
+
+Status: implemented; live-tested where this host allows (details in the
+verification report, "Remediation, second pass").
+- Live here: PostgreSQL 18.6 (hosted), Docker (provider + offline candidate image
+  build), Kubernetes on kind v1.37 (quota, scale, drain, verified stop),
+  OpenRouter/DeepSeek planning, real-process attestation and gateway drain.
+- Local qualification: `not_qualified` (CPU) with every non-GPU gate passed.
+- Still needs the user's environments: Colab A100 run (kernel_equivalence,
+  native_smoke, vLLM/SGLang conformance), a GPU Kubernetes node pool, a first
+  GitHub Actions run of `.github/workflows/ci.yml`, FactoryOS end-to-end.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |

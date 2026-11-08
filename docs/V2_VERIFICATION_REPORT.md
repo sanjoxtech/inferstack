@@ -437,3 +437,11 @@ Closes the residual limits of the first pass and the report's non-numbered scope
 | Phase telemetry | Streaming pass (client TTFT, SSE-event gaps), engine histogram deltas (queue/prefill/decode/TTFT/TPOT), authoritative `output_tokens_per_s`, p95 only with >= 200 samples, metric source recorded per metric. | `tests/test_quality_phases.py` |
 | Quality | Graded cases (token F1 / contains) with a declared `quality_budget`; `logit_agreement` gate from engine logprobs; unsupported → inconclusive. | same file |
 | Qualification | `engine_conformance.py` (vLLM/SGLang live launch-and-check), `postgresql`/`docker`/`kubernetes` gates, `gpu_profile` per run. | runner checked against an emulated engine (not GPU evidence) |
+
+Consolidated local qualification (`scripts/v2_qualify.py --require postgresql --require docker
+--require kubernetes`, this Mac, commit `3c93c7e`): verdict `not_qualified`, profile `cpu`,
+blocking only on GPU gates (environment, kernel_equivalence, native_smoke). Passed:
+test_suite (246 passed, 0 skipped, PostgreSQL variants included), model_identity,
+postgresql (hosted PostgreSQL 18.6, 26 passed), docker (2 passed: lifecycle and
+candidate image build), kubernetes (kind v1.37.0: quota, scale, drain, stop).
+vLLM/SGLang conformance and provider gates were not requested in this run.
