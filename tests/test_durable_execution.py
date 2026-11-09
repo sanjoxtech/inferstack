@@ -91,9 +91,21 @@ RECONCILE_NOTE = {'allocation_intent': 'never_launched', 'process_started': 'unr
 def test_crash_at_every_transition_then_restart_recovers(env, point):
     env['candidate']()
     repo = env['repo']
-    job = repo.submit('crash-' + point, {'deployment_id': 'baseline', 'goal': 'reduce latency'})
-
-    crashed = run_worker(env, '--crash-at', point)
+    # On a loaded CI runner the worker can lose its (short) lease before reaching the
+    # injected crash point; that is the fencing contract working, not this scenario. Then
+    # the job is finished by a normal worker and the crash is retried on a fresh job (at
+    # most three times); every such retry must be explained by a reported lease loss.
+    for attempt in range(3):
+        job = repo.submit(f'crash-{point}-{attempt}', {'deployment_id': 'baseline', 'goal': 'reduce latency'})
+        crashed = run_worker(env, '--crash-at', point)
+        if crashed.returncode == 137:
+            break
+        assert crashed.returncode == 0 and 'lease lost' in crashed.stderr, crashed.stderr
+        for _ in range(3):
+            time.sleep(LEASE * 1.3)
+            if repo.get(job)['state'] != 'running':
+                break
+            assert run_worker(env).returncode == 0
     assert crashed.returncode == 137, crashed.stderr
     if point in SPAWNED_POINTS:
         assert tagged_pids(repo), 'expected an orphaned candidate process after the crash'
