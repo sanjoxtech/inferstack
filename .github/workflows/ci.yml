@@ -125,7 +125,9 @@ jobs:
       - name: postgres-parametrized tests on Neon
         run: |
           if [ -z "$INFERSTACK_TEST_POSTGRES_URL" ]; then echo "NEON_DATABASE_URL secret not set; skipping"; exit 0; fi
-          uv run --no-sync python -m pytest -o addopts='' -q -rs -k postgres tests
+          # Only the modules with PostgreSQL-parametrized tests (no torch needed here).
+          uv run --no-sync python -m pytest -o addopts='' -q -rs -k postgres \
+            tests/test_control_store.py tests/test_execution_store.py tests/test_harness_h1.py tests/test_live_evidence.py
 
   provider-smoke:
     name: live provider planning smoke
