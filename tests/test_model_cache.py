@@ -38,7 +38,8 @@ def test_publish_verifies_and_is_idempotent(tmp_path, source):
     assert cache.verify(model)['path'] == str(entry)
     assert cache.publish(model, lambda *_: pytest.fail('must not refetch')) == entry
     assert not any((tmp_path / 'cache' / 'staging').iterdir())
-    assert all(not os.access(p, os.W_OK) for p in entry.rglob('*') if p.is_file())  # published read-only
+    # Published read-only (mode bits; os.access would be True for root, e.g. on Colab).
+    assert all(p.stat().st_mode & 0o222 == 0 for p in entry.rglob('*') if p.is_file())
 
 
 def test_checksum_mismatch_never_publishes(tmp_path, source):

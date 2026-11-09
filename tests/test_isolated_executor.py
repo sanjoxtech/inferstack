@@ -199,6 +199,11 @@ def make_wheel(directory, name, version):
 
 @pytest.fixture
 def setup(tmp_path, project, monkeypatch):
+    from inferstack.execution.sandbox import Sandbox
+    if not Sandbox().filesystem_isolated:
+        # Untrusted plugin/source builds are refused without a boundary (tested separately);
+        # these end-to-end builds need one. E.g. Colab containers cannot run bwrap.
+        pytest.skip('no filesystem isolation backend (need sandbox-exec or bwrap)')
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'sk-should-not-leak-000000')
     root, revision = project
     repo = Repository(tmp_path / 'db', tmp_path / 'artifacts')
@@ -300,3 +305,21 @@ async def test_registered_candidate_executor_refuses_dag_actions(setup):
     repo, _, context, tmp = setup
     with pytest.raises(ValueError, match='use IsolatedExecutor'):
         await EndpointExecutor(repo, tmp / 'logs').execute(plan_for(repo, GOOD), 'exp3')
+
+
+@pytest.mark.asyncio
+async def test_untrusted_actions_are_refused_without_a_filesystem_boundary(tmp_path):
+    """Runs on any host: plugin/source builds never execute without an isolation backend."""
+    from inferstack.execution.executor import IsolatedExecutor
+    executor = IsolatedExecutor.__new__(IsolatedExecutor)
+
+    class NoBoundary:
+        filesystem_isolated = False
+    executor.sandbox, executor.image_builder = NoBoundary(), None
+
+    class Local:
+        launches_remotely = False
+    executor.provider = Local()
+    plan = {'actions': [{'id': 'plug', 'type': 'plugin_install', 'params': {}}], 'action_order': ['plug']}
+    with pytest.raises(BuildFailed, match='no filesystem isolation boundary'):
+        await IsolatedExecutor.execute(executor, plan, 'ns', context={'job': {}})

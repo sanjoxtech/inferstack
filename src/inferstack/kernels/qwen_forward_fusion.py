@@ -8,6 +8,10 @@ from typing import Any
 try:
     import triton
     import triton.language as tl
+    try:  # precise (correctly rounded) transcendental functions; tl.exp is a fast approximation
+        from triton.language.extra import libdevice as _libdevice
+    except Exception:  # noqa: BLE001
+        _libdevice = None
     _HAS_TRITON = True
 
     @triton.jit
@@ -73,14 +77,18 @@ try:
         # sigmoid(b), g = -exp(A_log) * softplus(a + dt_bias)
         be = tl.sigmoid(bv)
         z = av + dt
-        # numerically stable softplus
-        sp = tl.maximum(z, 0.0) + tl.log(1.0 + tl.exp(-tl.abs(z)))
-        gg = -tl.exp(al) * sp
+        # g is a float32 output checked against the FP32 oracle within 1 ULP, so it uses the
+        # same formula as torch.nn.functional.softplus (threshold 20, log1p(exp(z))) with
+        # precise libdevice exp/log1p. The earlier fast tl.exp + log(1 + exp(-|z|)) form
+        # measured 5-19 ULP on an A100 (Colab run 2026-11-09).
+        sp = tl.where(z > 20.0, z, _libdevice.log1p(_libdevice.exp(z)))
+        gg = -_libdevice.exp(al) * sp
         tl.store(beta + row * heads + offs, be, mask=mask)
         tl.store(g + row * heads + offs, gg, mask=mask)
 except Exception:
     triton = None
     tl = None
+    _libdevice = None
     _HAS_TRITON = False
 
 
@@ -216,8 +224,9 @@ def fused_silu_mul(x):
 def fused_beta_g(b, a, alog, dt_bias):
     import torch
     heads = b.shape[-1]
-    if not (_HAS_TRITON and b.is_cuda and a.is_cuda and b.is_contiguous() and a.is_contiguous()):
-        STATS.fallbacks += 1
+    if not (_HAS_TRITON and _libdevice is not None and b.is_cuda and a.is_cuda and b.is_contiguous()
+            and a.is_contiguous()):
+        STATS.fallbacks += 1  # never trade float32 precision for speed: use the reference path
         return beta_g_reference(b, a, alog, dt_bias)
     beta = torch.empty_like(b)
     g = torch.empty(b.shape, dtype=torch.float32, device=b.device)
