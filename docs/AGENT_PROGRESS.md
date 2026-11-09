@@ -7,7 +7,7 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Current state (summary)
 
-- HEAD `main`: 44c9ac9 (H2). CI: checking.
+- HEAD `main`: 8dfea02 (H2 + this log). CI: green (all 5 jobs).
 - Harness plan: H0 done (+ follow-up F1/F2), H1 done, H2 done. Next: H3 (bounded
   implementation: technique idea -> stored patch artifact -> isolated build -> verify).
 - GPU: Colab A100 run at d33b470 **qualified** (with same-commit CI sandbox evidence,
@@ -15,6 +15,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 - Open owner decisions: tag v2.0.0 now or after 3-run speed confirmation.
 
 ## Log
+
+### 2026-11-09 09:53 UTC — Claude Code (implementation agent)
+- Task: H2 verified on CI (8dfea02 green: py3.11, py3.12, Docker image, kind, lock).
+- State: H2 complete. Waiting for owner go-ahead on H3.
+- Next: H3 step 1 = implementer handoff contract (stored patch artifact + build manifest, journaled attempts), before any autonomous coding.
 
 ### 2026-11-09 09:48 UTC — Claude Code (implementation agent)
 - Task: H2 committed (44c9ac9): diagnosis/ intake + problem records; created this file.
