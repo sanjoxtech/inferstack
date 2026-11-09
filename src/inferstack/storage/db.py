@@ -62,12 +62,37 @@ class SQLiteDatabase(Database):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.url = 'sqlite:///' + self.path
 
+    _wal_ready: set = set()
+
+    def _ensure_wal(self, db):
+        """Switch the file to WAL once. Changing the journal mode needs an exclusive lock
+        and does not wait on the busy handler, so concurrent first openers retry briefly
+        instead of failing with 'database is locked'."""
+        if self.path in SQLiteDatabase._wal_ready:
+            return
+        import time
+        for attempt in range(50):
+            try:
+                mode = db.execute('PRAGMA journal_mode=WAL').fetchone()[0]
+                if str(mode).lower() == 'wal':
+                    SQLiteDatabase._wal_ready.add(self.path)
+                    return
+            except sqlite3.OperationalError as exc:
+                if 'locked' not in str(exc) and 'busy' not in str(exc):
+                    raise
+            time.sleep(min(0.5, 0.01 * (attempt + 1)))
+        raise sqlite3.OperationalError(f'could not enable WAL on {self.path}')
+
     @contextmanager
     def connection(self):
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA foreign_keys=ON')
-        db.execute('PRAGMA journal_mode=WAL')
+        self._ensure_wal(db)
+        # WAL + NORMAL: commits are atomic and survive process crashes (the guarantee the
+        # lease/fencing design relies on); only an OS crash or power loss can drop the
+        # latest commits. FULL fsyncs every commit and stalls the worker's event loop.
+        db.execute('PRAGMA synchronous=NORMAL')
         try:
             yield db
         finally:

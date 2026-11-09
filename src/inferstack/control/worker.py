@@ -41,11 +41,12 @@ class OptimizationWorker:
 
     async def renew(self, job):
         loop = asyncio.get_running_loop()
-        last = loop.time()
+        last = self._last_renewal = loop.time()
         while True:
             await asyncio.sleep(self.lease_seconds / 3)
             now = loop.time()
             gap, last = now - last, now
+            self._last_renewal = now
             try:
                 self.repository.heartbeat(job['id'], job['lease_token'], self.lease_seconds)
             except LeaseLost:
@@ -218,6 +219,10 @@ class OptimizationWorker:
             self.faults('before_finish')
             self.repository.finish(job['id'], job['lease_token'], result)
         except LeaseLost:
+            import sys
+            since = asyncio.get_running_loop().time() - getattr(self, '_last_renewal', 0.0)
+            print(f"lease lost for job {job['id']}: detected by a fenced write {since:.2f}s after the last "
+                  f"renewal attempt (lease {self.lease_seconds}s)", file=sys.stderr)
             await self._stop(work, heartbeat, deadline)
             try:
                 self.repository.attach_partial(job['id'], job['lease_token'],
