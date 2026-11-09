@@ -181,6 +181,7 @@ class ReleaseRuntime:
             container = {**container, 'gpus': spec['gpu_devices']}  # docker --gpus device=<reserved>
         self.log_root.mkdir(parents=True, exist_ok=True)
         log = (self.log_root / f'{alloc_id}.log').open('ab')
+        launched_at = time.monotonic()
         try:
             if container is not None:
                 external = {**provider.launch(alloc_id, container), 'allocation_id': alloc_id}
@@ -202,11 +203,20 @@ class ReleaseRuntime:
                 if time.monotonic() > deadline or not provider.alive(external):
                     raise RuntimeUnavailable(f'replacement for {release_id} did not become ready')
                 await asyncio.sleep(0.25)
+            startup = {'ready_s': time.monotonic() - launched_at}
+            if hasattr(provider, 'startup_phases'):
+                try:
+                    startup['pods'] = provider.startup_phases(external)  # scheduling / init / start / ready
+                except Exception:  # noqa: BLE001 - timing evidence is best effort, never a gate
+                    startup['pods'] = None
+            with self.repository.transaction() as db:  # measured startup, recorded on the allocation
+                db.execute('UPDATE allocations SET spec=? WHERE id=?',
+                           (self.repository.encode({**spec, 'startup': startup}), alloc_id))
             if self.attest is not None:
                 result = await self.attest(release)
                 if result.get('status') != 'attested':
                     raise RuntimeUnavailable(f"replacement for {release_id} not attested: {result.get('status')}")
-            return {'allocation_id': alloc_id, 'replaced': True, 'provider': provider.name}
+            return {'allocation_id': alloc_id, 'replaced': True, 'provider': provider.name, 'startup': startup}
         except BaseException:
             ext = manager.get(alloc_id)['external']
             if ext is None or provider.stop(ext):

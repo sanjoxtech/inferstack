@@ -414,6 +414,38 @@ allocation. Spend = active time x GPUs x price and counts against `spend_usd`. A
 job with a spend budget whose allocation has no known price is treated as
 exhausted. Verify current provider prices before relying on them.
 
+## Model artifact cache and startup (P2)
+
+Weights live in an immutable cache on an operator-provided volume (a PVC; never
+an arbitrary hostPath), separate from the 2Gi scratch. A model record's pinned
+`checksums` define the entry; the key covers source, repo, weights/tokenizer/
+config revisions and every file digest, so revisions never share an entry.
+
+- Publish: a one-shot downloader Job (`KubernetesProvider.cache_job_manifest`) is
+  the only workload holding artifact credentials (`envFrom` Secret) and write
+  access. It fetches into staging, verifies every pinned checksum, writes the
+  manifest last and publishes with one atomic rename. Locally:
+  `python -m inferstack.infrastructure.model_cache publish --root DIR
+  --source huggingface|DIR --model-json '<pinned model record>'`.
+- Serve: set `profile.container.model_cache = {claim, mount_path, model,
+  verify_image?}`. The PVC is mounted read-only; with `verify_image` an
+  init-container re-hashes the entry before the engine starts, so a missing,
+  incomplete or corrupt entry fails readiness. `compile_cache_size` adds a
+  bounded writable engine-cache volume (`XDG_CACHE_HOME`, `VLLM_CACHE_ROOT`).
+- Eviction is LRU within `--max-bytes` and never removes an entry leased by a
+  live runtime.
+- Loader: `profile_patch.load_format` (`auto`, `safetensors`,
+  `runai_streamer`) maps to vLLM `--load-format`. `runai_streamer` needs its
+  optional dependency in the image and Safetensors weights; qualify it per
+  vLLM/image combination.
+- Startup evidence: replacements record `ready_s` and, on Kubernetes, per-pod
+  `scheduled_s`, `initialized_s` (includes cache verification), `started_s`
+  (image pull inside) and `ready_s` (engine load and compile inside) on the
+  allocation. Speedup claims require measured cold, warm and restart profiles.
+
+Not verified here: a real >2Gi model on a GPU cluster, the streamer loader, and
+storage-class access modes or zone binding for multi-replica topologies.
+
 ## Progressive rollout and FactoryOS feedback
 
 Run the control server with `INFERSTACK_GATEWAY_URL` (and

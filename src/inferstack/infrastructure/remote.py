@@ -164,6 +164,35 @@ class KubernetesProvider(_CLIProvider):
                                          'allowPrivilegeEscalation': False,
                                          'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}},
                      'volumeMounts': [{'name': 'scratch', 'mountPath': '/tmp'}]}
+        volumes = [{'name': 'scratch', 'emptyDir': {'sizeLimit': spec.get('scratch_size', '2Gi')}}]
+        init = []
+        cache = spec.get('model_cache')
+        if cache:
+            # Immutable artifact cache: a PVC mounted read-only (serving never writes trusted
+            # weights), separate from scratch. Readiness is gated on a verify init-container
+            # when an image with the inferstack verifier is supplied.
+            claim, mount = cache['claim'], cache.get('mount_path', '/models')
+            if not re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?', claim) or not mount.startswith('/'):
+                raise ValueError('model_cache needs a valid PVC name and absolute mount_path')
+            volumes.append({'name': 'model-cache', 'persistentVolumeClaim': {'claimName': claim, 'readOnly': True}})
+            container['volumeMounts'].append({'name': 'model-cache', 'mountPath': mount, 'readOnly': True})
+            if cache.get('verify_image'):
+                if not re.search(r'@sha256:[0-9a-f]{64}$', cache['verify_image']):
+                    raise ValueError('model_cache.verify_image must be pinned by digest')
+                init.append({'name': 'verify-model-cache', 'image': cache['verify_image'],
+                             'args': ['python', '-m', 'inferstack.infrastructure.model_cache', 'verify',
+                                      '--root', mount, '--model-json', json.dumps(cache['model'], sort_keys=True)],
+                             'resources': {'limits': {'cpu': '1', 'memory': '1Gi'},
+                                           'requests': {'cpu': '1', 'memory': '1Gi'}},
+                             'securityContext': container['securityContext'],
+                             'volumeMounts': [{'name': 'model-cache', 'mountPath': mount, 'readOnly': True},
+                                              {'name': 'scratch', 'mountPath': '/tmp'}]})
+        if spec.get('compile_cache_size'):
+            # Bounded writable location for engine compilation caches (torch/triton/vLLM).
+            volumes.append({'name': 'compile-cache', 'emptyDir': {'sizeLimit': spec['compile_cache_size']}})
+            container['volumeMounts'].append({'name': 'compile-cache', 'mountPath': '/var/cache/engine'})
+            container['env'] += [{'name': 'XDG_CACHE_HOME', 'value': '/var/cache/engine'},
+                                 {'name': 'VLLM_CACHE_ROOT', 'value': '/var/cache/engine/vllm'}]
         egress = [{'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]}]
         if self.egress_cidrs:
             egress.append({'to': [{'ipBlock': {'cidr': c}} for c in self.egress_cidrs]})
@@ -174,8 +203,8 @@ class KubernetesProvider(_CLIProvider):
                                    'spec': {'automountServiceAccountToken': False, 'enableServiceLinks': False,
                                             'terminationGracePeriodSeconds': int(spec.get('drain_seconds', 15)) +
                                             int(spec.get('shutdown_seconds', 30)),
-                                            'containers': [container],
-                                            'volumes': [{'name': 'scratch', 'emptyDir': {'sizeLimit': '2Gi'}}],
+                                            'containers': [container], **({'initContainers': init} if init else {}),
+                                            'volumes': volumes,
                                             **({'nodeSelector': spec['node_selector']} if spec.get('node_selector') else {})}}}},
             {'apiVersion': 'v1', 'kind': 'Service', 'metadata': {'name': name, 'labels': labels},
              'spec': {'selector': {LABEL: alloc_id}, 'ports': [{'port': port, 'targetPort': port}]}},
@@ -183,6 +212,57 @@ class KubernetesProvider(_CLIProvider):
              'spec': {'podSelector': {'matchLabels': {LABEL: alloc_id}}, 'policyTypes': ['Ingress', 'Egress'],
                       'ingress': [{'ports': [{'port': port}]}], 'egress': egress}},
         ]
+
+    def cache_job_manifest(self, name, *, image, claim, model, credentials_secret=None, source='huggingface',
+                           mount_path='/models', active_deadline_seconds=7200):
+        """One-shot downloader Job: the only workload with artifact credentials and write access.
+
+        It fetches the pinned files into staging on the PVC, verifies every checksum and
+        publishes atomically (infrastructure/model_cache.py). Serving pods only read."""
+        if not re.search(r'@sha256:[0-9a-f]{64}$', image):
+            raise ValueError('downloader image must be pinned by digest')
+        container = {'name': 'publish', 'image': image,
+                     'args': ['python', '-m', 'inferstack.infrastructure.model_cache', 'publish', '--root', mount_path,
+                              '--source', source, '--model-json', json.dumps(model, sort_keys=True)],
+                     'resources': {'limits': {'cpu': '2', 'memory': '4Gi'}, 'requests': {'cpu': '2', 'memory': '4Gi'}},
+                     'securityContext': {'runAsNonRoot': True, 'runAsUser': 65532, 'allowPrivilegeEscalation': False,
+                                         'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}},
+                     'env': [{'name': 'HF_HUB_DISABLE_TELEMETRY', 'value': '1'}, {'name': 'HOME', 'value': '/tmp'}],
+                     'volumeMounts': [{'name': 'model-cache', 'mountPath': mount_path},
+                                      {'name': 'scratch', 'mountPath': '/tmp'}]}
+        if credentials_secret:
+            container['envFrom'] = [{'secretRef': {'name': credentials_secret}}]
+        labels = {'app.kubernetes.io/managed-by': 'inferstack', 'inferstack.io/role': 'model-cache-publish'}
+        return {'apiVersion': 'batch/v1', 'kind': 'Job', 'metadata': {'name': name, 'labels': labels},
+                'spec': {'backoffLimit': 2, 'activeDeadlineSeconds': active_deadline_seconds,
+                         'ttlSecondsAfterFinished': 3600,
+                         'template': {'metadata': {'labels': labels},
+                                      'spec': {'restartPolicy': 'Never', 'automountServiceAccountToken': False,
+                                               'containers': [container],
+                                               'volumes': [{'name': 'model-cache',
+                                                            'persistentVolumeClaim': {'claimName': claim}},
+                                                           {'name': 'scratch', 'emptyDir': {'sizeLimit': '4Gi'}}]}}}}
+
+    def startup_phases(self, external):
+        """Per-pod startup breakdown from the API's own timestamps (seconds after creation):
+        scheduled, initialized (incl. cache verification), container started, ready.
+        Image pull time is inside scheduled->started; engine load/compile inside started->ready."""
+        from datetime import datetime
+        stamp = lambda s: datetime.strptime(s, '%Y-%m-%dT%H:%M:%SZ').timestamp() if s else None
+        out = []
+        for pod in self.pods(external) or []:
+            created = stamp(pod['metadata'].get('creationTimestamp'))
+            conditions = {c['type']: stamp(c.get('lastTransitionTime')) for c in (pod.get('status') or {}).get('conditions') or []
+                          if c.get('status') == 'True'}
+            started = None
+            for status in (pod.get('status') or {}).get('containerStatuses') or []:
+                started = stamp(((status.get('state') or {}).get('running') or {}).get('startedAt')) or started
+            rel = lambda t: None if t is None or created is None else t - created
+            out.append({'pod': pod['metadata']['name'], 'uid': pod['metadata'].get('uid'),
+                        'node': (pod.get('spec') or {}).get('nodeName'),
+                        'scheduled_s': rel(conditions.get('PodScheduled')), 'initialized_s': rel(conditions.get('Initialized')),
+                        'started_s': rel(started), 'ready_s': rel(conditions.get('Ready'))})
+        return out
 
     def launch(self, alloc_id, spec):
         docs = self.manifests(alloc_id, spec)

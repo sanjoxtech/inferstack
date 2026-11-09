@@ -46,11 +46,15 @@ ENGINE_FLAGS = {
              'gpu_memory_utilization': '--gpu-memory-utilization', 'block_size': '--block-size',
              'kv_cache_dtype': '--kv-cache-dtype',
              'enable_prefix_caching': ('--enable-prefix-caching', '--no-enable-prefix-caching'),
-             'enable_chunked_prefill': ('--enable-chunked-prefill', '--no-enable-chunked-prefill')},
+             'enable_chunked_prefill': ('--enable-chunked-prefill', '--no-enable-chunked-prefill'),
+             # Versioned loader option; runai_streamer needs the optional dependency in the image
+             # and Safetensors weights, and must be qualified per vLLM/image combination.
+             'load_format': '--load-format'},
     'sglang': {'max_running_requests': '--max-running-requests', 'chunked_prefill_size': '--chunked-prefill-size',
                'mem_fraction_static': '--mem-fraction-static', 'schedule_policy': '--schedule-policy',
                'kv_cache_dtype': '--kv-cache-dtype', 'disable_radix_cache': ('--disable-radix-cache', None)},
 }
+FLAG_VALUES = {'load_format': {'auto', 'safetensors', 'runai_streamer'}}
 _PIN = re.compile(r'^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.+!_-]*)$')
 
 
@@ -70,6 +74,8 @@ def with_flags(argv, engine, patch):
         raise BuildFailed(f'profile_patch is not supported for engine {engine}')
     argv = list(argv)
     for key, value in patch.items():
+        if key in FLAG_VALUES and value not in FLAG_VALUES[key]:
+            raise BuildFailed(f'{key}={value!r} is not one of {sorted(FLAG_VALUES[key])}')
         flag = flags[key]
         names = [f for f in (flag if isinstance(flag, tuple) else (flag,)) if f]
         for name in names:  # remove any existing occurrence (with its value for valued flags)
