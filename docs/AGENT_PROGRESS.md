@@ -17,6 +17,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 11:43 UTC — Claude Code (implementation agent)
+- N0 (native campaign): scripts/engine_scorecard.py + configs/scorecard/a100-qwen3.5-2b.json committed (787c567); tests/test_engine_scorecard.py 5 passed (CPU, fake engines).
+- Notebook docs/notebooks/colab_a100_engine_scorecard.ipynb pinned to 787c567: native + vLLM + SGLang in separate venvs, conformance first, 3 rotated rounds, ZIP download.
+- Waiting on owner: run the notebook on a Colab A100 (~2-4 h) and send the ZIP.
+- Next for me while waiting: N2 prep (profiling flow for the largest measured native gap) once the scorecard shows where native loses.
+
 ### 2026-11-09 11:25 UTC — Claude Code (implementation agent)
 - H3 step 2 committed (acf3848); CI green (6 jobs; provider smoke manual/skipped). Full suite 395 passed / 18 skipped locally.
 - Left untouched (another agent's, uncommitted): docs/INFERENCE_HARNESS_PLAN.md native-order paragraphs, docs/NATIVE_ENGINE_OPTIMIZATION_PLAN.md, docs/research/GPU_INFRA_*.json.
