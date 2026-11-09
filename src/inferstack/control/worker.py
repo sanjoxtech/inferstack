@@ -40,9 +40,20 @@ class OptimizationWorker:
             self.repository.event(db, job['id'], stage, body)
 
     async def renew(self, job):
+        loop = asyncio.get_running_loop()
+        last = loop.time()
         while True:
             await asyncio.sleep(self.lease_seconds / 3)
-            self.repository.heartbeat(job['id'], job['lease_token'], self.lease_seconds)
+            now = loop.time()
+            gap, last = now - last, now
+            try:
+                self.repository.heartbeat(job['id'], job['lease_token'], self.lease_seconds)
+            except LeaseLost:
+                # Operator-visible diagnosis: how long the loop went without renewing.
+                import sys
+                print(f"lease lost for job {job['id']}: {gap:.2f}s since the previous renewal "
+                      f"(lease {self.lease_seconds}s, renewal every {self.lease_seconds / 3:.2f}s)", file=sys.stderr)
+                raise
             if self.worker_id:
                 self.repository.worker_heartbeat(self.worker_id, self.lease_seconds)
 
@@ -60,7 +71,9 @@ class OptimizationWorker:
         from inferstack.infrastructure.reconcile import reconcile_allocation
         live = [a for a in self.allocations.list(job_id=job['id'], step_key=step_key)
                 if a['state'] in ('intent', 'active', 'releasing', 'orphaned')]
-        outcomes = [reconcile_allocation(self.allocations, self.provider, a) for a in live]
+        # Reconciliation stops processes and polls; run it off the event loop so lease
+        # renewal keeps running while an interrupted step's resources are resolved.
+        outcomes = [await asyncio.to_thread(reconcile_allocation, self.allocations, self.provider, a) for a in live]
         if any(o in ('orphaned', 'foreign_host') for o in outcomes):
             raise ReconciliationRequired(f'{step_key}: allocations could not be proven released: {outcomes}')
         self.repository.step_resolve_ambiguous(job['id'], job['lease_token'], step_key,
