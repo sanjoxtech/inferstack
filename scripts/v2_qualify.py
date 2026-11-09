@@ -28,6 +28,16 @@ OPTIONAL = ('vllm_conformance', 'sglang_conformance', 'provider_deepseek', 'prov
 PINNED_MODEL = ('Qwen/Qwen3.5-2B-Base', 'b1485b2fa6dfa1287294f269f5fb618e03d52d7c')
 
 
+BF16_PROFILES = ('h100', 'a100', 'l4', 'a10')  # compute capability >= 8.0
+
+
+def conformance_dtype(profile, requested='auto'):
+    """Engine dtype for conformance: BF16 only where the GPU supports it (T4 is FP16)."""
+    if requested != 'auto':
+        return requested
+    return 'bfloat16' if profile in BF16_PROFILES else 'float16'
+
+
 def gpu_profile(gpus):
     """T4 and A100 are separate qualification profiles; results never transfer between them."""
     names = ' '.join(g.get('name', '') for g in gpus).upper()
@@ -140,6 +150,8 @@ def main():
     p.add_argument('--model-repo', default='Qwen/Qwen3.5-2B-Base')
     p.add_argument('--deepseek-model')
     p.add_argument('--openrouter-model')
+    p.add_argument('--conformance-dtype', default='auto', choices=('auto', 'bfloat16', 'float16'),
+                   help='engine dtype for vLLM/SGLang conformance; auto = bfloat16 on compute >= 8.0, else float16')
     p.add_argument('--require', action='append', default=[], choices=OPTIONAL,
                    help='make an optional integration gate required for this deployment (repeatable); '
                         'a required gate that is skipped blocks qualification')
@@ -206,6 +218,7 @@ def main():
             continue
         code, text, secs = run([sys.executable, 'scripts/engine_conformance.py', '--engine', engine,
                                 '--model', PINNED_MODEL[0], '--revision', PINNED_MODEL[1],
+                                '--dtype', conformance_dtype(gpu_profile(hardware['gpus']), a.conformance_dtype),
                                 '--out', str((out / f'conformance-{engine}.json').relative_to(ROOT))],
                                out / f'conformance-{engine}.runner.log', 3600)
         detail = {}
