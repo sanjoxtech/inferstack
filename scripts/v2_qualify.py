@@ -119,6 +119,51 @@ def kernel_gate(code, text):
                 duplicate=duplicate, nonfinite=nonfinite, method=report.get('method'), checks=len(checks)), report
 
 
+SANDBOX_SKIP = 'no filesystem isolation backend'
+# CI jobs that run the full suite, including the sandbox tests, on Linux with bubblewrap.
+SANDBOX_CI_JOBS = ('CPU conformance (py3.11)', 'CPU conformance (py3.12)')
+
+
+def apply_sandbox_evidence(gate_result, evidence, commit):
+    """Accept CI sandbox coverage for a test_suite gate blocked ONLY by sandbox skips.
+
+    The evidence must be for the same commit and every SANDBOX_CI_JOBS run must have
+    concluded `success`. Anything else leaves the gate unchanged (with the reason).
+    Policy: decided 2026-11-09 (Colab cannot create the namespaces bwrap needs)."""
+    blocking = gate_result.get('skipped_blocking') or []
+    if gate_result.get('status') != 'failed' or not blocking:
+        return gate_result
+    reasons = [r for r in gate_result.get('reasons') or [] if r != 'required coverage skipped']
+    if reasons or not all(SANDBOX_SKIP in line for line in blocking):
+        return {**gate_result, 'sandbox_evidence': 'not applicable: failures other than sandbox skips'}
+    if not evidence:
+        return gate_result
+    problems = []
+    if evidence.get('commit') != commit:
+        problems.append(f"evidence is for commit {evidence.get('commit')}, not {commit}")
+    runs = {r['name']: r for r in evidence.get('check_runs') or [] if r.get('head_sha') == commit}
+    for job in SANDBOX_CI_JOBS:
+        if (runs.get(job) or {}).get('conclusion') != 'success':
+            problems.append(f"CI job {job!r} did not succeed on this commit")
+    if problems:
+        return {**gate_result, 'sandbox_evidence': {'accepted': False, 'problems': problems}}
+    return {**gate_result, 'status': 'passed', 'reasons': [],
+            'sandbox_evidence': {'accepted': True, 'commit': commit, 'repository': evidence.get('repository'),
+                                 'jobs': {j: runs[j]['url'] for j in SANDBOX_CI_JOBS},
+                                 'fetched_at': evidence.get('fetched_at'),
+                                 'note': 'sandbox tests covered by CI on the same commit (host cannot run bwrap)'}}
+
+
+def finalize(result, sandbox_evidence=None):
+    """Recompute the verdict, optionally applying CI sandbox evidence to test_suite."""
+    gates = dict(result['gates'])
+    if 'test_suite' in gates:
+        gates['test_suite'] = apply_sandbox_evidence(gates['test_suite'], sandbox_evidence, result['commit'])
+    blocking = [g for g in result['required'] if gates[g]['status'] != 'passed']
+    return {**result, 'gates': gates, 'blocking': blocking,
+            'verdict': 'qualified' if not blocking else 'not_qualified'}
+
+
 def suite_gate(code, text, has_gpu, required=()):
     """Skips are classified by the integration that owns them and the selected profile.
 
@@ -150,6 +195,9 @@ def main():
     p.add_argument('--model-repo', default='Qwen/Qwen3.5-2B-Base')
     p.add_argument('--deepseek-model')
     p.add_argument('--openrouter-model')
+    p.add_argument('--sandbox-evidence', type=Path,
+                   help='CI evidence JSON (scripts/ci_evidence.py) for this commit: accepted for test_suite when '
+                        'it is blocked only by sandbox skips on a host without bwrap')
     p.add_argument('--conformance-dtype', default='auto', choices=('auto', 'bfloat16', 'float16'),
                    help='engine dtype for vLLM/SGLang conformance; auto = bfloat16 on compute >= 8.0, else float16')
     p.add_argument('--require', action='append', default=[], choices=OPTIONAL,
@@ -260,6 +308,8 @@ def main():
               'optional_not_required': [g for g in OPTIONAL if g not in required],
               'verdict': 'qualified' if not required_failed else 'not_qualified',
               'blocking': required_failed, 'gates': gates}
+    if a.sandbox_evidence:
+        result = finalize(result, json.loads(a.sandbox_evidence.read_text()))
     (out / 'qualification.json').write_text(json.dumps(result, indent=2, default=str))
     print(json.dumps({k: result[k] for k in ('verdict', 'blocking')} |
                      {'gates': {k: v['status'] for k, v in gates.items()}}, indent=2))

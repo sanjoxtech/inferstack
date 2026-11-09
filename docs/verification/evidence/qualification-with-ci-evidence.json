@@ -1,0 +1,195 @@
+{
+  "version": "2.0.0rc1",
+  "commit": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+  "finished_at": 1794216159.9043906,
+  "required": [
+    "environment",
+    "model_identity",
+    "test_suite",
+    "kernel_equivalence",
+    "native_smoke"
+  ],
+  "gpu_profile": "a100",
+  "optional_not_required": [
+    "vllm_conformance",
+    "sglang_conformance",
+    "provider_deepseek",
+    "provider_openrouter",
+    "postgresql",
+    "docker",
+    "kubernetes"
+  ],
+  "verdict": "qualified",
+  "blocking": [],
+  "gates": {
+    "environment": {
+      "status": "passed",
+      "commit": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "gpus": [
+        "NVIDIA A100-SXM4-40GB"
+      ],
+      "notes": {},
+      "libraries": {
+        "torch": "2.14.1+cu130",
+        "triton": "3.8.0",
+        "transformers": "5.22.2",
+        "inferstack": "2.0.0rc1",
+        "torch.cuda": "13.0"
+      }
+    },
+    "test_suite": {
+      "status": "passed",
+      "reasons": [],
+      "summary": "334 passed, 26 skipped in 151.29s (0:02:31)",
+      "skipped_accepted": [
+        "SKIPPED [1] tests/test_control_store.py:6: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_control_store.py:18: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_control_store.py:33: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_control_store.py:41: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_docker_live.py:47: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)",
+        "SKIPPED [1] tests/test_docker_live.py:81: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)",
+        "SKIPPED [1] tests/test_execution_store.py:17: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:25: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:38: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:65: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:86: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:104: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:113: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:126: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_execution_store.py:146: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_harness_h1.py:213: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+        "SKIPPED [1] tests/test_kubernetes_live.py:38: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)",
+        "SKIPPED [1] tests/test_kubernetes_live.py:64: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)",
+        "SKIPPED [1] tests/test_kubernetes_live.py:91: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)",
+        "SKIPPED [1] tests/test_live_evidence.py:284: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL"
+      ],
+      "skipped_optional": {
+        "postgresql": [
+          "SKIPPED [1] tests/test_control_store.py:6: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_control_store.py:18: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_control_store.py:33: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_control_store.py:41: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:17: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:25: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:38: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:65: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:86: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:104: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:113: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:126: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_execution_store.py:146: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_harness_h1.py:213: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL",
+          "SKIPPED [1] tests/test_live_evidence.py:284: PostgreSQL variant requires server binaries (initdb/pg_ctl) or INFERSTACK_TEST_POSTGRES_URL"
+        ],
+        "docker": [
+          "SKIPPED [1] tests/test_docker_live.py:47: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)",
+          "SKIPPED [1] tests/test_docker_live.py:81: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)"
+        ],
+        "kubernetes": [
+          "SKIPPED [1] tests/test_kubernetes_live.py:38: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)",
+          "SKIPPED [1] tests/test_kubernetes_live.py:64: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)",
+          "SKIPPED [1] tests/test_kubernetes_live.py:91: needs kubectl and INFERSTACK_TEST_K8S_CONTEXT (a reachable cluster context)"
+        ]
+      },
+      "skipped_blocking": [
+        "SKIPPED [1] tests/test_isolated_executor.py:137: no filesystem isolation backend (need sandbox-exec or bwrap)",
+        "SKIPPED [1] tests/test_isolated_executor.py:250: no filesystem isolation backend (need sandbox-exec or bwrap)",
+        "SKIPPED [2] tests/test_isolated_executor.py:282: no filesystem isolation backend (need sandbox-exec or bwrap)",
+        "SKIPPED [1] tests/test_isolated_executor.py:297: no filesystem isolation backend (need sandbox-exec or bwrap)",
+        "SKIPPED [1] tests/test_isolated_executor.py:303: no filesystem isolation backend (need sandbox-exec or bwrap)"
+      ],
+      "seconds": 155.2,
+      "sandbox_evidence": {
+        "accepted": true,
+        "commit": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+        "repository": "sanjoxtech/inferstack",
+        "jobs": {
+          "CPU conformance (py3.11)": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250452",
+          "CPU conformance (py3.12)": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250526"
+        },
+        "fetched_at": 1794216673.834762,
+        "note": "sandbox tests covered by CI on the same commit (host cannot run bwrap)"
+      }
+    },
+    "kernel_equivalence": {
+      "status": "passed",
+      "exit": 0,
+      "reasons": [],
+      "failed": [],
+      "missing": [],
+      "unexpected": [],
+      "duplicate": [],
+      "nonfinite": [],
+      "method": "fp32_oracle_ulp",
+      "checks": 27
+    },
+    "model_identity": {
+      "status": "passed",
+      "manifest": "/content/inferstack/examples/model_foundry/factorylm-2b/candidate/manifest.json",
+      "revisions": {
+        "source": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+        "tokenizer": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+      },
+      "mutable": {},
+      "fix": null
+    },
+    "native_smoke": {
+      "status": "passed",
+      "liveness": true,
+      "seconds": 371.5,
+      "lane_verdicts": {
+        "norm": "inconclusive_single_run",
+        "mlp": "inconclusive_single_run",
+        "gdn": "inconclusive_single_run",
+        "attention": "inconclusive_single_run",
+        "full": "inconclusive_single_run"
+      },
+      "note": "liveness only; performance claims need lane keep verdicts from repeated runs"
+    },
+    "vllm_conformance": {
+      "status": "skipped",
+      "requirement": "vllm installed",
+      "reason": "vllm not installed"
+    },
+    "sglang_conformance": {
+      "status": "skipped",
+      "requirement": "sglang installed",
+      "reason": "sglang not installed"
+    },
+    "postgresql": {
+      "status": "skipped",
+      "requirement": "INFERSTACK_TEST_POSTGRES_URL",
+      "reason": "INFERSTACK_TEST_POSTGRES_URL not set"
+    },
+    "docker": {
+      "status": "skipped",
+      "seconds": 1.2,
+      "summary": "2 skipped in 0.02s",
+      "skipped": [
+        "SKIPPED [1] tests/test_docker_live.py:47: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)",
+        "SKIPPED [1] tests/test_docker_live.py:81: needs a running Docker daemon and a local digest-pinned image (INFERSTACK_TEST_DOCKER_IMAGE)"
+      ],
+      "requirement": "Docker daemon with a local pinned image"
+    },
+    "kubernetes": {
+      "status": "skipped",
+      "requirement": "INFERSTACK_TEST_K8S_CONTEXT",
+      "reason": "INFERSTACK_TEST_K8S_CONTEXT not set"
+    },
+    "provider_deepseek": {
+      "status": "skipped",
+      "reason": "--deepseek-model and DEEPSEEK_API_KEY required"
+    },
+    "provider_openrouter": {
+      "status": "skipped",
+      "reason": "--openrouter-model and OPENROUTER_API_KEY required"
+    }
+  },
+  "amended_from": {
+    "file": "colab-a100-d33b470-qualification.json",
+    "verdict": "not_qualified",
+    "blocking": [
+      "test_suite"
+    ]
+  }
+}

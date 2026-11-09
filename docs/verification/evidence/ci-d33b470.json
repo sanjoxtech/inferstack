@@ -1,0 +1,50 @@
+{
+  "repository": "sanjoxtech/inferstack",
+  "commit": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+  "fetched_at": 1794216673.834762,
+  "source": "github check-runs API",
+  "check_runs": [
+    {
+      "name": "live provider planning smoke (manual)",
+      "status": "completed",
+      "conclusion": "skipped",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065251860"
+    },
+    {
+      "name": "CPU conformance (py3.12)",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250526"
+    },
+    {
+      "name": "dependency lock is current",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250524"
+    },
+    {
+      "name": "container image builds and starts",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250475"
+    },
+    {
+      "name": "CPU conformance (py3.11)",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250452"
+    },
+    {
+      "name": "Kubernetes lifecycle on kind (CPU)",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "d33b47032de1427a45d662fae05fffb09d5dcfea",
+      "url": "https://github.com/sanjoxtech/inferstack/actions/runs/42588868475/job/129065250035"
+    }
+  ]
+}
