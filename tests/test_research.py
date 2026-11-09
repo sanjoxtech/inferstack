@@ -316,7 +316,7 @@ def test_verified_trial_on_same_identity_proves(repo):
     ({'verdict': 'reject'}, 'not keep'), ({'quality': False}, 'gates did not all pass'),
     ({'errors': ['quality gate failed']}, 'recorded errors'), ({'plugin': False}, 'lineage'),
     ({'cand_dtype': 'float16'}, 'dtype'), ({'cand_version': '0.10.0'}, 'engine_version'),
-    ({'cand_model_rev': 'c' * 40}, 'model_ref')])
+    ({'cand_model_rev': 'c' * 40}, 'model.revision')])
 def test_invalid_or_inapplicable_trials_never_prove(repo, kwargs, reason):
     result = proof_fixture(repo, **kwargs)
     assert result['verdict'] == 'compatible_claimed' and result['proven_by'] == []
@@ -383,3 +383,54 @@ def test_submission_ingests_supplied_text_and_validates_urls(repo):
     assert client.post('/control/evidence/url', headers=h,
                        json={'url': 'http://169.254.169.254/'}).json()['status'] == 'blocked'
     assert client.get('/control/techniques/candidates?deployment_id=d', headers=h).json() == {'candidates': []}
+
+
+def retarget(repo, **changes):
+    """Mutate the proof fixture's target deployment (the proving trial is unchanged)."""
+    body = dict(repo.read('deployment', 'target')['body'])
+    body.update(changes)
+    repo.put_record('deployment', 'target', body, expected_revision=repo.read('deployment', 'target')['revision'])
+    return assess(repo, 'tech', 'target')
+
+
+def test_h0f1_different_tokenizer_revision_is_not_proven(repo):
+    proof_fixture(repo)
+    repo.put_record('model', 'tok', {'source': 'huggingface', 'repo_id': 'org/m', 'revision': 'b' * 40,
+                                     'tokenizer_revision': 'd' * 40})
+    result = retarget(repo, model_ref='tok@1')
+    assert result['verdict'] == 'compatible_claimed' and 'tokenizer_revision' in result['transferable'][0]['reason']
+
+
+def test_h0f1_different_serving_image_is_not_proven(repo):
+    proof_fixture(repo)
+    result = retarget(repo, image_digest='sha256:' + 'e' * 64)
+    assert result['verdict'] == 'compatible_claimed' and 'image_digest' in result['transferable'][0]['reason']
+
+
+def test_h0f1_same_gpu_name_with_different_runtime_is_not_proven(repo):
+    proof_fixture(repo)
+    repo.put_record('hardware', 'a100-cuda13', {'provider': 'colab', 'observed_at': 2.0, 'driver_version': '580.1',
+                                               'cuda_version': '13.0', 'topology': 'NVLink', 'gpus': [
+        {'uuid': 'GPU-9', 'name': 'NVIDIA A100-SXM4-40GB', 'memory_bytes': 40 * 2**30, 'compute_capability': '8.0'}]})
+    result = retarget(repo, hardware_ref='a100-cuda13@1')
+    reason = result['transferable'][0]['reason']
+    assert result['verdict'] == 'compatible_claimed' and 'hardware.' in reason
+
+
+def test_h0f1_unpinned_proof_reference_is_not_evidence(repo):
+    proof_fixture(repo)
+    body = dict(repo.read('deployment', 'cand')['body'])
+    repo.put_record('deployment', 'cand', {**body, 'model_ref': 'mdl2'}, expected_revision=1)
+    repo.put_record('trial', 'tr2', {**repo.read('trial', 'tr')['body'], 'deployment_ref': 'cand@2'})
+    repo.put_record('technique', 'tech', {'name': 'tech', 'summary': 's', 'engines': [{'engine': 'vllm'}],
+                                          'proven_by': ['tr2@1']}, expected_revision=2)
+    result = assess(repo, 'tech', 'target')
+    assert result['verdict'] == 'compatible_claimed' and 'model' in result['transferable'][0]['reason']
+
+
+def test_h0f1_matching_identity_still_proves_with_its_workload_scope(repo):
+    result = proof_fixture(repo)
+    assert result['verdict'] == 'compatible_proven' and result['applicability_version'] == 1
+    assert 'tr@1' in result['proof_scope']
+    other = assess(repo, 'tech', 'target', workload_fixture_sha256='9' * 64)
+    assert other['verdict'] == 'compatible_claimed' and 'different workload' in other['transferable'][0]['reason']

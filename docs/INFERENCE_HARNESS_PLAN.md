@@ -233,3 +233,23 @@ Remaining limits: proof reuse needs pinned model and hardware references, so
 older trials without them stay claims; native overlay keys are limited to the
 five schema keys; engine ITL percentiles need engine token telemetry; GPU
 qualification (A100 BF16, T4 FP16) is still pending.
+
+### H0 independent completion review — 9 November 2026
+
+Commit `52b9f8d` independently passed 179 affected CPU/local-process regression tests. H0 is **not accepted complete**: additional probes reproduced proof transfer across changed tokenizer/image/hardware-runtime identities, zero ITL from multiple SSE events in one transport read, and lease starvation during interrupted-step reconciliation. See [H0_INDEPENDENT_REVIEW.md](H0_INDEPENDENT_REVIEW.md) and its linked reproductions for H0-F1/F2/F3 and their completion criteria. This supplements the dated implementation status above; no GPU qualification is implied.
+
+Recheck at `eb69168` (including `63c8644`): the unchanged interrupted-step reconciliation reproduction now completes correctly, resolving the reported H0-F3 case. Proof-scope mutations still inherit `compatible_proven` (H0-F1), and transport-coalesced SSE events still report `itl_ms=0.0` (H0-F2). H0 remains awaiting those two corrections. The independent review retains the exact observations and regression-run evidence.
+
+### H0 follow-up — 9 November 2026 (implementation agent)
+
+`docs/H0_INDEPENDENT_REVIEW.md` found two remaining H0 gaps at `eb69168` (H0-F3,
+reconciliation blocking lease renewal, was already resolved by `63c8644`).
+
+| Finding | Change | Evidence |
+|---|---|---|
+| H0-F1 proof applicability | `research/techniques.applicability()` builds a versioned identity (v1): model repo, weights, tokenizer and config revisions and checksum digest; engine, engine version, image digest, plugins (excluding the technique under test); dtype; hardware GPUs (name, memory, compute capability), topology, driver, CUDA and library versions. Required parts must be known on both sides; any difference, or an unpinned reference on the proving side, keeps the result a claim. Proofs report their workload/evaluator scope, and `assess(..., workload_fixture_sha256=)` requires a matching workload. | `tests/test_research.py`: different tokenizer, serving image, hardware runtime (same GPU name), unpinned proof reference and different workload stay `compatible_claimed`; a genuine match is `compatible_proven` with its scope. |
+| H0-F2 coalesced timing | Client ITL requires one content event per token and each event in its own transport read; coalesced reads give unavailable, with a reason from `LiveStream.itl_provenance()`. First-content, E2E and stall signals are unchanged. | `tests/test_live_evidence.py`: two events in one read and a partially coalesced stream report no ITL. |
+
+`docs/verification/h0_followup_probes.py` (unchanged) now reports no gap in all
+five cases. Full local suite and the three earlier probe files: 369 passed /
+17 skipped (macOS, CPU). GPU qualification remains separate and pending.

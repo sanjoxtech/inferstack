@@ -59,12 +59,15 @@ class LiveStream:
         self.buffer = b''
         self.first_byte = None
         self.content_times = []
+        self.content_reads = []  # transport read index of each content event
+        self.reads = 0
         self.tokens = None
         self.input_tokens = None
         self.done = False
         self.error = None
 
     def feed(self, chunk, now):
+        self.reads += 1
         if self.first_byte is None and chunk:
             self.first_byte = now
         self.buffer += chunk.replace(b'\r\n', b'\n')
@@ -100,17 +103,32 @@ class LiveStream:
                     piece = (choice.get('delta') or {}).get('content')
                 if isinstance(piece, str) and piece:
                     self.content_times.append(now)
+                    self.content_reads.append(self.reads)
 
     def phases(self, ended):
         ms = lambda t: (t - self.started) * 1000 if t is not None else None
         times = self.content_times
         gaps = [(b - a) * 1000 for a, b in zip(times, times[1:])]
+        # Client ITL needs every token observed separately: one content event per token
+        # AND each event in its own transport read. Events coalesced into one read share a
+        # timestamp, so they say nothing about generation intervals (unavailable, not 0).
         itl = None
-        if self.tokens is not None and self.tokens > 1 and len(times) == self.tokens:
-            itl = (times[-1] - times[0]) * 1000 / (self.tokens - 1)  # one observed event per token
+        separately_timed = len(set(self.content_reads)) == len(self.content_reads)
+        if self.tokens is not None and self.tokens > 1 and len(times) == self.tokens and separately_timed:
+            itl = (times[-1] - times[0]) * 1000 / (self.tokens - 1)
         return {'upstream_first_byte_ms': ms(self.first_byte), 'first_content_ms': ms(times[0]) if times else None,
                 'e2e_ms': ms(ended), 'max_gap_ms': max(gaps) if gaps else None, 'content_events': len(times),
                 'output_tokens': self.tokens, 'input_tokens': self.input_tokens, 'itl_ms': itl}
+
+    def itl_provenance(self):
+        """Why ITL is or is not available for this stream (diagnostics, never a metric)."""
+        if self.tokens is None:
+            return 'no authoritative token count'
+        if len(self.content_times) != self.tokens:
+            return 'content events do not map one-to-one to tokens'
+        if len(set(self.content_reads)) != len(self.content_reads):
+            return 'several content events arrived in one transport read'
+        return 'client events, one token per event per read'
 
 
 @dataclass

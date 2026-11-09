@@ -42,28 +42,81 @@ def _cc(text):
     return int(major), int(minor)
 
 
-REUSE_KEY = ('engine', 'engine_version', 'model', 'model_ref', 'dtype', 'hardware_ref')
+APPLICABILITY_VERSION = 1
+# Components that must be known on both sides for any proof; everything else in the
+# identity must still be equal (both unknown counts as equal, one-sided does not).
+REQUIRED = ('engine', 'engine_version', 'model.revision', 'model.tokenizer_revision', 'dtype', 'hardware.gpus')
 
 
-def reuse_key(repository, deployment):
-    """Identity a result is valid for. Unpinned references resolve to their current revision
-    only for comparison; a missing component stays None (and never matches as proof)."""
+def _hash(value):
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def applicability(repository, deployment, *, strict_refs=False):
+    """Versioned applicability identity of a deployment: what a measured result is valid for.
+
+    strict_refs: an unpinned model/hardware reference resolves to *no* identity (a
+    trial's deployment must not silently become evidence about a record's current
+    revision). Targets are resolved as they are now."""
     from inferstack.contracts.records import parse_ref
-    key = {'engine': deployment.get('engine'), 'engine_version': deployment.get('engine_version'),
-           'model': deployment.get('model'), 'dtype': (deployment.get('profile') or {}).get('dtype'),
-           'model_ref': None, 'hardware_ref': None}
+    identity = {'version': APPLICABILITY_VERSION, 'engine': deployment.get('engine'),
+                'engine_version': deployment.get('engine_version'), 'image_digest': deployment.get('image_digest'),
+                'plugin_refs': sorted(deployment.get('plugin_refs') or []),
+                'dtype': (deployment.get('profile') or {}).get('dtype'), 'model': None, 'hardware': None}
     for field, kind in (('model_ref', 'model'), ('hardware_ref', 'hardware')):
         ref = deployment.get(field)
         if not ref:
             continue
         identifier, revision = parse_ref(ref)
+        if strict_refs and revision is None:
+            continue
         try:
             body = repository.read(kind, identifier, revision)['body']
         except KeyError:
             continue
-        key[field] = body.get('revision') if kind == 'model' else \
-            tuple(sorted(g.get('name', '') for g in body.get('gpus') or [])) or None
-    return key
+        if kind == 'model':
+            identity['model'] = {'repo_id': body.get('repo_id'), 'revision': body.get('revision'),
+                                 'tokenizer_revision': body.get('tokenizer_revision') or body.get('revision'),
+                                 'config_revision': body.get('config_revision'),
+                                 'checksums': _hash(body.get('checksums') or {})}
+        else:
+            identity['hardware'] = {
+                'gpus': sorted([g.get('name'), g.get('memory_bytes'), g.get('compute_capability')]
+                               for g in body.get('gpus') or []) or None,
+                'topology': body.get('topology'), 'driver_version': body.get('driver_version'),
+                'cuda_version': body.get('cuda_version'), 'libraries': dict(sorted((body.get('libraries') or {}).items()))}
+    return identity
+
+
+def _get(identity, dotted):
+    value = identity
+    for part in dotted.split('.'):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def identity_differences(proved, target, *, treatment=None):
+    """Components that differ, or that are required but unknown on either side. The
+    technique under test (`treatment`) is excluded from the plugin comparison: it is the
+    difference the proof is about; any other plugin difference still counts."""
+    if treatment is not None:
+        proved = {**proved, 'plugin_refs': [p for p in proved.get('plugin_refs') or [] if p != treatment]}
+        target = {**target, 'plugin_refs': [p for p in target.get('plugin_refs') or [] if p != treatment]}
+    out = [k for k in REQUIRED if _get(proved, k) is None or _get(target, k) is None]
+    for key in ('engine', 'engine_version', 'image_digest', 'plugin_refs', 'dtype'):
+        if proved.get(key) != target.get(key):
+            out.append(key)
+    for group in ('model', 'hardware'):
+        a, b = proved.get(group) or {}, target.get(group) or {}
+        out += [f'{group}.{k}' for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)]
+    return sorted(set(out))
+
+
+def reuse_key(repository, deployment):
+    """Backward-compatible alias: the applicability identity of a deployment."""
+    return applicability(repository, deployment)
 
 
 def proof_of(repository, technique_id, ref, target_key):
@@ -115,14 +168,28 @@ def proof_of(repository, technique_id, ref, target_key):
             lineage = False
     if not lineage:
         return False, 'treatment lineage to this technique not established'
-    proved_key = reuse_key(repository, proved_on)
-    differing = [k for k in REUSE_KEY if proved_key[k] is None or proved_key[k] != target_key[k]]
+    differing = identity_differences(applicability(repository, proved_on, strict_refs=True), target_key,
+                                     treatment=technique_id)
     if differing:
         return False, 'different or unknown identity: ' + ', '.join(differing)
-    return True, 'successful verified trial on the same reuse identity'
+    return True, 'successful verified trial on the same applicability identity'
 
 
-def assess(repository, technique_id: str, deployment_id: str) -> dict:
+def proof_scope(repository, ref):
+    """The workload and evaluator a proving trial was measured under (its evidence scope)."""
+    import json
+    from inferstack.contracts.records import parse_ref
+    tid, trev = parse_ref(ref)
+    trial = repository.read('trial', tid, trev)['body']
+    evidence = json.loads(repository.read_artifact(trial['raw_artifact_sha256']))
+    verifier = evidence.get('verifier') or {}
+    return {'workload_fixture_sha256': verifier.get('fixture_sha256') or (evidence.get('policy') or {}).get('fixture_sha256'),
+            'evaluator_sha256': verifier.get('code_sha256'), 'workload_ref': trial.get('workload_ref')}
+
+
+def assess(repository, technique_id: str, deployment_id: str, *, workload_fixture_sha256=None) -> dict:
+    """workload_fixture_sha256: when given, a proof only counts if it was measured on that
+    workload fixture; proofs always report their workload/evaluator scope."""
     technique = repository.read_typed('technique', technique_id)
     deployment_record = repository.read('deployment', deployment_id)
     deployment = deployment_record['body']
@@ -184,10 +251,16 @@ def assess(repository, technique_id: str, deployment_id: str) -> dict:
     if unpinned:
         notes.append('dependencies need an exact version and license before execution: ' + ', '.join(unpinned))
 
-    proven, transferable = [], []
-    target_key = reuse_key(repository, deployment)
+    proven, transferable, scopes = [], [], {}
+    target_key = applicability(repository, deployment)
     for ref in technique.proven_by:
         ok, reason = proof_of(repository, technique_id, ref, target_key)
+        if ok:
+            scope = proof_scope(repository, ref)
+            if workload_fixture_sha256 and scope['workload_fixture_sha256'] != workload_fixture_sha256:
+                ok, reason = False, 'proved on a different workload fixture'
+            else:
+                scopes[ref] = scope
         (proven if ok else transferable).append(ref if ok else {'trial': ref, 'reason': reason})
 
     if blockers or getattr(technique, 'status', 'claim') == 'rejected':
@@ -201,7 +274,8 @@ def assess(repository, technique_id: str, deployment_id: str) -> dict:
     return {'technique_id': technique_id, 'deployment_id': deployment_id,
             'deployment_revision': deployment_record['revision'], 'verdict': verdict,
             'blockers': blockers, 'unknowns': unknowns, 'notes': notes, 'proven_by': proven,
-            'transferable': transferable,
+            'transferable': transferable, 'proof_scope': scopes,
+            'applicability_version': APPLICABILITY_VERSION,
             'executable': verdict != 'incompatible' and not unpinned,
             'claims': list(technique.compatibility_claims)}
 

@@ -297,3 +297,22 @@ def test_evidence_store_on_every_backend(database_url, tmp_path):
     report = serving_cost(backend, since=100.0, until=200.0)
     assert report['tokens'] == {'output': 6, 'input': 15, 'goodput_output': 6} and report['requests']['shadow'] == 1
     assert a.prune(103.0) == 3
+
+
+def test_h0f2_events_coalesced_in_one_read_report_no_itl():
+    """Two separate content events + usage(2) delivered in ONE transport read: no interval observed."""
+    live = LiveStream(started=0.0)
+    live.feed(b'data: {"choices":[{"text":"a"}]}\n\ndata: {"choices":[{"text":"b"}]}\n\n'
+              b'data: {"choices":[],"usage":{"completion_tokens":2}}\n\ndata: [DONE]\n\n', 1.0)
+    phases = live.phases(1.1)
+    assert phases['content_events'] == 2 and phases['output_tokens'] == 2
+    assert phases['itl_ms'] is None and live.itl_provenance() == 'several content events arrived in one transport read'
+    assert phases['first_content_ms'] == pytest.approx(1000.0)  # first-content and E2E stay available
+
+
+def test_h0f2_partially_coalesced_stream_reports_no_itl():
+    live = LiveStream(started=0.0)
+    live.feed(b'data: {"choices":[{"text":"a"}]}\n\n', 0.01)
+    live.feed(b'data: {"choices":[{"text":"b"}]}\n\ndata: {"choices":[{"text":"c"}]}\n\n', 0.03)
+    live.feed(b'data: {"choices":[],"usage":{"completion_tokens":3}}\n\ndata: [DONE]\n\n', 0.04)
+    assert live.phases(0.05)['itl_ms'] is None
