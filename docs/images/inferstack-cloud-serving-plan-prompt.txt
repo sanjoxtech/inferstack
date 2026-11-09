@@ -1,0 +1,47 @@
+Generated with the built-in image_gen tool. Final PNG: inferstack-cloud-serving-plan.png
+Source plan: ../CLOUD_SERVING_RESEARCH_PLAN.md
+This is a conceptual planning infographic; the written plan defines ownership and integration details.
+
+Use case: infographic-diagram.
+Create a polished, highly legible technical planning infographic for InferStack based on the exact specification below. This is a proposed architecture and implementation roadmap, NOT a completed deployment. Landscape canvas, approximately 16:10, high resolution, flat crisp vector-like editorial design rendered as a raster image. Off-white background, deep navy typography, restrained teal and blue accents, amber for qualification gates. Use a clean modern sans-serif, generous whitespace, very clear hierarchy and simple geometric icons. No fake logos, decorative robots, screenshots, or tiny dense text.
+
+Title exactly: "InferStack • Cloud Serving Plan"
+Subtitle: "Verify releases. Integrate proven serving infrastructure."
+Small date/status line: "9 November 2026 • Proposed plan • GPU qualification pending"
+
+TOP HALF: architecture, clearly divided into "REQUEST PATH" and "CONTROL & EVIDENCE".
+Show REQUEST PATH as four left-to-right boxes with arrows:
+1 "Clients"
+2 "InferStack gateway" with smaller text "Auth • Admission • Release choice"
+3 "llm-d / GAIE router" with smaller text "Replica choice within a release"
+4 "vLLM replicas" with smaller text "Verified release pools"
+Frame router and replicas inside a very light blue Kubernetes boundary labelled "Kubernetes serving data plane". The InferStack gateway can sit just outside that boundary.
+Place a small storage cylinder "Immutable model cache" below the vLLM replica box, connected to that box with a line. Small sublabel "Pinned weights • Optional streamer".
+
+CONTROL & EVIDENCE: a contrasting teal-tinted horizontal band below the request path with three clearly separated boxes:
+"InferStack control plane" / "Identity • Evaluation • Rollout • Rollback"
+"Prometheus" / "Release-scoped metrics"
+"KEDA + HPA" / "Bounded replica scaling"
+Use thin dashed arrows showing metrics from replicas/router to Prometheus, Prometheus to KEDA, and KEDA to replicas. Connect InferStack control plane to gateway with a dashed line for release policy. Do not put the control plane or autoscaler in the request path. Small governance caption: "One controller owns each action."
+
+BOTTOM HALF: header "IMPLEMENTATION ROADMAP". Six numbered cards in an orderly 3-column by 2-row reading sequence. Visually number them P0–P5. Use connecting sequence arrows unobtrusively, with a lower caption that P1/P2 can overlap after P0.
+Exact card text:
+P0 title "Close qualification gaps"
+detail "Reproduce evidence • Qualify target GPUs"
+P1 title "Strengthen rollout gates"
+detail "Durable metrics • Tail latency • Held-out evals"
+P2 title "Speed up model startup"
+detail "Immutable cache • Measured loader gains"
+P3 title "Add cache-aware routing"
+detail "Release-scoped pools • Per-replica identity"
+P4 title "Enable bounded autoscaling"
+detail "Inference signals • Quotas • Graceful drain"
+P5 title "Prove cost and recovery"
+detail "Cost per million tokens • Integrated qualification"
+
+Roadmap caption: "P1 and P2 may overlap after P0. Automatic scaling requires P1–P3."
+Bottom footer in a neat subtle pale amber bar: "Release gate: measured GPU evidence + safe rollback + complete cleanup"
+Small final line: "One integrated candidate. No production qualification claimed."
+Prioritize accurate text, readable labels, obvious arrows and clean spacing. Do not invent version numbers, benchmark results, dates, completion ticks, market claims or extra roadmap phases.
+
+Refinement: corrected the autoscaler target to vLLM replicas and the model-cache supply arrow to point toward replicas, preserving typography and roadmap.

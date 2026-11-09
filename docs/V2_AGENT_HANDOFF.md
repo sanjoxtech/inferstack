@@ -678,6 +678,15 @@ credential-free launch environment and placement; the launcher exposes program
 files only; retirement completes only when every serving resource is released;
 Kubernetes GPU replacements use the cluster scheduler.
 
+### Cloud serving plan P0–P5 implemented — 9 November 2026
+
+`docs/CLOUD_SERVING_RESEARCH_PLAN.md` packages P1–P5 implemented in commits
+06aace9, f0c808c, e7c1312, ca35f44 and 663439a; P0 tooling (compatibility
+manifest) in the following commit. The status table appended to the plan lists
+what was verified on this CPU host and what still needs a GPU cluster.
+Migrations 6–8 add serving evidence, endpoint attribution and token/shadow
+columns.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |
@@ -686,15 +695,17 @@ Kubernetes GPU replacements use the cluster scheduler.
 | B durable execution/resources | yes | yes (kill-at-every-transition) | — |
 | C engines/telemetry/onboarding | yes | emulated engines | live vLLM/SGLang/native conformance (GPU) |
 | D research/techniques | yes | local HTTP + SSRF cases | public-internet retrieval |
-| E planner/providers | yes | mocked DeepSeek/OpenRouter | live provider smoke (API keys) |
-| F isolated executor | yes | real venv/git/netns | GPU candidates built in isolation |
+| E planner/providers | yes | mocked + live DeepSeek/OpenRouter smoke (8 Nov) | — |
+| F isolated executor | yes | real venv/git, Seatbelt (macOS) and bwrap (Linux container) read/write boundaries | GPU candidates built in isolation |
 | G verifier/numerics | yes | CPU oracle (emulated BF16) | `v2_qualify.py` kernel_equivalence (GPU) |
-| H infrastructure/spend | yes | CLI doubles | real Docker daemon / Kubernetes cluster |
-| I rollout/FactoryOS | yes | real gateway rollback | FactoryOS end-to-end |
+| H infrastructure/spend | yes | live Docker 29.9 and kind v1.37 (quota, scale, drain, stop, pod admission, scaling ownership) | GPU node pool |
+| I rollout/FactoryOS | yes | real gateway rollback; live-evidence gates; integrated shadow/canary/rollback/promotion | FactoryOS end-to-end; GPU data plane |
 | J qualification | yes | GPU-less dry run | Colab A100 `qualified` verdict |
 
 CPU test suite: 183 passed, 1 deselected (torch-dependent tests run in qualification).
-Superseded 8 November 2026 by the verification remediation: 218 passed, 13 skipped,
+Current (9 November 2026, after the cloud-serving packages): 341 passed, 16 skipped
+locally (PostgreSQL/kind variants need their environment variables); all 36
+review probes pass. History: on 8 November 2026 the verification remediation reported 218 passed, 13 skipped,
 15/15 acceptance probes; see the ledger entry above.
 Release `v2.0.0` should be tagged only after `scripts/v2_qualify.py` returns
 `qualified` on the target GPU and the optional gates relevant to the deployment

@@ -152,6 +152,11 @@ def main():
     from inferstack.infrastructure.inventory import collect
     hardware, notes = collect(provider=os.environ.get('INFERSTACK_PROVIDER', 'attached'))
     (out / 'hardware.json').write_text(json.dumps({'hardware': hardware, 'notes': notes}, indent=2))
+    # The exact component tuple this run observed (informational; absent components are null).
+    context = os.environ.get('INFERSTACK_TEST_K8S_CONTEXT')
+    run([sys.executable, 'scripts/compatibility_manifest.py', '--out',
+         str((out / 'compatibility.json').relative_to(ROOT)), *(['--context', context] if context else [])],
+        out / 'compatibility.log', 300)
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     gates['environment'] = gate('passed' if hardware['gpus'] else 'failed', commit=commit or 'unknown',
                                 gpus=[g['name'] for g in hardware['gpus']], notes=notes,

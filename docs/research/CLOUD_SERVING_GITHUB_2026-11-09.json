@@ -1,0 +1,517 @@
+{
+  "observed_date": "2026-11-09",
+  "timezone": "Asia/Kolkata",
+  "method": "GitHub connector: GET /repos/{owner}/{repo}, GET /repos/{owner}/{repo}/releases?per_page=5; public repository name/description searches; selected release-tagged documentation reads.",
+  "local_commit": "857769d4331af88c370a25ea80ad3d5f84440aa4",
+  "remote_main_observed": "ff777007e05abcb991e84094ea8e4f68336f627e",
+  "limitations": [
+    "Snapshot counts change over time.",
+    "Release collection ordering and prerelease booleans do not establish a supported compatibility tuple.",
+    "Public search is bounded and cannot prove absence of competitors.",
+    "No GPU qualification or competitor runtime tests were performed.",
+    "GitHub NOASSERTION is not a license determination."
+  ],
+  "repositories": [
+    {
+      "repo": "vllm-project/vllm",
+      "stars": 96569,
+      "url": "https://github.com/vllm-project/vllm",
+      "releases": [
+        {
+          "tag": "v0.33.0rc3",
+          "date": "2026-11-02T10:10:05Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/vllm/releases/tag/v0.33.0rc3"
+        },
+        {
+          "tag": "v0.32.0",
+          "date": "2026-10-18T06:50:48Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/vllm/releases/tag/v0.32.0"
+        },
+        {
+          "tag": "v0.31.0",
+          "date": "2026-10-05T06:44:55Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/vllm/releases/tag/v0.31.0"
+        },
+        {
+          "tag": "v0.30.0",
+          "date": "2026-09-22T05:20:54Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/vllm/releases/tag/v0.30.0"
+        },
+        {
+          "tag": "v0.29.0",
+          "date": "2026-09-09T08:54:49Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/vllm/releases/tag/v0.29.0"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "sgl-project/sglang",
+      "stars": 38591,
+      "url": "https://github.com/sgl-project/sglang",
+      "releases": [
+        {
+          "tag": "v0.5.23",
+          "date": "2026-11-02T22:14:10Z",
+          "pre": false,
+          "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.23"
+        },
+        {
+          "tag": "v0.5.22",
+          "date": "2026-10-19T02:55:19Z",
+          "pre": false,
+          "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.22"
+        },
+        {
+          "tag": "v0.5.21",
+          "date": "2026-10-02T01:09:04Z",
+          "pre": false,
+          "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.21"
+        },
+        {
+          "tag": "v0.5.20",
+          "date": "2026-09-18T22:41:33Z",
+          "pre": false,
+          "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.20"
+        },
+        {
+          "tag": "v0.5.19",
+          "date": "2026-09-05T02:27:42Z",
+          "pre": false,
+          "url": "https://github.com/sgl-project/sglang/releases/tag/v0.5.19"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "NVIDIA/TensorRT-LLM",
+      "stars": 15040,
+      "url": "https://github.com/NVIDIA/TensorRT-LLM",
+      "releases": [
+        {
+          "tag": "v1.4.0rc3",
+          "date": "2026-11-06T21:38:32Z",
+          "pre": true,
+          "url": "https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.4.0rc3"
+        },
+        {
+          "tag": "v1.4.0rc2",
+          "date": "2026-10-28T15:51:34Z",
+          "pre": true,
+          "url": "https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.4.0rc2"
+        },
+        {
+          "tag": "v1.4.0rc1",
+          "date": "2026-10-22T01:38:13Z",
+          "pre": true,
+          "url": "https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.4.0rc1"
+        },
+        {
+          "tag": "v1.4.0rc0",
+          "date": "2026-10-14T16:35:44Z",
+          "pre": true,
+          "url": "https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.4.0rc0"
+        },
+        {
+          "tag": "v1.3.0rc29",
+          "date": "2026-09-29T10:56:19Z",
+          "pre": true,
+          "url": "https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.3.0rc29"
+        }
+      ],
+      "license": "NOASSERTION"
+    },
+    {
+      "repo": "llm-d/llm-d",
+      "stars": 5179,
+      "url": "https://github.com/llm-d/llm-d",
+      "releases": [
+        {
+          "tag": "v1.0.0",
+          "date": "2026-10-20T02:30:10Z",
+          "pre": false,
+          "url": "https://github.com/llm-d/llm-d/releases/tag/v1.0.0"
+        },
+        {
+          "tag": "v0.10.0",
+          "date": "2026-09-29T00:00:25Z",
+          "pre": false,
+          "url": "https://github.com/llm-d/llm-d/releases/tag/v0.10.0"
+        },
+        {
+          "tag": "v0.9.0",
+          "date": "2026-08-17T23:38:08Z",
+          "pre": false,
+          "url": "https://github.com/llm-d/llm-d/releases/tag/v0.9.0"
+        },
+        {
+          "tag": "v0.8.1",
+          "date": "2026-06-26T19:13:10Z",
+          "pre": false,
+          "url": "https://github.com/llm-d/llm-d/releases/tag/v0.8.1"
+        },
+        {
+          "tag": "v0.8.0",
+          "date": "2026-06-24T21:20:22Z",
+          "pre": false,
+          "url": "https://github.com/llm-d/llm-d/releases/tag/v0.8.0"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "ai-dynamo/dynamo",
+      "stars": 8459,
+      "url": "https://github.com/ai-dynamo/dynamo",
+      "releases": [
+        {
+          "tag": "v1.7.0-kimi-k3.1-pro-dev.1",
+          "date": "2026-11-06T21:44:59Z",
+          "pre": true,
+          "url": "https://github.com/ai-dynamo/dynamo/releases/tag/v1.7.0-kimi-k3.1-pro-dev.1"
+        },
+        {
+          "tag": "v1.6.2",
+          "date": "2026-11-05T22:11:38Z",
+          "pre": false,
+          "url": "https://github.com/ai-dynamo/dynamo/releases/tag/v1.6.2"
+        },
+        {
+          "tag": "v1.6.0-deepseek-v4.1-flash-dev.2-post.1",
+          "date": "2026-11-05T00:49:19Z",
+          "pre": true,
+          "url": "https://github.com/ai-dynamo/dynamo/releases/tag/v1.6.0-deepseek-v4.1-flash-dev.2-post.1"
+        },
+        {
+          "tag": "v1.7.0-mistral-large-4-dev.1",
+          "date": "2026-11-02T21:08:44Z",
+          "pre": true,
+          "url": "https://github.com/ai-dynamo/dynamo/releases/tag/v1.7.0-mistral-large-4-dev.1"
+        },
+        {
+          "tag": "v1.6.1",
+          "date": "2026-10-27T20:24:42Z",
+          "pre": false,
+          "url": "https://github.com/ai-dynamo/dynamo/releases/tag/v1.6.1"
+        }
+      ],
+      "license": "NOASSERTION"
+    },
+    {
+      "repo": "kserve/kserve",
+      "stars": 6201,
+      "url": "https://github.com/kserve/kserve",
+      "releases": [
+        {
+          "tag": "v0.21.0",
+          "date": "2026-09-25T17:04:20Z",
+          "pre": false,
+          "url": "https://github.com/kserve/kserve/releases/tag/v0.21.0"
+        },
+        {
+          "tag": "v0.21.0-rc1",
+          "date": "2026-09-23T01:22:23Z",
+          "pre": true,
+          "url": "https://github.com/kserve/kserve/releases/tag/v0.21.0-rc1"
+        },
+        {
+          "tag": "v0.21.0-rc0",
+          "date": "2026-09-10T17:44:50Z",
+          "pre": true,
+          "url": "https://github.com/kserve/kserve/releases/tag/v0.21.0-rc0"
+        },
+        {
+          "tag": "v0.20.0",
+          "date": "2026-08-06T15:07:42Z",
+          "pre": false,
+          "url": "https://github.com/kserve/kserve/releases/tag/v0.20.0"
+        },
+        {
+          "tag": "v0.20.0-rc1",
+          "date": "2026-08-03T23:59:49Z",
+          "pre": true,
+          "url": "https://github.com/kserve/kserve/releases/tag/v0.20.0-rc1"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "vllm-project/aibrix",
+      "stars": 5182,
+      "url": "https://github.com/vllm-project/aibrix",
+      "releases": [
+        {
+          "tag": "v0.8.0",
+          "date": "2026-10-13T00:06:30Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/aibrix/releases/tag/v0.8.0"
+        },
+        {
+          "tag": "v0.7.0",
+          "date": "2026-06-18T00:23:05Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/aibrix/releases/tag/v0.7.0"
+        },
+        {
+          "tag": "v0.6.0",
+          "date": "2026-03-03T23:31:14Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/aibrix/releases/tag/v0.6.0"
+        },
+        {
+          "tag": "v0.5.0",
+          "date": "2025-11-09T23:06:48Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/aibrix/releases/tag/v0.5.0"
+        },
+        {
+          "tag": "v0.4.1",
+          "date": "2025-08-19T05:31:43Z",
+          "pre": false,
+          "url": "https://github.com/vllm-project/aibrix/releases/tag/v0.4.1"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "kubernetes-sigs/gateway-api-inference-extension",
+      "stars": 801,
+      "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension",
+      "releases": [
+        {
+          "tag": "v1.6.2",
+          "date": "2026-09-17T20:18:39Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.6.2"
+        },
+        {
+          "tag": "v1.6.1",
+          "date": "2026-09-11T23:41:33Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.6.1"
+        },
+        {
+          "tag": "v1.6.0",
+          "date": "2026-08-17T17:39:38Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.6.0"
+        },
+        {
+          "tag": "v1.5.0",
+          "date": "2026-04-19T18:13:38Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.5.0"
+        },
+        {
+          "tag": "v1.5.0-rc.2",
+          "date": "2026-04-16T17:27:16Z",
+          "pre": true,
+          "url": "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.5.0-rc.2"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "kubernetes-sigs/lws",
+      "stars": 903,
+      "url": "https://github.com/kubernetes-sigs/lws",
+      "releases": [
+        {
+          "tag": "v1.0.0",
+          "date": "2026-10-16T14:26:34Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/lws/releases/tag/v1.0.0"
+        },
+        {
+          "tag": "v0.11.1",
+          "date": "2026-10-01T19:06:49Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/lws/releases/tag/v0.11.1"
+        },
+        {
+          "tag": "v0.11.0",
+          "date": "2026-09-23T19:54:28Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/lws/releases/tag/v0.11.0"
+        },
+        {
+          "tag": "v0.10.0",
+          "date": "2026-08-11T19:59:45Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/lws/releases/tag/v0.10.0"
+        },
+        {
+          "tag": "v0.9.0",
+          "date": "2026-06-17T20:44:22Z",
+          "pre": false,
+          "url": "https://github.com/kubernetes-sigs/lws/releases/tag/v0.9.0"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "kaito-project/kaito",
+      "stars": 1039,
+      "url": "https://github.com/kaito-project/kaito",
+      "releases": [
+        {
+          "tag": "kaito-guardrail-core-v0.1.1",
+          "date": "2026-10-28T04:19:42Z",
+          "pre": false,
+          "url": "https://github.com/kaito-project/kaito/releases/tag/kaito-guardrail-core-v0.1.1"
+        },
+        {
+          "tag": "kaito-guardrail-core-v0.1.0",
+          "date": "2026-10-27T04:04:30Z",
+          "pre": false,
+          "url": "https://github.com/kaito-project/kaito/releases/tag/kaito-guardrail-core-v0.1.0"
+        },
+        {
+          "tag": "v0.13.0",
+          "date": "2026-10-24T04:21:35Z",
+          "pre": false,
+          "url": "https://github.com/kaito-project/kaito/releases/tag/v0.13.0"
+        },
+        {
+          "tag": "v0.13.0-rc.3",
+          "date": "2026-10-22T13:07:02Z",
+          "pre": true,
+          "url": "https://github.com/kaito-project/kaito/releases/tag/v0.13.0-rc.3"
+        },
+        {
+          "tag": "v0.13.0-rc.2",
+          "date": "2026-10-18T10:38:43Z",
+          "pre": true,
+          "url": "https://github.com/kaito-project/kaito/releases/tag/v0.13.0-rc.2"
+        }
+      ],
+      "license": "NOASSERTION"
+    },
+    {
+      "repo": "dsx-ai-factory/model-streamer",
+      "stars": 407,
+      "url": "https://github.com/dsx-ai-factory/model-streamer",
+      "releases": [
+        {
+          "tag": "0.17.1",
+          "date": "2026-10-29T12:50:17Z",
+          "pre": false,
+          "url": "https://github.com/dsx-ai-factory/model-streamer/releases/tag/0.17.1"
+        },
+        {
+          "tag": "0.17.0",
+          "date": "2026-10-13T15:26:25Z",
+          "pre": false,
+          "url": "https://github.com/dsx-ai-factory/model-streamer/releases/tag/0.17.0"
+        },
+        {
+          "tag": "0.16.1",
+          "date": "2026-07-13T07:03:17Z",
+          "pre": false,
+          "url": "https://github.com/dsx-ai-factory/model-streamer/releases/tag/0.16.1"
+        },
+        {
+          "tag": "0.16.0",
+          "date": "2026-05-28T12:58:48Z",
+          "pre": false,
+          "url": "https://github.com/dsx-ai-factory/model-streamer/releases/tag/0.16.0"
+        },
+        {
+          "tag": "0.15.9",
+          "date": "2026-04-30T17:08:07Z",
+          "pre": false,
+          "url": "https://github.com/dsx-ai-factory/model-streamer/releases/tag/0.15.9"
+        }
+      ],
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "sigstore/model-transparency",
+      "stars": 249,
+      "url": "https://github.com/sigstore/model-transparency",
+      "releases": [
+        {
+          "tag": "v1.1.1",
+          "date": "2025-10-10T17:47:51Z",
+          "pre": false,
+          "url": "https://github.com/sigstore/model-transparency/releases/tag/v1.1.1"
+        },
+        {
+          "tag": "v1.1.0",
+          "date": "2025-10-10T16:51:56Z",
+          "pre": false,
+          "url": "https://github.com/sigstore/model-transparency/releases/tag/v1.1.0"
+        },
+        {
+          "tag": "v1.0.1",
+          "date": "2025-04-18T17:56:52Z",
+          "pre": false,
+          "url": "https://github.com/sigstore/model-transparency/releases/tag/v1.0.1"
+        },
+        {
+          "tag": "v1.0.0",
+          "date": "2025-04-04T16:35:53Z",
+          "pre": false,
+          "url": "https://github.com/sigstore/model-transparency/releases/tag/v1.0.0"
+        },
+        {
+          "tag": "v0.3.1",
+          "date": "2025-04-04T13:59:25Z",
+          "pre": false,
+          "url": "https://github.com/sigstore/model-transparency/releases/tag/v0.3.1"
+        }
+      ],
+      "license": "Apache-2.0"
+    }
+  ],
+  "additional_release_lookup": {
+    "repository": "NVIDIA/TensorRT-LLM",
+    "endpoint": "https://api.github.com/repos/NVIDIA/TensorRT-LLM/releases/latest",
+    "tag": "v1.2.1",
+    "published_at": "2026-04-20T11:51:33Z",
+    "prerelease": false
+  },
+  "repository_searches": [
+    {
+      "query": "inference attestation rollout",
+      "scope": "repository name/description",
+      "observed_results": 0
+    },
+    {
+      "query": "model runtime attestation",
+      "selected_result": "aws-samples/sample-guarded-user-controlled-attested-runtime-deployment"
+    },
+    {
+      "query": "vllm-bayesian-autotuner",
+      "selected_result": "SergioMorillas/vllm-bayesian-autotuner"
+    },
+    {
+      "query": "llm-autotune",
+      "selected_result": "modelsphere/llm-autotune"
+    },
+    {
+      "query": "llm-d workload variant autoscaler",
+      "selected_result": "llm-d/llm-d-autoscaling"
+    }
+  ],
+  "key_sources": [
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/docs/architecture/autoscaling/README.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/docs/architecture/autoscaling/keda-epp.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/guides/workload-autoscaling/README.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/guides/rollouts/README.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/guides/runtime-inventory/README.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/guides/precise-prefix-cache-routing/README.md",
+    "https://github.com/llm-d/llm-d/blob/v1.0.0/guides/fast-model-actuation/README.md",
+    "https://github.com/vllm-project/vllm/blob/v0.32.0/docs/models/extensions/runai_model_streamer.md",
+    "https://github.com/ai-dynamo/dynamo/blob/v1.6.2/docs/fern/pages/reference/components/planner-configuration.mdx",
+    "https://github.com/GoogleCloudPlatform/k8s-aibom",
+    "https://github.com/modelsphere/llm-autotune",
+    "https://argoproj.github.io/argo-rollouts/",
+    "https://docs.flagger.app/usage/deployment-strategies"
+  ]
+}
