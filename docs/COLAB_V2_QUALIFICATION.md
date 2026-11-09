@@ -3,6 +3,15 @@
 One consolidated run on an A100 (or L4) runtime. T4 is not a supported
 qualification target for the BF16 fused kernels.
 
+## Recommended first run: upload a prepared notebook
+
+- [Colab A100 native qualification](notebooks/colab_a100_h0_qualification.ipynb): select an A100 runtime and run cells in order. Pins source `c5db2f1` (H1 + beta_g precision fix), uses the existing pinned `Qwen/Qwen3.5-2B-Base` Foundry artifact, records the environment and executes the consolidated qualification/matrix. Keeps vLLM/SGLang out of this environment.
+- [Kaggle T4 x2 FP16 serving smoke](notebooks/kaggle_t4x2_serving_smoke.ipynb): select T4 x2, enable Internet and grant access to a read-only `GITHUB_TOKEN` secret. Uses a separate vLLM 0.11.0 environment and pinned `Qwen/Qwen3-0.6B` revision `c1899de289a04d12100db370d81485cdf75e47ca`. Runs the existing engine conformance function once per GPU with FP16, short context and bounded memory. It does not run native BF16 qualification or split one model across both GPUs.
+
+Download either notebook from this checkout and upload it to the corresponding service. Both save logs and offer an evidence ZIP. The notebook code was locally syntax/schema checked, not GPU-executed here. Their first real run establishes whether the selected environment works; a failure remains recorded evidence. An unavailable sandbox backend can block full qualification even if numerical/serving checks execute. Do not disable mandatory checks to obtain a pass.
+
+The native notebook reuses the host's CUDA torch in a separate virtualenv and records the observed torch/CUDA/Triton versions. The Kaggle notebook lets the pinned vLLM package select matching torch/Transformers dependencies in a fresh environment. These are separate profiles; do not combine their installations. No optimizer-provider API key is required for either first run.
+
 ## Cell 1 — clone (private repo; token never echoed or stored)
 
 ```python
@@ -15,7 +24,9 @@ p = subprocess.run(['git', 'clone', '-q', 'https://github.com/sanjoxtech/inferst
                    env=env, capture_output=True, text=True)
 del tok, env
 print('clone exit', p.returncode, (p.stdout + p.stderr)[-300:])
+assert p.returncode == 0, 'Check read-only repository access and Internet connectivity'
 os.chdir('/content/inferstack')
+subprocess.run(['git', 'checkout', '--detach', 'c5db2f1c16d9f10fd057c14ab76edc89efe7d0e0'], check=True)
 print(subprocess.run(['git', 'log', '-1', '--format=%H %s'], capture_output=True, text=True).stdout)
 ```
 
@@ -27,17 +38,19 @@ cd /content/inferstack
 pip install -q -e ".[dev,native,hf,postgres]" > /tmp/install.log 2>&1; echo "install exit=$?"
 ```
 
-## Cell 2b — engines for conformance (optional; separate pins per runtime)
+## Additional engines: a separate qualification environment
 
-vLLM and SGLang pin their own torch/CUDA builds. Install only the engines you
-qualify, in this order, and record the versions printed by the conformance run.
+For the first A100/native run, omit vLLM and SGLang. They select their own
+torch/CUDA/Transformers dependencies and need independently pinned environments.
 
-```bash
-%%bash
-pip install -q "vllm==0.11.0" > /tmp/vllm.log 2>&1; echo "vllm exit=$?"
-# SGLang usually needs its own runtime (conflicting torch pins); qualify it in a fresh one:
-# pip install -q "sglang[all]==<pinned>" > /tmp/sglang.log 2>&1
-```
+The previous guide's vLLM 0.11.0 example must not be used for Qwen3.5. The
+prepared Kaggle notebook uses that version only with the older Qwen3-0.6B
+architecture. Qwen3.5 engine conformance needs a newer checked model/engine/backend
+combination; the [official model card](https://huggingface.co/Qwen/Qwen3.5-2B)
+describes development-build requirements, and the
+[upstream recipe](https://github.com/vllm-project/recipes/blob/main/Qwen/Qwen3.5.md)
+has separate current installation guidance. Pin the chosen build and prove it on
+the target hardware before treating the combination as supported.
 
 ## Cell 3 — qualify (≈30–90 min; downloads the pinned Qwen3.5-2B-Base commit)
 
@@ -47,7 +60,7 @@ cd /content/inferstack
 # Optional live gates; each one you pass with --require becomes blocking:
 #   export DEEPSEEK_API_KEY=...; EXTRA="--deepseek-model deepseek-chat --require provider_deepseek"
 #   export INFERSTACK_TEST_POSTGRES_URL=postgresql://...  (direct, non-pooled); EXTRA="$EXTRA --require postgresql"
-#   vLLM installed (cell 2b):                              EXTRA="$EXTRA --require vllm_conformance"
+#   In a separately qualified vLLM environment:          EXTRA="$EXTRA --require vllm_conformance"
 python scripts/v2_qualify.py --out results/v2-qualification $EXTRA; echo "qualify exit=$?"
 ```
 
@@ -93,68 +106,19 @@ set `infrastructure.gpu_devices` in the worker config (or `INFERSTACK_GPU_DEVICE
 for the control server) to restrict them. Without identified devices a GPU launch
 is refused rather than sharing an unknown device.
 
-## Kaggle (GPU T4 x2) — separate `t4` profile
+## Kaggle (GPU T4 x2) — separate serving profile
 
-Use this when no A100 is available. It produces `t4` evidence only, which never
-qualifies an A100 deployment (and vice versa).
+Use the prepared [T4 x2 notebook](notebooks/kaggle_t4x2_serving_smoke.ipynb) above.
+It tests readiness, immutable launch revision, deterministic completion,
+authoritative usage, abandoned-stream liveness, declared telemetry and clean stop
+through InferStack's real vLLM adapter on each GPU. A failed check stays failed.
 
-What to expect on T4 (compute 7.5, no native BF16):
-- `test_suite`, `model_identity` and the integration gates run normally.
-- `vllm_conformance` runs with `float16` (selected automatically on T4;
-  override with `--conformance-dtype`).
-- `kernel_equivalence` / `native_smoke` exercise the BF16 fused kernels and are
-  expected to fail or be unsupported on T4. A `not_qualified` verdict blocked
-  only by those gates is the correct T4 result, not a bug to work around.
-- SGLang generally targets newer GPUs; skip it on T4.
+The two reports describe two independent replicas. They are not baseline versus
+an optimized candidate until an actual treatment and repeated comparison are
+introduced, and they do not establish tensor-parallel speedup. Larger-model,
+multi-replica traffic and optimization experiments follow these initial checks.
 
-Notebook settings: Accelerator **GPU T4 x2**, Internet **on**. Add a Kaggle
-secret named `GITHUB_TOKEN` (read-only token for this repo) under
-Add-ons → Secrets. Optional secrets: `DEEPSEEK_API_KEY`,
-`INFERSTACK_TEST_POSTGRES_URL` (direct, non-pooled host).
-
-Cell 1 — clone (token read from Kaggle Secrets, never printed):
-
-```python
-import base64, os, subprocess
-from kaggle_secrets import UserSecretsClient
-tok = UserSecretsClient().get_secret('GITHUB_TOKEN')
-env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_COUNT': '1',
-       'GIT_CONFIG_KEY_0': 'http.https://github.com/.extraheader',
-       'GIT_CONFIG_VALUE_0': 'AUTHORIZATION: basic ' + base64.b64encode(f'x-access-token:{tok}'.encode()).decode()}
-p = subprocess.run(['git', 'clone', '-q', 'https://github.com/sanjoxtech/inferstack.git', '/kaggle/working/inferstack'],
-                   env=env, capture_output=True, text=True)
-del tok, env
-print('clone exit', p.returncode, (p.stdout + p.stderr)[-300:])
-os.chdir('/kaggle/working/inferstack')
-print(subprocess.run(['git', 'log', '-1', '--format=%H %s'], capture_output=True, text=True).stdout)
-print(subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv'], capture_output=True, text=True).stdout)
-```
-
-Cell 2 — install (same as Colab cell 2/2b, from `/kaggle/working/inferstack`):
-
-```bash
-%%bash
-cd /kaggle/working/inferstack
-pip install -q -e ".[dev,native,hf,postgres]" > /tmp/install.log 2>&1; echo "install exit=$?"
-pip install -q "vllm==0.11.0" > /tmp/vllm.log 2>&1; echo "vllm exit=$?"
-python -c "import torch; print(torch.__version__, torch.cuda.device_count(), torch.cuda.get_device_name(0))"
-```
-
-Cell 3 — qualify:
-
-```python
-import os, subprocess
-from kaggle_secrets import UserSecretsClient
-extra = ['--require', 'vllm_conformance']
-try:
-    os.environ['DEEPSEEK_API_KEY'] = UserSecretsClient().get_secret('DEEPSEEK_API_KEY')
-    extra += ['--deepseek-model', 'deepseek-chat', '--require', 'provider_deepseek']
-except Exception:
-    pass  # optional secret not configured
-r = subprocess.run(['python', 'scripts/v2_qualify.py', '--out', 'results/v2-qualification-t4', *extra])
-print('qualify exit', r.returncode)
-```
-
-Then read the verdict exactly as in Cell 4, with
-`/kaggle/working/inferstack/results/v2-qualification-t4/qualification.json`.
-Download that directory (it includes `compatibility.json`) as the run's evidence.
+Do not run the full BF16/native runner expecting a `qualified` T4 release. Its
+mandatory native/kernel gates target a different hardware/dtype profile. The
+small-model FP16 evidence cannot qualify the Qwen3.5 native implementation or an
+A100 deployment.
