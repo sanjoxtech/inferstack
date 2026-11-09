@@ -311,6 +311,23 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
         try:return {'history':repository.history(kind,identifier)}
         except KeyError:raise HTTPException(404,'unknown record')
 
+    @app.get('/control/experience/{deployment_id}',dependencies=auth)
+    def prior_experience(deployment_id:str,limit:int=20,treatment_signature:str|None=None):
+        """Earlier campaigns' outcomes for this deployment's model, classified applicable/transferable."""
+        from inferstack.memory import experience
+        try:return experience(repository,deployment_id,limit=limit,treatment_signature=treatment_signature)
+        except KeyError:raise HTTPException(404,'unknown deployment')
+        except ValueError as exc:raise HTTPException(422,str(exc))
+
+    @app.post('/control/context/{deployment_id}',dependencies=auth)
+    def deployment_context(deployment_id:str,body:dict|None=None):
+        """Build and store a versioned context snapshot (optional body: {workload, objectives})."""
+        from inferstack.memory import context_snapshot
+        body=body or {}
+        try:return context_snapshot(repository,deployment_id,workload=body.get('workload'),
+                                    objectives=body.get('objectives'))
+        except KeyError:raise HTTPException(404,'unknown deployment')
+
     @app.get('/control/capabilities',dependencies=auth)
     def capabilities(engine:str|None=None):
         from inferstack.engines.capabilities import matrix

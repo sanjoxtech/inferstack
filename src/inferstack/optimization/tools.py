@@ -49,6 +49,11 @@ class EvidenceSearchArgs(_Args):
     query: str = Field(min_length=2, max_length=200)
 
 
+class ExperienceArgs(_Args):
+    treatment_signature: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    limit: int = Field(default=10, ge=1, le=50)
+
+
 class TechniqueArgs(_Args):
     technique_id: str = Field(min_length=1, max_length=200)
 
@@ -75,6 +80,10 @@ class PlannerTools:
                                 'Registered techniques that are not incompatible with the baseline.'),
             'check_compatibility': (TechniqueArgs, self.check_compatibility,
                                     'Claim-vs-proof compatibility of one technique with the baseline.'),
+            'search_experience': (ExperienceArgs, self.search_experience,
+                                  'Outcomes of earlier campaigns for this model: applicable (same setup: real '
+                                  'evidence) vs transferable (different setup: hypothesis only), with evidence '
+                                  'digests. Optionally filter by treatment_signature.'),
         }
         self.baseline_id = next(iter(deployment_ids))
 
@@ -153,6 +162,13 @@ class PlannerTools:
                 hits.append({'evidence_id': identifier,
                              'snippet': untrusted_block({**snapshot, 'content': excerpt}, max_chars=1200)})
         return {'hits': hits[:10]}
+
+    async def search_experience(self, treatment_signature=None, limit=10):
+        from inferstack.memory.experience import experience
+        found = experience(self.repository, self.baseline_id, limit=limit, treatment_signature=treatment_signature)
+        return {k: found[k] for k in ('summary', 'failed_here_signatures', 'items', 'truncated')} | \
+            {'excluded': {'unrelated': found['excluded']['unrelated'],
+                          'inaccessible': len(found['excluded']['inaccessible'])}}
 
     async def list_techniques(self):
         from inferstack.research.techniques import candidates

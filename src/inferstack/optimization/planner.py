@@ -137,7 +137,17 @@ class ToolPlanner:
         public = lambda r: {'id': r['id'], 'revision': r['revision'], 'engine': r['body']['engine'],
                             'model': r['body']['model'], 'engine_version': r['body'].get('engine_version')}
         evidence = [ProviderPlanner.render_evidence(self, i) for i in allowed]
+        from inferstack.memory.experience import experience
+        prior = experience(self.repository, baseline['id'], limit=10)
         context = {'goal': request.get('goal'), 'source': request.get('source'),
+                   # Earlier campaigns: 'applicable' items are evidence for this exact setup,
+                   # 'transferable' ones are hypotheses only (see search_experience).
+                   'prior_campaigns': {'summary': prior['summary'],
+                                       'failed_here_signatures': prior['failed_here_signatures'],
+                                       'items': [{k: i[k] for k in ('applicability', 'decision', 'hypothesis',
+                                                                    'actions', 'differences', 'evidence_sha256',
+                                                                    'treatment_signature')}
+                                                 for i in prior['items']]},
                    'baseline_ref': f"{baseline['id']}@{baseline['revision']}", 'baseline': public(baseline),
                    'candidates': [public(self.repository.read('deployment', c)) for c in self.candidate_ids],
                    'evidence': evidence, 'previous_experiments': await tools.list_experiments(),
@@ -146,6 +156,7 @@ class ToolPlanner:
                     {'role': 'user', 'content': json.dumps(context, allow_nan=False, default=str)}]
         failed = {e['plan'].get('treatment_signature') for e in history
                   if e['verdict'].get('decision') != 'retest' and e['plan'].get('treatment_signature')}
+        failed |= set(prior['failed_here_signatures'])  # rejected earlier on this exact setup
         responses, tool_calls, corrections, tokens = [], 0, 0, 0
         use_tools = self.provider.capabilities.tools
         try:

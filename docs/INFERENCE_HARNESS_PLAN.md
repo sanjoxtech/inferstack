@@ -253,3 +253,40 @@ reconciliation blocking lease renewal, was already resolved by `63c8644`).
 `docs/verification/h0_followup_probes.py` (unchanged) now reports no gap in all
 five cases. Full local suite and the three earlier probe files: 369 passed /
 17 skipped (macOS, CPU). GPU qualification remains separate and pending.
+
+### H0 independent acceptance — 9 November 2026
+
+**H0 software acceptance passes at `4a4aa36`.** An independent rerun of the unchanged follow-up probes confirms all five boundary cases now show corrected behavior. The affected regression suite independently passed 151 tests (0 failed, 0 skipped); the exact commit's CI has five successful jobs and one skipped manual provider job. See [H0_INDEPENDENT_REVIEW.md](H0_INDEPENDENT_REVIEW.md) for the scope, commands, evidence and historical findings. This supersedes the earlier H0 open status. Proceed to H1 and prepare the separately pinned GPU qualification environment; A100/T4 and production-cluster qualification are still pending.
+
+### H1 — 9 November 2026 (implementation agent)
+
+Implemented in `src/inferstack/memory/` on the existing repository and artifact store
+(no new database). Acceptance tests: `tests/test_harness_h1.py`.
+
+- **Context snapshot (v1)** `context_snapshot(repo, deployment_id, workload=, objectives=)`:
+  deployment revision, applicability identity (H0-F1), engine capability claims with
+  basis, routes/releases serving it, workload fixture digest and objectives, a recent
+  live serving-evidence window, technique verdicts, prior experience and an explicit
+  `missing` list. Canonical JSON stored as a content-addressed artifact.
+- **Experience retrieval (v1)** `experience(repo, deployment_id, limit, scan_jobs, treatment_signature)`:
+  scans at most `scan_jobs` terminal jobs, verifies each evidence artifact's digest,
+  and classifies each prior experiment as `applicable` (same identity: evidence for this
+  setup), `transferable` (same model family, different setup: hypothesis with the
+  differing components), or excluded (unrelated model; unreadable/tampered evidence
+  reported as `inaccessible`). Every item keeps job ID, iteration, treatment signature,
+  candidate revision and evidence digest. `failed_here_signatures` lists treatments
+  rejected on this exact setup.
+- **Planner**: `ToolPlanner` receives a bounded `prior_campaigns` summary, a read-only
+  `search_experience` tool, and rejects re-proposing a treatment that already failed on
+  this exact setup.
+- **Interfaces**: `GET /control/experience/{deployment_id}`, `POST /control/context/{deployment_id}`,
+  and `python -m inferstack.control experience|context --deployment ID`.
+
+Demonstrated with real worker jobs and verification evidence: a fresh job finds the
+earlier failure and the matching success (exact evidence digests), treats a T4 result
+as a hypothesis for an A100 target (and vice versa), excludes an unrelated model,
+reports tampered evidence as inaccessible, and the planner's repeat of the failed
+treatment is rejected. Full suite plus earlier probes: 376 passed / 18 skipped (macOS,
+CPU). Limits: no semantic/vector search (relational and bounded by design); workload
+applicability is compared by fixture digest only; live evidence appears only where
+gateways record it.

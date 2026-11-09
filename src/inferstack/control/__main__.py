@@ -10,7 +10,11 @@ from inferstack.storage.repository import Repository
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention','outbox-deliver',
-                                          'triggers-tick'])
+                                          'triggers-tick','context','experience'])
+    parser.add_argument('--deployment',help='context/experience: deployment id')
+    parser.add_argument('--limit',type=int,default=20,help='experience: maximum items returned')
+    parser.add_argument('--treatment',help='experience: only this treatment signature')
+    parser.add_argument('--workload',type=Path,help='context: JSON workload fixture (list of cases)')
     parser.add_argument('--callback-url',help='outbox-deliver: FactoryOS outcome endpoint (https)')
     parser.add_argument('--callback-token-env',default='FACTORYOS_CALLBACK_TOKEN')
     parser.add_argument('--max-active',type=int,default=2,help='triggers-tick: global unfinished triggered jobs')
@@ -88,6 +92,16 @@ def main():
             observe=gateway_slo_observer(os.environ['INFERSTACK_GATEWAY_URL'],
                                          os.environ.get('INFERSTACK_GATEWAY_TOKEN') or os.environ.get('INFERSTACK_CONTROL_TOKEN',''))
         print(json.dumps(asyncio.run(TriggerService(repo,observe=observe,max_active=args.max_active).tick()),indent=2))
+    elif args.action in ('context','experience'):
+        if not args.deployment:parser.error('--deployment required')
+        if args.action=='experience':
+            from inferstack.memory import experience
+            out=experience(repo,args.deployment,limit=args.limit,treatment_signature=args.treatment)
+        else:
+            from inferstack.memory import context_snapshot
+            workload=json.loads(args.workload.read_text()) if args.workload else None
+            out=context_snapshot(repo,args.deployment,workload=workload)
+        print(json.dumps(out,indent=2,default=str))
     elif args.action=='reconcile':
         from inferstack.infrastructure import LocalProcessProvider,reconcile
         print(json.dumps(reconcile(repo,LocalProcessProvider()),indent=2))

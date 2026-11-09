@@ -194,7 +194,8 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
 
     signature = treatment_signature(plan)
     if signature in history_signatures:
-        raise PlanRejected('identical treatment was already tried in this job; propose a different one')
+        raise PlanRejected('identical treatment was already tried (in this job, or rejected by an earlier campaign '
+                           'on this exact setup); propose a different one')
     if remaining_budget:
         for key in ('gpu_seconds', 'provider_tokens'):
             limit = remaining_budget.get(key)
