@@ -155,7 +155,8 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
                 except ProfileError as exc:
                     raise PlanRejected(f'{action.id}: {exc}') from None
             else:
-                raise PlanRejected(f'{action.id}: config_change needs candidate_deployment_id or profile_patch')
+                raise PlanRejected(f'{action.id}: config_change takes exactly one of '
+                                   f'{{"candidate_deployment_id"}} or {{"profile_patch"}}; got {sorted(p)}')
         elif action.type in ('plugin_install', 'source_patch'):
             technique_id = p.get('technique_id')
             try:

@@ -20,7 +20,7 @@ from inferstack.storage.repository import Repository
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 SRC = Path(__file__).parents[1] / 'src'
-LEASE = 1.0
+LEASE = 2.0  # was 1.0; a 1.6 s CI event-loop stall lost the lease before the planned crash point
 
 
 def free_port():

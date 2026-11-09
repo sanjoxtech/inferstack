@@ -17,6 +17,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 10:40 UTC — Claude Code (implementation agent)
+- CI fixes. Neon job: run only the PostgreSQL test modules (torch was not installed there); Neon passed 15/15 in CI.
+- Live provider smoke failed in CI (model returned non-JSON / invalid plans). Planner: tolerant JSON extraction, explicit stop_rule values, `profile_options` (real allowed keys per engine) in the context, clearer config_change error. Local live runs: OpenRouter and DeepSeek both plan_validated with 0 corrections.
+- Flaky crash test: durable-execution test lease 1.0 s -> 2.0 s (a 1.6 s CI stall lost the lease before the crash point).
+- Not mine, left uncommitted: docs/INFERENCE_HARNESS_PLAN.md native-engine paragraph (another agent).
+
 ### 2026-11-09 10:27 UTC — Claude Code (implementation agent)
 - Task: CI uses hosted services. GitHub secrets set: NEON_DATABASE_URL, OPENROUTER_API_KEY, DEEPSEEK_API_KEY (values never printed).
 - ci.yml: new job "PostgreSQL tests on hosted Neon" (push/manual; -k postgres; each test creates/drops its own DB); provider smoke now runs on push to main too.
