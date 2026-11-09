@@ -143,12 +143,26 @@ def _integrations(database, db, now):
     ''')
 
 
+def _serving_evidence(database, db, now):
+    _script(database, db, '''
+        CREATE TABLE IF NOT EXISTS serving_events (
+            id TEXT PRIMARY KEY, at {FLOAT} NOT NULL, worker TEXT NOT NULL, release_id TEXT NOT NULL,
+            deployment_id TEXT NOT NULL, outcome TEXT NOT NULL, stream INTEGER NOT NULL, status INTEGER,
+            rejection_source TEXT, upstream_first_byte_ms {FLOAT}, first_content_ms {FLOAT}, e2e_ms {FLOAT},
+            max_gap_ms {FLOAT}, content_events INTEGER, output_tokens INTEGER, itl_ms {FLOAT}
+        );
+        CREATE INDEX IF NOT EXISTS serving_events_release ON serving_events(release_id, at);
+        CREATE INDEX IF NOT EXISTS serving_events_deployment ON serving_events(deployment_id, at)
+    ''')
+
+
 MIGRATIONS = [
     (1, 'baseline jobs, events and records (v1.6 layout)', _baseline),
     (2, 'record schema versions and immutable revision history', _history),
     (3, 'record reference index', _references),
     (4, 'durable steps, budgets, deadlines, workers and resource allocations', _execution),
     (5, 'integration outbox and bounded optimization triggers', _integrations),
+    (6, 'durable per-request serving evidence for rollout windows', _serving_evidence),
 ]
 LATEST = MIGRATIONS[-1][0]
 

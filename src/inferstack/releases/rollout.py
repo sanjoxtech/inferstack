@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import time
 
+from inferstack.releases import gates
 from inferstack.releases.manager import ReleaseManager
 
 TERMINAL = {'promoted', 'rolled_back', 'failed', 'conflict'}
@@ -120,7 +121,10 @@ class RolloutController:
 
     # --- lifecycle ---------------------------------------------------------------
 
-    async def start(self, rollout_id, model, release_id, stages, *, min_requests=20):
+    async def start(self, rollout_id, model, release_id, stages, *, min_requests=20, evaluation=None):
+        """evaluation: {'required': bool, 'suite_sha256'?, 'evaluator_sha256'?}. When required,
+        the release's bound held-out evaluation must pass before any stage advances:
+        missing/corrupt holds, a recorded quality regression rolls back."""
         route = self.repository.read('route', model)
         if route['body'].get('candidate'):
             raise RolloutError(f'{model} already has a candidate in flight')
@@ -133,7 +137,10 @@ class RolloutController:
                 'stages': stages, 'state': 'pending', 'current_stage': 0, 'updated_at': now,
                 'min_requests': min_requests, 'observations': {}, 'stage_started_at': None,
                 'route_revision': route['revision'], 'route_body': _route_view(route['body']),
-                'transition': None, 'stable_baseline': None}
+                'transition': None, 'stable_baseline': None, 'evaluation_policy': evaluation,
+                'policy_sha256': gates.policy_sha256(stages, {'min_requests': min_requests,
+                                                              'evaluation': evaluation}),
+                'evidence_refs': []}
         revision = self.repository.put_record('rollout', rollout_id, body)
         if self.runtime is not None:
             try:
@@ -211,39 +218,43 @@ class RolloutController:
             return self._conflict(rollout_id, revision, body)
         stage = body['stages'][body['current_stage']]
         since = body['stage_started_at']
-        cand = await self.observe(body['release_ref'], since)
-        stable = await self.observe(body['stable_ref'], since)
-        baseline, basis = stable.get('ttfb_p50_ms'), 'stable_same_window'
-        if stable.get('requests') and baseline:
-            body['stable_baseline'] = {'ttfb_p50_ms': baseline, 'stage': body['current_stage'], 'at': self.clock()}
-        elif stage['weight'] == 100 and body.get('stable_baseline'):
-            baseline, basis = body['stable_baseline']['ttfb_p50_ms'], \
-                f"retained_stable_stage_{body['stable_baseline']['stage']}"
-        else:
-            baseline = None
-        observations = {'candidate': cand, 'stable': stable, 'stage': body['current_stage'], 'at': self.clock(),
-                        'latency_basis': basis if baseline else None, 'baseline_ttfb_p50_ms': baseline}
-        if cand['requests']:
-            error_rate = cand['errors'] / cand['requests']
-            limit = stage.get('max_error_rate')
-            if limit is not None and error_rate > limit:
-                return await self._rollback(rollout_id, revision, {**body, 'observations': observations},
-                                            f'candidate error rate {error_rate:.3f} > {limit}')
-        regression_limit = stage.get('max_latency_regression')
-        if regression_limit is not None and cand['ttfb_p50_ms'] is not None and baseline:
-            regression = (cand['ttfb_p50_ms'] - baseline) / baseline
-            if regression > regression_limit:
-                return await self._rollback(rollout_id, revision, {**body, 'observations': observations},
-                                            f'candidate TTFB regression {regression:.1%} > {regression_limit:.0%}')
-        hold = None
-        if self.clock() - since < stage['min_duration_s']:
-            hold = 'minimum stage duration not reached'
-        elif cand['requests'] < body.get('min_requests', 20):
-            hold = f"only {cand['requests']} candidate requests (need {body.get('min_requests', 20)})"
-        elif regression_limit is not None and (cand['ttfb_p50_ms'] is None or not baseline):
-            hold = 'latency evidence unavailable for the stage window'
-        if hold:
-            return 'holding: ' + hold
+        until = self.clock()  # a closed window: both sides are measured over [since, until)
+        try:
+            cand = await self._observe(body['release_ref'], since, until)
+            stable = await self._observe(body['stable_ref'], since, until)
+        except Exception as exc:  # noqa: BLE001 - telemetry loss is an explicit hold, never a pass
+            elapsed = self.clock() - since
+            if stage.get('max_duration_s') is not None and elapsed >= stage['max_duration_s']:
+                return await self._rollback(rollout_id, revision, body,
+                                            f'inconclusive: telemetry unavailable ({type(exc).__name__})')
+            return f'holding: telemetry unavailable ({type(exc).__name__})'
+        if stable.get('requests'):
+            body['stable_baseline'] = {'stage': body['current_stage'], 'at': until,
+                                       'ttfb_p50_ms': stable.get('ttfb_p50_ms'),
+                                       'metrics': {k: v for k, v in stable.items() if k.endswith('_ms')}}
+        baseline, basis = gates.comparable_baseline(stage, stable, body.get('stable_baseline'))
+        decision = gates.evaluate(stage, cand, baseline, basis=basis, elapsed=until - since,
+                                  min_requests=body.get('min_requests', 20))
+        if decision['decision'] == 'advance' and (body.get('evaluation_policy') or {}).get('required'):
+            status, why = gates.evaluation_check(self.repository, self.repository.read('release', body['release_ref']),
+                                                 body['evaluation_policy'])
+            decision['checks']['evaluation'] = {'status': status, 'reason': why}
+            if status == 'failed':
+                decision = {**decision, 'decision': 'rollback', 'reasons': [why]}
+            elif status != 'passed':
+                decision = {**decision, 'decision': 'hold', 'reasons': [f'evaluation {status}: {why}']}
+        observations = {'candidate': cand, 'stable': stable, 'stage': body['current_stage'], 'at': until,
+                        'window': {'since': since, 'until': until}, 'latency_basis': basis,
+                        'baseline_ttfb_p50_ms': (baseline or {}).get('ttfb_p50_ms'),
+                        'decision': decision['decision'], 'reasons': decision['reasons'],
+                        'checks': decision['checks'], 'policy_sha256': body.get('policy_sha256')}
+        if decision['decision'] == 'hold':
+            return 'holding: ' + '; '.join(decision['reasons'])
+        body = {**body, 'evidence_refs': self._evidence(body, observations)}
+        if decision['decision'] in ('rollback', 'inconclusive'):
+            prefix = 'inconclusive: ' if decision['decision'] == 'inconclusive' else ''
+            return await self._rollback(rollout_id, revision, {**body, 'observations': observations},
+                                        prefix + '; '.join(decision['reasons']))
         # Observation awaited: another writer may have changed the route meanwhile.
         if self._owned_route(body) is None:
             return self._conflict(rollout_id, revision, body)
@@ -254,16 +265,36 @@ class RolloutController:
             _, body = self._transition(rollout_id, revision, body, target,
                                        {'current_stage': nxt, 'stage_started_at': NOW, 'observations': observations,
                                         'stable_baseline': body.get('stable_baseline'),
+                                        'evidence_refs': body['evidence_refs'],
                                         'reason': f"stage {nxt} at {body['stages'][nxt]['weight']}%"})
             return 'conflict' if body['state'] == 'conflict' else 'advanced'
         target = {'stable': body['release_ref'], 'candidate': None, 'weight': 0, 'previous': body['stable_ref']}
         _, body = self._transition(rollout_id, revision, body, target,
                                    {'state': 'promoted', 'observations': observations, 'reason': 'all stages passed',
+                                    'evidence_refs': body['evidence_refs'],
                                     **self._retirement(body['stable_ref'])})
         if body['state'] != 'promoted':
             return body['state']  # conflict: the route is not ours, so nothing is stopped
         await self._settle_retirement(rollout_id)  # drain in-flight streams, then stop the old stable
         return 'promoted'
+
+    async def _observe(self, release_id, since, until):
+        import inspect
+        try:
+            closed = len(inspect.signature(self.observe).parameters) >= 3
+        except (TypeError, ValueError):
+            closed = False
+        # Legacy observe(release_id, since) callbacks get an open window.
+        return await (self.observe(release_id, since, until) if closed else self.observe(release_id, since))
+
+    def _evidence(self, body, observations):
+        """Persist the decisive closed-window evidence as an immutable artifact; keep the last 50 refs."""
+        artifact = self.repository.artifact(self.repository.encode(
+            {'kind': 'rollout_evidence', 'model': body['model'], 'release_ref': body['release_ref'],
+             'stable_ref': body['stable_ref'], **observations}).encode())
+        ref = {'sha256': artifact['sha256'], 'stage': observations['stage'], 'decision': observations['decision'],
+               'window': observations['window']}
+        return (list(body.get('evidence_refs') or []) + [ref])[-50:]
 
     def pause(self, rollout_id):
         revision, body = self._read(rollout_id)
@@ -292,23 +323,30 @@ class RolloutController:
         return await self._rollback(rollout_id, revision, body, reason)
 
 
-def gateway_observer(repository, admission):
-    """Observation function backed by the gateway's per-deployment admission records."""
-    async def observe(release_id, since):
-        deployment_id = repository.read('release', release_id)['body']['deployment']['id']
-        return admission.observe(deployment_id, since)
+def gateway_observer(repository, admission=None):
+    """Observation over the durable serving evidence (all gateway workers sharing the store),
+    attributed by release ID over a closed window. `admission` is accepted for compatibility."""
+    from inferstack.serving.evidence import EvidenceStore
+    store = EvidenceStore(repository)
+
+    async def observe(release_id, since, until=None):
+        import asyncio
+        return await asyncio.to_thread(store.window, release_id=release_id, since=since, until=until)
     return observe
+
+
+evidence_observer = gateway_observer
 
 
 def http_observer(repository, gateway_url, token, transport=None):
     """Observation function reading a separate gateway process over its authorized API."""
     import httpx
 
-    async def observe(release_id, since):
-        deployment_id = repository.read('release', release_id)['body']['deployment']['id']
+    async def observe(release_id, since, until=None):
+        params = {'release_id': release_id, 'since': since, **({'until': until} if until is not None else {})}
         async with httpx.AsyncClient(base_url=gateway_url, transport=transport, timeout=10,
                                      headers={'Authorization': 'Bearer ' + token}) as client:
-            response = await client.get('/gateway/observe', params={'deployment_id': deployment_id, 'since': since})
+            response = await client.get('/gateway/observe', params=params)
             response.raise_for_status()
             return response.json()
     return observe

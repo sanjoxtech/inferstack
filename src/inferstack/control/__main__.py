@@ -35,6 +35,10 @@ def main():
             from inferstack.releases.rollout import http_observer
             observer=http_observer(repo,os.environ['INFERSTACK_GATEWAY_URL'],
                                    os.environ.get('INFERSTACK_GATEWAY_TOKEN') or token)
+        elif args.action=='serve' and os.environ.get('INFERSTACK_ROLLOUT_EVIDENCE')=='store':
+            # Gateways write durable evidence to this same store: read windows directly.
+            from inferstack.releases.rollout import evidence_observer
+            observer=evidence_observer(repo)
         from inferstack.releases.attestation import launch_observer,release_attestor
         from inferstack.infrastructure import LocalProcessProvider
         providers={'local':LocalProcessProvider()}

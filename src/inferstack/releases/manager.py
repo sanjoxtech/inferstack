@@ -28,7 +28,10 @@ class ReleaseManager:
             raise ValueError('deployment changed after verification')
         manifest={'deployment':record,'evidence':evidence_ref,'job_id':job_id,
                   'verification_scope':evidence['scope'],'verification_policy_sha256':policy.get('sha256'),
-                  'identity':self.freeze_identity(record['body'],evidence)}
+                  'identity':self.freeze_identity(record['body'],evidence),
+                  'evaluation':{'suite_sha256':(evidence.get('verifier') or {}).get('fixture_sha256'),
+                                'evaluator_sha256':(evidence.get('verifier') or {}).get('code_sha256'),
+                                'evidence_sha256':evidence_ref['sha256'],'quality':evidence.get('quality')}}
         serving=experiment.get('serving') or {}
         if serving.get('runnable'):manifest['runnable']=serving['runnable']
         if serving.get('allocation_id'):

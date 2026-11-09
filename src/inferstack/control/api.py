@@ -58,6 +58,8 @@ class RolloutStart(BaseModel):
     release_id:str=Field(min_length=1,max_length=200)
     stages:list[dict]=Field(min_length=1,max_length=10)
     min_requests:int=Field(default=20,ge=1)
+    # The release's bound held-out evaluation must pass before any stage advances.
+    evaluation:dict=Field(default_factory=lambda:{'required':True})
 
 
 ACTIONABLE={'latency','throughput','capacity','cost'}
@@ -188,7 +190,7 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
     @app.post('/control/rollouts',dependencies=auth)
     async def rollout_start(body:RolloutStart):
         try:return await controller().start(body.rollout_id,body.model,body.release_id,body.stages,
-                                            min_requests=body.min_requests)
+                                            min_requests=body.min_requests,evaluation=body.evaluation)
         except KeyError:raise HTTPException(404,'unknown route or release')
         except (RolloutError,ValueError) as exc:raise HTTPException(409,str(exc))
 

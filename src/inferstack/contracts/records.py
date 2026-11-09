@@ -375,6 +375,9 @@ class Release(Record):
     # context) and how (credential-free launch environment). Replacements replay these.
     placement: dict | None = None
     execution: dict | None = None
+    # Held-out evaluation bound at creation: suite (workload fixture) and evaluator
+    # (verifier code) digests plus the verification evidence artifact they came from.
+    evaluation: dict | None = None
 
     def references(self):
         snapshot = self.deployment
@@ -398,6 +401,19 @@ class RolloutStage(BaseModel):
     min_duration_s: float = Field(ge=0)
     max_error_rate: float | None = Field(default=None, ge=0, le=1)
     max_latency_regression: float | None = Field(default=None, ge=0)
+    # Live-evidence gates (releases/gates.py); all optional, frozen with the rollout.
+    min_samples: int | None = Field(default=None, ge=1)
+    max_duration_s: float | None = Field(default=None, gt=0)
+    max_cancel_rate: float | None = Field(default=None, ge=0, le=1)
+    max_empty_stream_rate: float | None = Field(default=None, ge=0, le=1)
+    ttft_p95_ms: float | None = Field(default=None, gt=0)
+    ttft_p99_ms: float | None = Field(default=None, gt=0)
+    e2e_p95_ms: float | None = Field(default=None, gt=0)
+    itl_p95_ms: float | None = Field(default=None, gt=0)
+    stall_p95_ms: float | None = Field(default=None, gt=0)
+    ttft_p95_regression: float | None = Field(default=None, ge=0)
+    e2e_p95_regression: float | None = Field(default=None, ge=0)
+    itl_p95_regression: float | None = Field(default=None, ge=0)
 
 
 class Rollout(Record):
@@ -443,6 +459,10 @@ class RolloutV3(RolloutV2):
     # Durable cleanup obligation written with the terminal route transition:
     # {'release_id', 'state': 'pending'|'done', 'attempts', 'last_error', 'outcome'}.
     retirement: dict | None = None
+    # Frozen before the canary: digest of stages + min_requests + evaluation policy.
+    policy_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    evaluation_policy: dict | None = None  # {'required': bool, 'suite_sha256'?, 'evaluator_sha256'?}
+    evidence_refs: list[dict] = Field(default_factory=list)  # decisive evidence artifacts, newest last
 
 
 # --- allocation, feedback -------------------------------------------------------

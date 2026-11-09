@@ -31,7 +31,8 @@ def test_retention_prunes_only_old_terminal_evidence(tmp_path):
     assert preview['events_deleted'] == 3 and preview['artifacts_deleted'] == 1
     assert len(repo.get(done)['events']) == 3  # dry run changed nothing
     report = enforce(repo, policy)
-    assert report == {'events_deleted': 3, 'artifacts_deleted': 1, 'artifacts_kept_referenced': 1, 'dry_run': False}
+    assert report == {'events_deleted': 3, 'artifacts_deleted': 1, 'artifacts_kept_referenced': 1, 'dry_run': False,
+                      'serving_events_deleted': 0}
     assert repo.get(done)['events'] == [] and repo.get(done)['result']['decision'] == 'keep'
     assert len(repo.get(running)['events']) == 2  # active jobs untouched
     assert not (tmp_path / 'a' / orphan['sha256']).exists()

@@ -28,6 +28,12 @@ def enforce(repository, policy: RetentionPolicy, *, dry_run=False):
             report['events_deleted'] = db.execute('SELECT COUNT(*) ' + where, (cutoff,)).fetchone()[0]
             if not dry_run:
                 db.execute('DELETE ' + where, (cutoff,))
+            # Per-request serving evidence follows the same TTL (aggregated rollout evidence
+            # is kept as immutable artifacts referenced by the rollout record).
+            report['serving_events_deleted'] = db.execute('SELECT COUNT(*) FROM serving_events WHERE at < ?',
+                                                          (cutoff,)).fetchone()[0]
+            if not dry_run:
+                db.execute('DELETE FROM serving_events WHERE at < ?', (cutoff,))
     if policy.artifact_ttl_days and hasattr(repository, 'artifact_root'):
         cutoff = now - policy.artifact_ttl_days * 86400
         referenced = set()

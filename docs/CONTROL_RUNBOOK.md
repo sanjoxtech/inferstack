@@ -417,17 +417,43 @@ exhausted. Verify current provider prices before relying on them.
 ## Progressive rollout and FactoryOS feedback
 
 Run the control server with `INFERSTACK_GATEWAY_URL` (and
-`INFERSTACK_GATEWAY_TOKEN` if the gateway uses a different token) so the
-rollout controller can read the gateway's per-deployment observations
-(`GET /gateway/observe`). Start with `POST /control/rollouts` (stages with
-`weight`, `min_duration_s`, optional `max_error_rate`, `max_latency_regression`;
-weights non-decreasing, last 100) and call `POST /control/rollouts/{id}/step`
-periodically; `pause`, `resume` (restarts the stage window) and `abort` are
-available. A breach rolls back immediately; too few candidate requests
-(`min_requests`), unknown latency or an unfinished stage holds; the 100% stage
-promotes. Each transition is a revision of the rollout record
-(`GET /control/records/rollout/{id}/history`). Latency here is gateway
-time-to-first-byte per deployment, measured over the current stage window.
+`INFERSTACK_GATEWAY_TOKEN` if the gateway uses a different token), or with
+`INFERSTACK_ROLLOUT_EVIDENCE=store` when gateways and control share the same
+database. Start with `POST /control/rollouts` and call
+`POST /control/rollouts/{id}/step` periodically; `pause`, `resume` (restarts the
+stage window) and `abort` are available. Weights are non-decreasing and end at 100.
+
+Live evidence (since 9 November 2026). Every gateway request writes one durable
+row to `serving_events` (migration 6) with separate phases: upstream first byte,
+first generated content (streams; role/usage/finish events never count), full
+completion, longest content gap, engine token count and inter-token latency
+only when usage is reported. Outcomes are ok, error, cancelled, timeout and
+rejected (with source: draining, unhealthy, capacity). Windows are read from the
+store over a closed `[since, until)` interval and attributed by release ID, so a
+restart or several gateway workers keep complete accounting
+(`GET /gateway/observe?release_id=...&since=...&until=...`). `GET /metrics`
+exports Prometheus text labelled by release and deployment only (no prompts).
+Event retention follows `event_ttl_days`.
+
+Stage gates (all optional, frozen with the rollout; its `policy_sha256` is
+recorded): `max_error_rate`, `max_cancel_rate`, `max_empty_stream_rate`,
+absolute `ttft_p95_ms`, `ttft_p99_ms`, `e2e_p95_ms`, `itl_p95_ms`,
+`stall_p95_ms`, relative `ttft_p95_regression`, `e2e_p95_regression`,
+`itl_p95_regression`, legacy `max_latency_regression` (median first byte),
+`min_samples` and `max_duration_s`. A p95 exists only from 200 samples, a p99
+from 1000; until then the stage holds. A stage that reaches `max_duration_s`
+without sufficient evidence ends `inconclusive` and rolls back; it never passes
+on a timer. Telemetry loss holds. At 100% the relative gates compare against the
+stable evidence retained from the last stage with stable traffic, and record that
+basis. Each decisive step stores its closed-window evidence (summaries, checks,
+policy digest) as an immutable artifact listed in `evidence_refs`.
+
+Evaluation binding: a release created from verification evidence carries
+`evaluation` (workload fixture digest, verifier code digest, evidence artifact).
+Through the API, `evaluation.required` defaults to true: before any stage
+advances the bound evaluation must pass. Missing or corrupt evidence holds; a
+recorded quality regression rolls back. `suite_sha256` / `evaluator_sha256` may
+be pinned in the request. Candidate code cannot change the suite or evaluator.
 
 FactoryOS integration is specified in `docs/FACTORYOS_CONTRACT.md`
 (`POST /control/feedback`, `GET /control/feedback/{issue_id}`): actionable
