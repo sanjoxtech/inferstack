@@ -192,3 +192,18 @@ below is GPU or production-cluster qualification.
 
 Deferred items (multi-node, prefill/decode disaggregation, LoRA, spot, advanced
 startup, heterogeneous placement) remain deferred as the plan specifies.
+
+
+## Portable experiment execution bridge
+
+The cloud-serving packages remain the deployment/scaling foundation. The new [portable execution plan](PORTABLE_EXPERIMENT_EXECUTION_PLAN.md) defines how a pinned experiment reaches those substrates without creating a second control plane.
+
+Provider order for the first portable-execution qualification is intentionally different from the eventual Kubernetes production stack:
+
+- reuse Colab/Kaggle first through generated notebook/result bundles;
+- add RunPod first as the paid experiment provider behind AllocationManager;
+- consider Verda next for low-level VM/host-control experiments;
+- use Modal first as an autoscaling endpoint for an already-verified release;
+- use Kubernetes GPU nodes later for real cluster placement, routing, scaling and rollout qualification.
+
+Kubernetes remains an orchestrator, not a source of GPUs. kind/CPU evidence validates object lifecycle only. Any GPU-performance or engine claim still requires a recorded target-GPU environment and the same pinned model/workload/evaluator identity.
