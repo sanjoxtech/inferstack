@@ -42,6 +42,61 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
     admission = admission or AdmissionController()
     evidence = evidence or EvidenceStore(repository)
     metrics = Metrics()
+    shadow_inflight, shadow_tasks = {}, set()
+
+    def shadow_target(model, chosen, body, rid):
+        """The release to mirror this request to, or None. Sampled by request ID, bounded by
+        in-flight copies, a durable total budget (shared by all gateway workers) and expiry."""
+        try:
+            record = repository.read('shadow', model)['body']
+        except KeyError:
+            return None
+        import hashlib as _h
+        if not record.get('enabled') or time.time() >= record['expires_at'] or record['release'] == chosen:
+            return None
+        if body.get('tools') or body.get('functions') or body.get('tool_choice'):
+            return None  # tool calls may have side effects downstream: never mirrored
+        bucket = int(_h.sha256(('shadow:' + rid).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+        if bucket >= record['sample_rate'] or shadow_inflight.get(model, 0) >= record['max_inflight']:
+            return None
+        used = len(evidence.rows(release_id=record['release'], since=record['started_at'], shadow=True))
+        if used + shadow_inflight.get(model, 0) >= record['budget_requests']:
+            return None
+        return record['release']
+
+    async def mirror(model, release_id, body, chat, upstream):
+        shadow_inflight[model] = shadow_inflight.get(model, 0) + 1
+        spec_body = repository.read('release', release_id)['body']['deployment']['body']
+        engine = engine_factory(DeploymentSpec.from_record(spec_body))
+        started = time.perf_counter()
+        headers = {**upstream, 'X-InferStack-Shadow': '1'}
+        try:
+            if body.get('stream'):
+                live = LiveStream(started)
+                outcome = 'ok'
+                try:
+                    async for data in engine.stream(body, chat=chat, headers=headers):
+                        live.feed(data, time.perf_counter())
+                    outcome = 'error' if live.error or not live.done else 'ok'
+                except Exception as exc:  # noqa: BLE001 - recorded, never surfaced to the client
+                    outcome = 'timeout' if isinstance(exc, httpx.TimeoutException) else 'error'
+                await record(RequestRecord(release_id, spec_body['id'], outcome, True, shadow=True,
+                                           **live.phases(time.perf_counter())))
+            else:
+                try:
+                    result = await engine.complete(body, chat=chat, headers=headers)
+                    usage = (result.get('usage') or {}) if isinstance(result, dict) else {}
+                    await record(RequestRecord(release_id, spec_body['id'], 'ok', False, shadow=True,
+                                               e2e_ms=(time.perf_counter() - started) * 1000,
+                                               output_tokens=usage.get('completion_tokens'),
+                                               input_tokens=usage.get('prompt_tokens')))
+                except Exception as exc:  # noqa: BLE001
+                    await record(RequestRecord(release_id, spec_body['id'],
+                                               'timeout' if isinstance(exc, httpx.TimeoutException) else 'error',
+                                               False, shadow=True))
+        finally:
+            shadow_inflight[model] -= 1
+            await engine.close()
 
     async def record(rec):
         metrics.observe(rec)
@@ -129,6 +184,11 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
         if _TRACEPARENT.match(trace):
             upstream['traceparent'] = headers['traceparent'] = trace
         stream_requested = bool(body.get('stream'))
+        target = shadow_target(body['model'], release['id'], body, rid)
+        if target is not None:
+            task = asyncio.create_task(mirror(body['model'], target, dict(body), chat, dict(upstream)))
+            shadow_tasks.add(task)
+            task.add_done_callback(shadow_tasks.discard)
         try:
             probe = admission.admit(key)
         except Rejected as exc:
@@ -194,14 +254,15 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
                                                endpoint=endpoint_of(engine), **live.phases(ended)))
             # Existing streams remain pinned during route changes; no worker is killed.
             return StreamingResponse(generate(), media_type='text/event-stream', headers=headers)
-        outcome, status, tokens = 'error', 502, None
+        outcome, status, tokens, prompt_tokens = 'error', 502, None, None
         try:
             result = await engine.complete(body, chat=chat, headers=upstream)
             ok = True
             latency = ttfb()
             outcome, status = 'ok', 200
-            usage = (result.get('usage') or {}).get('completion_tokens') if isinstance(result, dict) else None
-            tokens = usage if isinstance(usage, int) and not isinstance(usage, bool) else None
+            usage = (result.get('usage') or {}) if isinstance(result, dict) else {}
+            count = lambda v: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+            tokens, prompt_tokens = count(usage.get('completion_tokens')), count(usage.get('prompt_tokens'))
             return JSONResponse(result, headers=headers)
         except (httpx.HTTPError, OSError, ValueError) as exc:
             ok, response = upstream_error(exc)
@@ -216,7 +277,8 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
             await engine.close()
             # Non-streamed: no first-content phase exists; only full completion latency.
             await record(RequestRecord(release['id'], key, outcome, False, status=status, endpoint=endpoint_of(engine),
-                                       e2e_ms=latency if outcome == 'ok' else None, output_tokens=tokens))
+                                       e2e_ms=latency if outcome == 'ok' else None, output_tokens=tokens,
+                                       input_tokens=prompt_tokens))
 
     @app.post('/v1/completions')
     async def completions(request: Request):

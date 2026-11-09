@@ -26,7 +26,8 @@ class RuntimeUnavailable(RuntimeError):
 
 class ReleaseRuntime:
     def __init__(self, repository, provider, *, log_root, engine_factory=ManagedEngine, attest=None,
-                 drain=None, undrain=None, ready_timeout=900, providers=None, gpu_devices=None, routing=None):
+                 drain=None, undrain=None, ready_timeout=900, providers=None, gpu_devices=None, routing=None,
+                 pricing=None, gpu_name=None):
         """drain(deployment_id, deadline_s) -> {'drained': bool, 'remaining': int} (gateway admission);
         undrain(deployment_id) restores admission for a runtime brought back into service.
 
@@ -44,6 +45,9 @@ class ReleaseRuntime:
         # Optional routing.pools.PoolRouting: Kubernetes releases get a release-scoped
         # InferencePool whose membership is identity-gated (admit_pods).
         self.routing = routing
+        # Optional PriceTable: serving allocations are stamped like experiment allocations,
+        # so serving cost attribution (infrastructure/serving_cost.py) has price provenance.
+        self.pricing, self.gpu_name = pricing, gpu_name
 
     def _manifest(self, release_id):
         release = self.repository.read('release', release_id)
@@ -169,6 +173,10 @@ class ReleaseRuntime:
                 spec['gpu_devices'] = list(resources['gpu_devices'])
             elif gpus:
                 spec['gpu_pool'] = self.gpu_devices
+        if self.pricing is not None:
+            spec.update(self.pricing.stamp(provider.name, self.gpu_name or '', gpus))
+        elif not gpus:
+            spec['price'] = {'usd_per_gpu_hour': 0.0, 'source': 'no GPUs allocated', 'as_of': None}
         try:
             with self.repository.transaction() as db:  # intent before launch, no job lease (serving owner)
                 if not scheduled:  # host devices; a cluster scheduler does its own placement

@@ -504,6 +504,33 @@ tests), and the manual-scale refusal on a real kind Deployment. Not verified: KE
 and Prometheus installed and scaling GPU replicas, Flow Control queue signals,
 and measured time-to-capacity on a GPU cluster.
 
+## Shadow traffic and serving cost (P5)
+
+Shadow: a `shadow` record per model (`release`, `sample_rate`, `max_inflight`,
+`budget_requests`, `started_at`, `expires_at`, `enabled`) makes the gateway mirror
+a sampled copy of client requests to that release. Copies are fire-and-forget:
+the response is discarded, the client never waits for it, requests carrying tools
+are never mirrored, and copies stop at the in-flight bound, the durable total
+budget (shared by every gateway worker) or expiry. Copies are recorded with
+`shadow=1` and excluded from rollout windows.
+
+Cost: `infrastructure/serving_cost.serving_cost(repo, since, until, slo, extra_costs,
+roles)` attributes gross cost to every serving allocation's GPU time inside the
+interval (scale history included: surge, idle, warm rollback, canary and shadow
+capacity), each counted once, plus declared extra items (storage, egress, CPU) with
+provenance. It also reports cost per million output tokens and per million
+*goodput* tokens (requests meeting the SLO), using authoritative usage only. Any
+unpriced allocation or missing token count makes the ratio unavailable, with the
+reason; it is never guessed. `ReleaseRuntime(pricing=PriceTable, gpu_name=...)`
+stamps serving allocations. `reconcile_bill` compares attributed gross with a
+provider bill for the same interval; `compare_capacity` refuses fixed-vs-scaled
+comparisons with different workloads or SLOs.
+
+Integrated lifecycle (`tests/test_integrated_serving.py`, real local processes):
+shadow -> canary -> induced latency regression -> rollback (across a controller
+restart) -> second canary -> promotion -> retirement -> cost report. GPU
+behaviour, a real data plane and a provider bill are not covered on this host.
+
 ## Progressive rollout and FactoryOS feedback
 
 Run the control server with `INFERSTACK_GATEWAY_URL` (and

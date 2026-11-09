@@ -122,6 +122,13 @@ class HardwareEnvironment(Record):
         return gpus
 
 
+class DeploymentResources(BaseModel):
+    """Declared accelerator needs; placement reserves identified devices (never a bare count)."""
+    model_config = ConfigDict(extra='forbid')
+    gpu_count: int | None = Field(default=None, ge=0, le=64)
+    gpu_devices: list[str] | None = Field(default=None, max_length=64)
+
+
 class Deployment(Record):
     """v1 keeps the legacy DeploymentSpec fields and adds optional identity refs."""
     KIND = 'deployment'
@@ -138,6 +145,7 @@ class Deployment(Record):
     image_digest: str | None = Field(default=None, pattern=r'^sha256:[0-9a-f]{64}$')
     plugin_refs: list[str] = Field(default_factory=list)
     profile: dict = Field(default_factory=dict)
+    resources: DeploymentResources | None = None
 
     @model_validator(mode='after')
     def legacy_spec(self):
@@ -395,6 +403,20 @@ class Route(Record):
     previous: str | None = None
 
 
+class Shadow(Record):
+    """Sampled, budgeted shadow traffic for one model: copies go to `release`, responses
+    are discarded and never reach clients. Requests carrying tools are never mirrored."""
+    KIND = 'shadow'
+    REFS = {'release': 'release'}
+    release: str
+    sample_rate: float = Field(gt=0, le=1)
+    max_inflight: int = Field(default=4, ge=1, le=256)
+    budget_requests: int = Field(ge=1)          # total copies allowed for this shadow window
+    started_at: float = Field(gt=0)             # budget counts copies recorded since this time
+    expires_at: float = Field(gt=0)
+    enabled: bool = True
+
+
 class RolloutStage(BaseModel):
     model_config = ConfigDict(extra='forbid')
     weight: int = Field(ge=1, le=100)
@@ -508,7 +530,7 @@ class InferenceIssue(Record):
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
 for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
              Technique, TechniqueV2,
-             Plan, Trial, Release, Route, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue):
+             Plan, Trial, Release, Route, Shadow, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}
 

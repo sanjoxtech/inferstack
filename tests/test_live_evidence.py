@@ -243,3 +243,45 @@ def test_gateway_records_rejections_and_stream_without_terminal_event(repo):
     assert client.post('/v1/completions', headers=h, json={'model': 'm', 'prompt': 'x'}).status_code == 503
     window = client.get('/gateway/observe', headers=h, params={'release_id': 'rel-base', 'since': 0}).json()
     assert window['errors'] == 1 and window['rejected'] == 1 and window['rejection_sources'] == {'draining': 1}
+
+
+def test_shadow_skips_tool_requests_and_expired_windows(repo):
+    import time as _t
+    releases(repo)
+    calls = []
+
+    def handler(request):
+        calls.append(request.headers.get('X-InferStack-Shadow'))
+        return httpx.Response(200, json={'choices': [{'text': 'four'}], 'usage': {'completion_tokens': 1}})
+    now = _t.time()
+    repo.put_record('shadow', 'm', {'release': 'rel-cand', 'sample_rate': 1.0, 'budget_requests': 10,
+                                    'started_at': now, 'expires_at': now + 600})
+    factory = lambda spec: ManagedEngine(spec, transport=httpx.MockTransport(handler))
+    with TestClient(create_gateway(repo, 't', engine_factory=factory)) as client:
+        h = {'Authorization': 'Bearer t'}
+        client.post('/v1/chat/completions', headers=h, json={'model': 'm', 'messages': [], 'tools': [{'type': 'x'}]})
+        _t.sleep(0.2)
+        assert calls == [None]  # tool request served, never mirrored
+        repo.put_record('shadow', 'm', {**repo.read('shadow', 'm')['body'], 'expires_at': now - 1},
+                        expected_revision=1)
+        client.post('/v1/completions', headers=h, json={'model': 'm', 'prompt': 'x'})
+        _t.sleep(0.2)
+        assert calls == [None, None]  # expired shadow window: no copy
+
+
+def test_evidence_store_on_every_backend(database_url, tmp_path):
+    """Migrations 6-8 and the evidence/shadow/cost queries on SQLite and PostgreSQL."""
+    from inferstack.infrastructure.serving_cost import serving_cost
+    backend = Repository(database_url, tmp_path / 'artifacts')
+    a, b = EvidenceStore(backend, worker='a'), EvidenceStore(backend, worker='b')
+    for i in range(3):
+        a.record(RequestRecord('rel-x', 'x', 'ok', True, at=100.0 + i, first_content_ms=10.0, e2e_ms=50.0,
+                               output_tokens=2, input_tokens=5, endpoint='10.0.0.1:8000'))
+    b.record(RequestRecord('rel-x', 'x', 'rejected', False, at=104.0, rejection_source='capacity'))
+    b.record(RequestRecord('rel-x', 'x', 'ok', False, at=105.0, e2e_ms=20.0, output_tokens=1, shadow=True))
+    window = a.window(release_id='rel-x', since=100.0, until=200.0)
+    assert window['requests'] == 3 and window['rejected'] == 1 and window['rejection_sources'] == {'capacity': 1}
+    assert len(a.rows(release_id='rel-x', since=0, shadow=True)) == 1
+    report = serving_cost(backend, since=100.0, until=200.0)
+    assert report['tokens'] == {'output': 6, 'input': 15, 'goodput_output': 6} and report['requests']['shadow'] == 1
+    assert a.prune(103.0) == 3

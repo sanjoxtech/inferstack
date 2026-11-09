@@ -55,6 +55,7 @@ class LiveStream:
         self.first_byte = None
         self.content_times = []
         self.tokens = None
+        self.input_tokens = None
         self.done = False
         self.error = None
 
@@ -85,6 +86,9 @@ class LiveStream:
             count = usage.get('completion_tokens') if isinstance(usage, dict) else None
             if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
                 self.tokens = count
+            prompt = usage.get('prompt_tokens') if isinstance(usage, dict) else None
+            if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt >= 0:
+                self.input_tokens = prompt
             for choice in item.get('choices') or []:
                 piece = choice.get('text')
                 if piece is None:
@@ -101,7 +105,7 @@ class LiveStream:
             itl = (times[-1] - times[0]) * 1000 / (self.tokens - 1)
         return {'upstream_first_byte_ms': ms(self.first_byte), 'first_content_ms': ms(times[0]) if times else None,
                 'e2e_ms': ms(ended), 'max_gap_ms': max(gaps) if gaps else None, 'content_events': len(times),
-                'output_tokens': self.tokens, 'itl_ms': itl}
+                'output_tokens': self.tokens, 'input_tokens': self.input_tokens, 'itl_ms': itl}
 
 
 @dataclass
@@ -121,6 +125,8 @@ class RequestRecord:
     rejection_source: str | None = None
     status: int | None = None
     endpoint: str | None = None  # replica chosen by the endpoint picker, when the data plane reports it
+    input_tokens: int | None = None
+    shadow: bool = False  # mirrored copy: excluded from client-facing windows unless asked for
 
     def __post_init__(self):
         if self.outcome not in OUTCOMES:
@@ -129,7 +135,7 @@ class RequestRecord:
 
 COLUMNS = ('id', 'at', 'worker', 'release_id', 'deployment_id', 'outcome', 'stream', 'status', 'rejection_source',
            'upstream_first_byte_ms', 'first_content_ms', 'e2e_ms', 'max_gap_ms', 'content_events', 'output_tokens',
-           'itl_ms', 'endpoint')
+           'itl_ms', 'endpoint', 'input_tokens', 'shadow')
 
 
 class EvidenceStore:
@@ -140,13 +146,17 @@ class EvidenceStore:
         self.worker = worker or f'{socket.gethostname()}:{uuid.uuid4().hex[:8]}'
 
     def record(self, record: RequestRecord):
-        row = {**asdict(record), 'id': uuid.uuid4().hex, 'worker': self.worker, 'stream': int(record.stream)}
+        row = {**asdict(record), 'id': uuid.uuid4().hex, 'worker': self.worker, 'stream': int(record.stream),
+               'shadow': int(record.shadow)}
         with self.repository.transaction() as db:
             db.execute(f'INSERT INTO serving_events({",".join(COLUMNS)}) VALUES({",".join("?" * len(COLUMNS))})',
                        tuple(row[c] for c in COLUMNS))
 
-    def rows(self, *, deployment_id=None, release_id=None, since, until=None):
+    def rows(self, *, deployment_id=None, release_id=None, since, until=None, shadow=False):
+        """shadow=False: client traffic only; True: shadow copies only; None: both."""
         sql, params = 'SELECT * FROM serving_events WHERE at>=?', [since]
+        if shadow is not None:
+            sql, params = sql + ' AND COALESCE(shadow,0)=?', params + [int(bool(shadow))]
         if until is not None:
             sql, params = sql + ' AND at<?', params + [until]
         for column, value in (('deployment_id', deployment_id), ('release_id', release_id)):
@@ -155,9 +165,9 @@ class EvidenceStore:
         with self.repository.connection() as db:
             return [{k: r[k] for k in r.keys()} for r in db.execute(sql + ' ORDER BY at', params)]
 
-    def window(self, *, deployment_id=None, release_id=None, since, until=None):
+    def window(self, *, deployment_id=None, release_id=None, since, until=None, shadow=False):
         until = until if until is not None else time.time()
-        rows = self.rows(deployment_id=deployment_id, release_id=release_id, since=since, until=until)
+        rows = self.rows(deployment_id=deployment_id, release_id=release_id, since=since, until=until, shadow=shadow)
         return summarize(rows, since=since, until=until)
 
     def prune(self, before):

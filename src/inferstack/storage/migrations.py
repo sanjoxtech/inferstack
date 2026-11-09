@@ -160,6 +160,10 @@ def _routing_attribution(database, db, now):
     _add_columns(database, db, 'serving_events', [('endpoint', 'TEXT')])
 
 
+def _token_usage(database, db, now):
+    _add_columns(database, db, 'serving_events', [('input_tokens', 'INTEGER'), ('shadow', 'INTEGER')])
+
+
 MIGRATIONS = [
     (1, 'baseline jobs, events and records (v1.6 layout)', _baseline),
     (2, 'record schema versions and immutable revision history', _history),
@@ -168,6 +172,7 @@ MIGRATIONS = [
     (5, 'integration outbox and bounded optimization triggers', _integrations),
     (6, 'durable per-request serving evidence for rollout windows', _serving_evidence),
     (7, 'selected endpoint attribution for routed serving evidence', _routing_attribution),
+    (8, 'authoritative input tokens and shadow flag on serving evidence', _token_usage),
 ]
 LATEST = MIGRATIONS[-1][0]
 
