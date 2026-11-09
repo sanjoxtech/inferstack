@@ -1,5 +1,5 @@
 # CI separates evidence classes: CPU conformance, PostgreSQL, sandbox, container,
-# Kubernetes (kind, CPU), hosted PostgreSQL (Neon) and live providers (secrets; main and manual). GPU qualification is
+# Kubernetes (kind, CPU), hosted PostgreSQL (Neon) and live providers (manual, secrets). GPU qualification is
 # not CI: it runs on a declared GPU host with scripts/v2_qualify.py.
 name: ci
 on:
@@ -130,8 +130,10 @@ jobs:
             tests/test_control_store.py tests/test_execution_store.py tests/test_harness_h1.py tests/test_live_evidence.py
 
   provider-smoke:
-    name: live provider planning smoke
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.provider_smoke)
+    # Manual only (paid API calls). Run locally before pushing planner changes:
+    #   python scripts/provider_smoke.py --kind deepseek --model deepseek-chat --key-env DEEPSEEK_API_KEY
+    name: live provider planning smoke (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.provider_smoke
     runs-on: ubuntu-24.04
     env:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
