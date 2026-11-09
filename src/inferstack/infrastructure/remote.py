@@ -324,6 +324,9 @@ class KubernetesProvider(_CLIProvider):
             raise ValueError('replicas must be an integer in [0, 64]')
         if self.deployment_status(external) is None:
             raise RuntimeError(f"deployment {external['name']} is not ours or does not exist")
+        owner = self.scaling_owner(external)
+        if owner not in (None, 'manual'):
+            raise RuntimeError(f"deployment {external['name']} replicas are owned by {owner}; switch it to manual first")
         self.run(self.base + ['scale', 'deployment', external['name'], f'--replicas={replicas}'])
         deadline = time.monotonic() + timeout
         while True:
@@ -333,6 +336,24 @@ class KubernetesProvider(_CLIProvider):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"scale to {replicas} not reached: {status}, pods={None if pods is None else len(pods)}")
             time.sleep(poll)
+
+    def scaling_owner(self, external):
+        """Who owns the replica count: 'manual' (InferStack), 'advisory' or 'keda'."""
+        code, out, _ = self.run(self.base + ['get', 'deployment', external['name'], '-o', 'json'], check=False)
+        if code:
+            return None
+        annotations = (json.loads(out).get('metadata') or {}).get('annotations') or {}
+        return annotations.get('inferstack.io/scaling-owner', 'manual')
+
+    def pending_pods(self, external):
+        """Pods that cannot be scheduled (e.g. no free GPU, quota) with the scheduler's reason."""
+        out = []
+        for pod in self.pods(external) or []:
+            for condition in (pod.get('status') or {}).get('conditions') or []:
+                if condition.get('type') == 'PodScheduled' and condition.get('status') == 'False':
+                    out.append({'pod': pod['metadata']['name'], 'reason': condition.get('reason'),
+                                'message': (condition.get('message') or '')[:300]})
+        return out
 
     def drain(self, external, *, timeout=600.0):
         """Graceful drain: scale to zero (preStop keeps serving in-flight work) and wait for all Pods to exit."""

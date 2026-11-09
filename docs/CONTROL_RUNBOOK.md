@@ -477,6 +477,33 @@ tests), and admission labelling of real pods on kind. Not verified: an installed
 llm-d / GAIE data plane, measured cache-affinity gains, and router restart or
 draining behaviour on a GPU cluster.
 
+## Serving autoscaling (P4)
+
+One actuator owns a release Deployment's replica count, recorded in its
+`inferstack.io/scaling-owner` annotation (`scaling/autoscale.py`):
+
+- `manual` (default): `KubernetesProvider.scale` is the actuator.
+- `advisory`: nothing is actuated. `recommend(trace, ScalingPolicy(...))` replays
+  in-flight demand and reports decisions, time-to-capacity, unmet in-flight
+  seconds, oscillations, replica-seconds and capped intervals. A missing sample
+  holds; new replicas add capacity only after the measured `startup_s`.
+- `keda`: `Autoscaler.set_mode(..., 'keda', policy, advisory=<accepted replay of the
+  same policy>)` applies one ScaledObject on the gateway's in-flight metric
+  (`inferstack_gateway_inflight`). `scale()` then refuses to act. Switching back
+  deletes the ScaledObject before manual control resumes.
+
+`ScalingPolicy` bounds min/max replicas (min >= 1; scale-to-zero needs its own
+qualification), the scale-up step and cooldown, scale-down stabilization, and the
+GPU quota (`max_gpus` caps replicas). `warnings()` flags a gateway `max_inflight`
+that would reject demand before the autoscaler sees it. `pending_pods` surfaces
+unschedulable pods. `reconcile_accounting` sets GPU accounting from live pods
+(including surge), never from the target.
+
+Verified here: replay scenarios, object generation and ownership handoff (unit
+tests), and the manual-scale refusal on a real kind Deployment. Not verified: KEDA
+and Prometheus installed and scaling GPU replicas, Flow Control queue signals,
+and measured time-to-capacity on a GPU cluster.
+
 ## Progressive rollout and FactoryOS feedback
 
 Run the control server with `INFERSTACK_GATEWAY_URL` (and

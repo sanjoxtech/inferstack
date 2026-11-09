@@ -86,3 +86,24 @@ def test_identity_admission_labels_real_pods(namespace):
                                   '-o', 'json').stdout)['items'] == []
     finally:
         assert provider.stop(external, grace_seconds=60) is True
+
+
+def test_single_scaling_owner_on_a_real_deployment(namespace):
+    """P4: once ownership is handed to KEDA, InferStack's manual scale refuses to act."""
+    from inferstack.scaling.autoscale import OWNER_ANNOTATION
+    provider = KubernetesProvider(namespace=namespace, context=CONTEXT)
+    alloc = 'alloc-owner' + uuid.uuid4().hex[:6]
+    external = provider.launch(alloc, {'image': IMAGE, 'container_port': 8000, 'ready_path': '/', 'cpu': '100m',
+                                       'memory': '128Mi', 'drain_seconds': 1, 'shutdown_seconds': 2,
+                                       'args': ['python', '-m', 'http.server', '8000', '--directory', '/tmp']})
+    try:
+        assert provider.scaling_owner(external) == 'manual'
+        kubectl('annotate', 'deployment', external['name'], '-n', namespace, f'{OWNER_ANNOTATION}=keda')
+        with pytest.raises(RuntimeError, match='owned by keda'):
+            provider.scale(external, 2, timeout=10)
+        assert json.loads(kubectl('get', 'deployment', external['name'], '-n', namespace, '-o', 'json').stdout
+                          )['spec']['replicas'] == 1
+        kubectl('annotate', 'deployment', external['name'], '-n', namespace, '--overwrite', f'{OWNER_ANNOTATION}=manual')
+        assert provider.scale(external, 1, timeout=300)['ready'] == 1
+    finally:
+        assert provider.stop(external, grace_seconds=60) is True
