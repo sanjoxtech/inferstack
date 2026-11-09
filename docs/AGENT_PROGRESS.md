@@ -17,6 +17,14 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 12:52 UTC — ChatGPT (portable execution planning)
+- Added `docs/PORTABLE_EXPERIMENT_EXECUTION_PLAN.md`: E1 one-manifest/many-substrates plan, CompatibilityResolver, notebook ResultBundle round trip, RunPod-first paid adapter, Modal verified endpoint role, later GPU Kubernetes qualification.
+- Added `docs/PORTABLE_EXECUTION_AGENT_HANDOFF.md`: another-agent execution contract for E1.0/E1.1 first, exact suggested files/tests/negative cases and commit sequence.
+- Linked E1 into the master harness and cloud-serving plans. E1 is cross-cutting to H3/H4; it does not replace H1-H5 or existing AllocationManager/provider/release infrastructure.
+- Immediate owner action remains: run `docs/notebooks/colab_a100_engine_scorecard.ipynb` on A100 and preserve the ZIP. Immediate implementation action: E1.0 ExecutionManifest v1, then E1.1 CompatibilityResolver, with no paid provider contacted yet.
+- Public planning prices observed 9 Nov 2026: RunPod A100 80 GB ~US$1.79/h; Verda A100 SXM4 40 GB ~US$1.33/h; Modal A100 40 GB ~US$0.000583/s (~US$2.10/GPU-h) before CPU/RAM. Prices are provenance-bearing planning inputs, never hard-coded compatibility evidence.
+
+
 ### 2026-11-09 11:43 UTC — Claude Code (implementation agent)
 - N0 (native campaign): scripts/engine_scorecard.py + configs/scorecard/a100-qwen3.5-2b.json committed (787c567); tests/test_engine_scorecard.py 5 passed (CPU, fake engines).
 - Notebook docs/notebooks/colab_a100_engine_scorecard.ipynb pinned to 787c567: native + vLLM + SGLang in separate venvs, conformance first, 3 rotated rounds, ZIP download.
