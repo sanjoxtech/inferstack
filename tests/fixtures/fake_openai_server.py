@@ -36,6 +36,10 @@ def main():
     parser.add_argument('--fail-status', type=int, default=0)
     parser.add_argument('--events', default=None)
     parser.add_argument('--dump-env', default=None)
+    parser.add_argument('--stream-tokens', type=int, default=200)
+    parser.add_argument('--chunk-delay', type=float, default=0.02)
+    parser.add_argument('--first-delay', type=float, default=0.0)
+    parser.add_argument('--usage', action='store_true', help='report usage in the final stream chunk')
     args, unknown = parser.parse_known_args()  # engine flags (e.g. --max-num-seqs) are accepted and recorded
     if args.dump_env:
         import os
@@ -99,11 +103,20 @@ def main():
             self.send_header('Transfer-Encoding', 'chunked')
             self.end_headers()
             try:
-                for i in range(200):
+                if args.first_delay:
+                    time.sleep(args.first_delay)
+                count = args.stream_tokens
+                if args.usage:  # scorecard mode: honour max_tokens like a real engine
+                    count = min(count, int(body.get('max_tokens') or count))
+                for i in range(count):
                     chunk = f'data: {json.dumps({"choices": [{"text": str(i)}]})}\n\n'.encode()
                     self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
                     self.wfile.flush()
-                    time.sleep(0.02)
+                    time.sleep(args.chunk_delay)
+                if args.usage:
+                    final = {'choices': [], 'usage': {'completion_tokens': count, 'prompt_tokens': 10}}
+                    chunk = f'data: {json.dumps(final)}\n\n'.encode()
+                    self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
                 done = b'data: [DONE]\n\n'
                 self.wfile.write(b'%x\r\n%s\r\n' % (len(done), done))
                 self.wfile.write(b'0\r\n\r\n')

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "description": "N0/N1 fair comparison on one A100: pinned Qwen3.5-2B-Base, BF16, text only. External engines run from their own venvs (see docs/notebooks/colab_a100_engine_scorecard.ipynb). Differences that remain are recorded here, not hidden.",
+  "model": {"uri": "Qwen/Qwen3.5-2B-Base", "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c", "dtype": "bfloat16"},
+  "baseline": "native_unfused",
+  "profiles": [
+    {"name": "native_unfused", "engine": "inferstack_native", "model": "factorylm-2b",
+     "argv": ["inferstack", "serve", "--profile", "configs/profiles/production-v1.6.0-baseline.toml",
+              "--foundry-root", "examples/model_foundry", "--model", "foundry://factorylm-2b@candidate",
+              "--device", "cuda:0", "--host", "127.0.0.1", "--port", "{port}"],
+     "notes": "foundry candidate manifest pins the same Hugging Face revision"},
+    {"name": "native_full", "engine": "inferstack_native", "model": "factorylm-2b",
+     "argv": ["inferstack", "serve", "--profile", "configs/profiles/production-v1.6.0.toml",
+              "--foundry-root", "examples/model_foundry", "--model", "foundry://factorylm-2b@candidate",
+              "--device", "cuda:0", "--host", "127.0.0.1", "--port", "{port}"],
+     "notes": "all qualified fusions; MLP/full greedy-output divergence is under investigation, so this lane is a performance measurement only"},
+    {"name": "vllm", "engine": "vllm", "model": "Qwen/Qwen3.5-2B-Base",
+     "argv": ["/content/venv-vllm/bin/vllm", "serve", "Qwen/Qwen3.5-2B-Base",
+              "--revision", "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+              "--tokenizer-revision", "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+              "--host", "127.0.0.1", "--port", "{port}", "--dtype", "bfloat16", "--max-model-len", "8192"],
+     "notes": "engine defaults otherwise (prefix caching and CUDA graphs as shipped); version recorded from /version"},
+    {"name": "sglang", "engine": "sglang", "model": "Qwen/Qwen3.5-2B-Base",
+     "argv": ["/content/venv-sglang/bin/python", "-m", "sglang.launch_server",
+              "--model-path", "Qwen/Qwen3.5-2B-Base", "--revision", "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+              "--host", "127.0.0.1", "--port", "{port}", "--dtype", "bfloat16", "--context-length", "8192",
+              "--enable-metrics"],
+     "notes": "engine defaults otherwise (radix cache as shipped); version recorded from /get_server_info"}
+  ]
+}
