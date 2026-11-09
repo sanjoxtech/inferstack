@@ -315,6 +315,17 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
             'source':'implementation','evidence_ids':list(record['plan'].get('evidence_ids') or [])})
         return {'job_id':job_id,'candidate_id':candidate['candidate_id']}
 
+    @app.post('/control/problems/{problem_id}/investigate',dependencies=auth)
+    def investigate_claim(problem_id:str,body:dict):
+        """Start one bounded campaign for a recorded research claim (idempotent).
+        Body: deployment_id, optional target {metric:{direction,value}}, max_iterations, budget."""
+        if not isinstance(body.get('deployment_id'),str):raise HTTPException(422,'deployment_id required')
+        try:return ProblemDesk(repository).investigate(problem_id,body['deployment_id'],target=body.get('target'),
+                                                       max_iterations=body.get('max_iterations'),
+                                                       budget=body.get('budget'),callback=body.get('callback'))
+        except KeyError:raise HTTPException(404,'unknown problem or deployment')
+        except ValueError as exc:raise HTTPException(422,str(exc)[:500])
+
     from inferstack.integrations.outbox import Outbox
     from inferstack.integrations.triggers import TriggerService
     outbox=Outbox(repository)

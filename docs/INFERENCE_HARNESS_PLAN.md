@@ -404,3 +404,60 @@ Limits:
 - Remaining H3 work: the parent/child hypothesis chain driven by the verifier's
   diagnosis, the controller-owned stop policy, and the induced kernel/cache-bottleneck
   demonstration.
+
+### H3 step 2: campaign control and claim investigation, 9 November 2026 (implementation agent)
+
+The worker now runs a bounded campaign: **plan → execute → verify → diagnose → replan**.
+The controller owns stopping and lineage. Code: `src/inferstack/optimization/campaign.py`,
+`control/worker.py`, `diagnosis/intake.py`. Acceptance tests: `tests/test_harness_h3_campaign.py`.
+
+- **Diagnosis of every trial.** `diagnose_outcome` is deterministic and uses numbers only.
+  - **Findings:** `target_met`, `partial`, `no_effect`, `regressed`, `slo_failed`,
+    `gate_failed`, `noisy` or `implementation_failed`.
+  - **Bottleneck:** taken from the candidate's measured engine phases (queue, prefill,
+    decode share), falling back to the TTFT/E2E share.
+  - **Remaining gap to the target** and **guidance** for the next hypothesis.
+  - Each diagnosis names its parent trial (iteration, treatment signature, evidence
+    hash, trial refs).
+- **Lineage.** The next plan request carries `previous_diagnosis`. The controller (not
+  the model) stamps the plan with `parent`, and records a `diagnosed` event per iteration.
+  The planner's `list_experiments` tool includes each trial's diagnosis.
+- **Controller-owned stop policy.** The job payload may declare a `target` (registered
+  metrics, `min`/`max`, value), `max_iterations` (capped by the worker) and `stagnation`.
+  Stop reasons:
+  - `target_met`;
+  - `kept` (the first keep when no target is declared, which is the previous behaviour);
+  - `iteration_limit`;
+  - `budget_exhausted`;
+  - `stagnation` (no new best verified candidate for N iterations);
+  - `needs_implementation`.
+
+  "Until the target is reached" therefore always means target met OR a declared limit
+  reached. The best verified candidate is kept and reported with its gain and remaining
+  gap. In target mode no runtime is retained mid-search.
+- **Build failures are outcomes.** A `BuildFailed` treatment becomes a rejected,
+  diagnosed trial (`implementation_failed`) that feeds the next hypothesis. Identical
+  treatments are still refused.
+- **Investigate a claim.** `POST /control/problems/{id}/investigate` (or
+  `ProblemDesk.investigate`) starts one bounded campaign for a recorded research claim:
+  - **Idempotent** per claim revision and deployment.
+  - **Inputs:** deployment, target, `max_iterations` and a controller budget.
+  - **Fixed goal template.** The claim text reaches the planner only as untrusted evidence.
+  - **No authority.** The problem's authority stays `{execute: false, install_dependencies: false}`.
+  - Symptoms are refused; they go through diagnosis.
+
+Evidence:
+- 15 acceptance tests: target met after a decode-bottleneck partial gain, legacy keep-stop,
+  stagnation, best-candidate retention, iteration cap, build failure, the diagnosis
+  rules, target validation, claim investigation (prompt-injection text, idempotency) and
+  the API.
+- Full suite: 395 passed / 18 skipped. Probes: 36 passed (macOS, CPU).
+
+Limits:
+- Plans are still made against the original baseline. Stacking a kept treatment onto the
+  next candidate (a combined treatment) is recorded as lineage but not yet composed
+  automatically.
+- The bottleneck attribution needs engine phase metrics in the verdict, otherwise it is
+  only `suspected`.
+- The complete loop has not yet run on a GPU. The first GPU demonstration is the native
+  A100 campaign.

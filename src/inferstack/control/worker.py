@@ -120,21 +120,32 @@ class OptimizationWorker:
         self.faults(f'step_done:{step_key}')
         return result
 
-    async def experiment(self, job, step_key, plan, iteration):
+    async def experiment(self, job, step_key, plan, iteration, retain=True):
         candidate = None
         namespace = f"{job['id']}-{job['attempt']}-{iteration}-{job['step_attempt']}"
         try:
-            if getattr(self.executor, 'accepts_context', False):
-                candidate = await self.executor.execute(plan, namespace, context={'job': job, 'step_key': step_key})
-            else:
-                candidate = await self.executor.execute(plan, namespace)
+            try:
+                if getattr(self.executor, 'accepts_context', False):
+                    candidate = await self.executor.execute(plan, namespace,
+                                                            context={'job': job, 'step_key': step_key})
+                else:
+                    candidate = await self.executor.execute(plan, namespace)
+            except Exception as exc:
+                from inferstack.execution.executor import BuildFailed
+                if not isinstance(exc, BuildFailed):
+                    raise
+                # A treatment that cannot be built is a measured outcome (rejected), not a
+                # crashed campaign: its diagnosis feeds the next bounded hypothesis.
+                verdict = {'decision': 'reject', 'reasons': [f'build failed: {str(exc)[:300]}']}
+                self.record(job, 'build_failed', {'iteration': iteration, 'error': str(exc)[:2000]})
+                return {'plan': plan, 'candidate': None, 'verdict': verdict, 'error': str(exc)[:2000]}
             self.record(job, 'executed', {'iteration': iteration, 'candidate': candidate})
             verdict = await self.verifier.verify(plan, candidate)
             if verdict.get('decision') not in {'keep', 'reject', 'retest', 'inconclusive'}:
                 raise ValueError('invalid verifier decision')
             self.record(job, 'verified', {'iteration': iteration, 'verdict': verdict})
             outcome = {'plan': plan, 'candidate': candidate, 'verdict': verdict}
-            if verdict['decision'] == 'keep' and hasattr(self.executor, 'retain'):
+            if verdict['decision'] == 'keep' and retain and hasattr(self.executor, 'retain'):
                 # The verified runtime stays up under serving ownership for its release.
                 serving = await self.executor.retain(candidate, {'job': job})
                 candidate = None
@@ -162,14 +173,27 @@ class OptimizationWorker:
         return outcomes
 
     async def optimize(self, job):
+        """Bounded campaign: plan -> execute -> verify -> diagnose -> replan (H3).
+
+        The controller, not the planner, owns stopping: target met, a `keep` when no
+        target is declared, iteration/budget/deadline limits, stagnation (no new best
+        verified candidate for N iterations) or a pending implementation. Each new plan
+        carries the diagnosis of the trial it follows (lineage)."""
+        from inferstack.optimization.campaign import CampaignState, diagnose_outcome, parse_target
         history = self.history.setdefault(job['id'], [])
         request = dict(job['payload'])
         request['evidence_ids'] = list(request.get('evidence_ids') or [])
+        target = parse_target(request.get('target'))
+        iterations = min(self.max_iterations, int(request.get('max_iterations') or self.max_iterations))
+        state = CampaignState(target, stagnation=int(request.get('stagnation') or 2))
+        lineage = []
         if request.get('technique_urls'):
             sources = await self.step(job, 'research', self.research, idempotent=True)
             request['evidence_ids'] += [s['evidence_id'] for s in sources]
-        for iteration in range(self.max_iterations):
-            async def plan_fn(j, key, iteration=iteration):
+        for iteration in range(iterations):
+            parent = lineage[-1] if lineage else None
+
+            async def plan_fn(j, key, iteration=iteration, parent=parent):
                 if iteration == 0 and request.get('implementation_ids'):
                     plan = self.implemented_plan(request, history)
                     self.record(job, 'planned', {'iteration': iteration, 'plan': plan,
@@ -177,13 +201,17 @@ class OptimizationWorker:
                     return plan
                 remaining = self.repository.remaining(job['id'])
                 try:
-                    plan = await self.planner.plan({**request, 'budget_remaining': remaining}, list(history))
+                    plan = await self.planner.plan({**request, 'budget_remaining': remaining,
+                                                    'previous_diagnosis': parent}, list(history))
                 finally:
                     usage = getattr(self.planner, 'last_usage', None) or {}
                     if usage.get('provider_tokens'):
                         self.repository.charge(job['id'], job['lease_token'],
                                                {'provider_tokens': usage['provider_tokens']})
-                self.record(job, 'planned', {'iteration': iteration, 'plan': plan})
+                if isinstance(plan, dict) and parent is not None:
+                    plan['parent'] = parent['parent']  # set by the controller, not the model
+                self.record(job, 'planned', {'iteration': iteration, 'plan': plan,
+                                             'parent': parent['parent'] if parent else None})
                 return plan
             try:
                 plan = await self.step(job, f'iter{iteration}.plan', plan_fn, idempotent=True)
@@ -196,22 +224,29 @@ class OptimizationWorker:
                     self.record(job, 'needs_implementation', {'iteration': iteration,
                                                               'proposals': plan.get('needs_implementation'),
                                                               **handoffs})
-                    return {'decision': 'needs_implementation', 'experiments': history,
-                            'proposal': plan, 'stop_reason': 'source change has no validated patch artifact',
+                    return {**state.result(history, 'needs_implementation', lineage),
+                            'decision': 'needs_implementation', 'proposal': plan,
+                            'stop_reason': 'source change has no validated patch artifact', 'stop': 'needs_implementation',
                             **handoffs}
                 outcome = await self.step(
                     job, f'iter{iteration}.experiment',
-                    lambda j, key, plan=plan, iteration=iteration: self.experiment(j, key, plan, iteration),
+                    lambda j, key, plan=plan, iteration=iteration: self.experiment(
+                        j, key, plan, iteration, retain=target is None),
                     idempotent=False)
             except BudgetExhausted as exc:
-                return {'decision': history[-1]['verdict']['decision'] if history else 'inconclusive',
-                        'experiments': history, 'stop_reason': str(exc)}
+                return {**state.result(history, 'budget_exhausted', lineage), 'stop_reason': str(exc),
+                        'stop': 'budget_exhausted'}
             history.append(outcome)
-            if outcome['verdict']['decision'] == 'keep':
+            diagnosis = diagnose_outcome(outcome, iteration, target, error=outcome.get('error'))
+            outcome['diagnosis'] = diagnosis
+            lineage.append(diagnosis)
+            self.record(job, 'diagnosed', {'iteration': iteration, 'diagnosis': diagnosis})
+            stop = state.observe(iteration, outcome)
+            if stop is not None:
                 # Promotion is separate; a successful experiment is not a live release.
-                return {'decision': 'keep', 'experiments': history}
-        return {'decision': history[-1]['verdict']['decision'], 'experiments': history,
-                'stop_reason': 'iteration budget exhausted'}
+                return {**state.result(history, stop, lineage), 'stop': stop}
+        return {**state.result(history, 'iteration_limit', lineage), 'stop_reason': 'iteration budget exhausted',
+                'stop': 'iteration_limit'}
 
     async def request_implementation(self, job, plan):
         """Open one bounded implementer handoff per proposal (nothing is executed here)."""

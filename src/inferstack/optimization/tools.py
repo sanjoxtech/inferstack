@@ -123,7 +123,11 @@ class PlannerTools:
         return [{'iteration': i, 'hypothesis': e['plan'].get('hypothesis'),
                  'treatment_signature': e['plan'].get('treatment_signature'),
                  'candidate': e['plan'].get('candidate_id'), 'decision': e['verdict'].get('decision'),
-                 'reasons': e['verdict'].get('reasons')} for i, e in enumerate(self.history)]
+                 'reasons': e['verdict'].get('reasons'),
+                 # Controller diagnosis of this trial (H3): finding, bottleneck, remaining gap, guidance.
+                 'diagnosis': {k: (e.get('diagnosis') or {}).get(k) for k in
+                               ('finding', 'bottleneck', 'confidence', 'remaining_gap', 'next')}
+                 if e.get('diagnosis') else None} for i, e in enumerate(self.history)]
 
     async def query_telemetry(self, deployment_id, metrics):
         self._deployment(deployment_id)

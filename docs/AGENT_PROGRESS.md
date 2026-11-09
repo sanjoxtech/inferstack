@@ -17,6 +17,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 11:10 UTC — Claude Code (implementation agent)
+- Task: H3 step 2 (campaign control) + "investigate this claim" action. In progress, uncommitted.
+- Built: optimization/campaign.py (diagnose_outcome, CampaignState, targets); worker loop now plan -> execute -> verify -> diagnose -> replan with lineage; stops on target_met / kept / iteration_limit / budget_exhausted / stagnation / needs_implementation; failed builds are diagnosed outcomes; best verified candidate kept; ProblemDesk.investigate + POST /control/problems/{id}/investigate.
+- Evidence so far: tests/test_harness_h3_campaign.py 15 passed.
+- Files I am editing: control/worker.py, optimization/{campaign,planner,tools}.py, diagnosis/intake.py, control/api.py.
+- CI note: provider smoke is manual-only again (owner decision: paid calls).
+
 ### 2026-11-09 10:40 UTC — Claude Code (implementation agent)
 - CI fixes. Neon job: run only the PostgreSQL test modules (torch was not installed there); Neon passed 15/15 in CI.
 - Live provider smoke failed in CI (model returned non-JSON / invalid plans). Planner: tolerant JSON extraction, explicit stop_rule values, `profile_options` (real allowed keys per engine) in the context, clearer config_change error. Local live runs: OpenRouter and DeepSeek both plan_validated with 0 corrections.

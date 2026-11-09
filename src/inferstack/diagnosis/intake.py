@@ -91,6 +91,46 @@ class ProblemDesk:
                 'state': 'claim_recorded', 'created_at': self.repository.clock()}
         return self._store(problem_id, body)
 
+    def investigate(self, problem_id, deployment_id, *, target=None, max_iterations=None, budget=None,
+                    callback=None):
+        """Start one bounded campaign that investigates a recorded research claim.
+
+        Idempotent per (claim revision, deployment). The job goal is a fixed template:
+        the claim's text reaches the planner only as untrusted evidence. Starting an
+        investigation grants no execution, install or production authority beyond what
+        the controller's normal validation already allows."""
+        from inferstack.optimization.campaign import parse_target
+        record = self.repository.read('problem', problem_id)
+        body = dict(record['body'])
+        if body['kind'] != 'technique_claim':
+            raise ValueError('only research claims are investigated; symptoms are diagnosed and queued')
+        if body.get('job_id'):
+            return record  # already investigating
+        deployment = self.repository.read('deployment', deployment_id)
+        parse_target(target)  # validated before anything is submitted
+        evidence_id = body['evidence_ref'].split('@')[0]
+        goal = (f'Investigate submitted technique claim {problem_id} (evidence {body["evidence_ref"]}, untrusted '
+                f'and unverified) for deployment {deployment_id}@{deployment["revision"]}. If the bottleneck the '
+                'technique addresses is not measured on this deployment, measure first. Propose only registered, '
+                'compatible treatments; the claim itself is not proof.')
+        payload = {'deployment_id': deployment_id, 'goal': goal, 'source': 'research',
+                   'problem_ref': problem_id, 'evidence_ids': [evidence_id]}
+        if target:
+            payload['target'] = target
+        if max_iterations:
+            payload['max_iterations'] = int(max_iterations)
+        if callback:
+            payload['outcome_callback'] = callback
+        job_id = self.repository.submit(f"investigate:{problem_id}@{record['revision']}:{deployment_id}", payload,
+                                        budget=budget)
+        body.update(job_id=job_id, state='queued')
+        body['diagnosis'] = {**(body.get('diagnosis') or {}),
+                             'investigation': {'deployment_ref': f'{deployment_id}@{deployment["revision"]}',
+                                               'target': target, 'max_iterations': max_iterations,
+                                               'budget': budget}}
+        self.repository.put_record('problem', problem_id, body, expected_revision=record['revision'])
+        return self.repository.read('problem', problem_id)
+
     def add_observations(self, problem_id, observations):
         """Attach new measurements to a problem and re-diagnose it (a new revision)."""
         from inferstack.contracts.records import parse_ref
