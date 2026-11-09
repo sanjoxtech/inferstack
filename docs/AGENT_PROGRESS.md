@@ -17,6 +17,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 13:40 UTC — Claude Code (implementation agent, E1.0 + E1.1)
+- E1.0 `src/inferstack/execution/manifest.py`: frozen `ExecutionManifestV1` binding pinned record refs (`id@N`) plus a resolved identity snapshot. Two digests: `experiment_id` (model/tokenizer/config revisions, engine version/image, native `source_revision` + H3 `candidate_id`/`patch_sha256`, dtype, KV dtype, profile, hardware requirement, workload fixture/context/concurrency, evaluator, technique refs) and `digest` (also limits, declared fallbacks, lineage). Exact engine versions only; credentials refused; `derive()` makes a new manifest, never edits one; `from_records()` binds existing deployment/model/workload/objective/technique records.
+- E1.1 `src/inferstack/execution/compatibility.py`: `resolve(manifest, HardwareEnvironment)` gives supported / supported_with_fallback (only for fallbacks the manifest pre-declared) / probe_required / unsupported with reasons, checked facts, unknowns, probes and alternatives (each alternative names whether it is a new experiment identity). Per-device memory (2x16 GB is never 32 GB without declared TP), precision compute-capability floors (BF16 8.0, FP8 8.9), static model-fit estimate, engine x model support only from conformance evidence, capability matrix, profile schema, technique engine/dtype/CC/VRAM/pinned deps, installed engine version. Proof reuse untouched (stays with `research.techniques.proof_of`).
+- Tests: `tests/test_portable_execution.py` 44 passed. Full local suite: 444 passed, 18 skipped, 0 failed. No provider contacted.
+- Stashed (not mine, not lost): the other agent's uncommitted edits to `docs/INFERENCE_HARNESS_PLAN.md` and `docs/CLOUD_SERVING_RESEARCH_PLAN.md` conflicted with dc31ae7; kept in `git stash` "other-agent uncommitted doc edits before E1 pull". Untracked research docs left as they were.
+- Next: E1.2 notebook round trip (ResultBundle contract, export notebook from a manifest, import with digest/checksum verification). Owner: A100 scorecard run still pending.
+
 ### 2026-11-09 12:52 UTC — ChatGPT (portable execution planning)
 - Added `docs/PORTABLE_EXPERIMENT_EXECUTION_PLAN.md`: E1 one-manifest/many-substrates plan, CompatibilityResolver, notebook ResultBundle round trip, RunPod-first paid adapter, Modal verified endpoint role, later GPU Kubernetes qualification.
 - Added `docs/PORTABLE_EXECUTION_AGENT_HANDOFF.md`: another-agent execution contract for E1.0/E1.1 first, exact suggested files/tests/negative cases and commit sequence.
