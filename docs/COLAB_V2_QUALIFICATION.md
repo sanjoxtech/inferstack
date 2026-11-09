@@ -5,7 +5,7 @@ qualification target for the BF16 fused kernels.
 
 ## Recommended first run: upload a prepared notebook
 
-- [Colab A100 native qualification](notebooks/colab_a100_h0_qualification.ipynb): select an A100 runtime and run cells in order. Pins source `c5db2f1` (H1 + beta_g precision fix), uses the existing pinned `Qwen/Qwen3.5-2B-Base` Foundry artifact, records the environment and executes the consolidated qualification/matrix. Keeps vLLM/SGLang out of this environment.
+- [Colab A100 native qualification](notebooks/colab_a100_h0_qualification.ipynb): select an A100 runtime and run cells in order. Pins source `d33b470` (H1, beta_g precision fix, Linux 3.12 process fix), uses the existing pinned `Qwen/Qwen3.5-2B-Base` Foundry artifact, records the environment and executes the consolidated qualification/matrix. Keeps vLLM/SGLang out of this environment.
 - [Kaggle T4 x2 FP16 serving smoke](notebooks/kaggle_t4x2_serving_smoke.ipynb): select T4 x2, enable Internet and grant access to a read-only `GITHUB_TOKEN` secret. Uses a separate vLLM 0.11.0 environment and pinned `Qwen/Qwen3-0.6B` revision `c1899de289a04d12100db370d81485cdf75e47ca`. Runs the existing engine conformance function once per GPU with FP16, short context and bounded memory. It does not run native BF16 qualification or split one model across both GPUs.
 
 Download either notebook from this checkout and upload it to the corresponding service. Both save logs and offer an evidence ZIP. The notebook code was locally syntax/schema checked, not GPU-executed here. Their first real run establishes whether the selected environment works; a failure remains recorded evidence. An unavailable sandbox backend can block full qualification even if numerical/serving checks execute. Do not disable mandatory checks to obtain a pass.
@@ -26,7 +26,7 @@ del tok, env
 print('clone exit', p.returncode, (p.stdout + p.stderr)[-300:])
 assert p.returncode == 0, 'Check read-only repository access and Internet connectivity'
 os.chdir('/content/inferstack')
-subprocess.run(['git', 'checkout', '--detach', 'c5db2f1c16d9f10fd057c14ab76edc89efe7d0e0'], check=True)
+subprocess.run(['git', 'checkout', '--detach', 'd33b47032de1427a45d662fae05fffb09d5dcfea'], check=True)
 print(subprocess.run(['git', 'log', '-1', '--format=%H %s'], capture_output=True, text=True).stdout)
 ```
 
