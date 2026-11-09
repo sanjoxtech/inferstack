@@ -132,6 +132,9 @@ async def test_gpu_kubernetes_replacement_uses_cluster_scheduler(repo, tmp_path)
     assert result['provider'] == 'kubernetes' and len(kubernetes.launches) == 1
 
 
+# Amended 9 Nov 2026 (platform semantics): on Linux/bwrap a path outside the boundary is
+# invisible (FileNotFoundError) or on a read-only root (EROFS) rather than EPERM as on macOS.
+# Any OS-level denial is accepted; the asserted property (no secret read, no outside write) is unchanged.
 def test_candidate_launcher_does_not_grant_read_access_to_script_sibling_secrets(tmp_path):
     host = tmp_path / 'host-project'
     host.mkdir()
@@ -139,7 +142,7 @@ def test_candidate_launcher_does_not_grant_read_access_to_script_sibling_secrets
     script = host / 'server.py'
     script.write_text('from pathlib import Path\n'
         'try:\n Path(__file__).with_name(".env").read_text(); print("SIBLING_SECRET_READABLE")\n'
-        'except PermissionError:\n print("denied")\n')
+        'except OSError:\n print("denied")\n')
     workspace = tmp_path / 'candidate'
     workspace.mkdir()
     sandbox = Sandbox(require_filesystem_isolation=True)

@@ -125,6 +125,21 @@ class LocalProcessProvider:
         """Live, non-zombie PIDs in a process group."""
         if not pgid:
             return []
+        proc = Path('/proc')
+        if proc.is_dir() and (proc / 'self' / 'stat').exists():
+            # Linux: read /proc directly (minimal container images have no `ps`).
+            members = []
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    stat = (entry / 'stat').read_text()
+                except OSError:
+                    continue
+                fields = stat[stat.rfind(')') + 2:].split()  # after "(comm)": state ppid pgrp ...
+                if len(fields) >= 3 and fields[2] == str(pgid) and fields[0] != 'Z':
+                    members.append(int(entry.name))
+            return members
         try:
             out = subprocess.run(['ps', '-ax', '-o', 'pid=,pgid=,stat='], capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.SubprocessError):

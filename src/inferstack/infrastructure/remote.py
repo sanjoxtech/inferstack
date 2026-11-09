@@ -39,8 +39,14 @@ class CommandFailed(RuntimeError):
     pass
 
 
+CLI_MISSING = 127
+
+
 def default_runner(argv, input_text=None, timeout=120):
-    out = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=timeout)
+    try:
+        out = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return CLI_MISSING, '', f'{argv[0]}: command not found'
     return out.returncode, out.stdout, out.stderr
 
 
@@ -124,7 +130,9 @@ class DockerProvider(_CLIProvider):
     def stop(self, external, grace_seconds=10.0):
         self.run([self.docker, 'stop', '-t', str(int(grace_seconds)), external['container_id']], check=False)
         self.run([self.docker, 'rm', '-f', external['container_id']], check=False)
-        code, _, _ = self.run([self.docker, 'inspect', external['container_id']], check=False)
+        code, _, err = self.run([self.docker, 'inspect', external['container_id']], check=False)
+        if code == CLI_MISSING or 'Cannot connect to the Docker daemon' in (err or ''):
+            return False  # cannot observe the container: never claim it stopped
         return code != 0
 
 

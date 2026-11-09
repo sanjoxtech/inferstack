@@ -7,6 +7,13 @@ Read alongside ARCHITECTURE.md, V2_AGENT_HANDOFF.md, CONTROL_RUNBOOK.md and the 
 
 ## Decision
 
+Product scope clarification: [INFERENCE_HARNESS_PLAN.md](INFERENCE_HARNESS_PLAN.md)
+defines the integrated research → implementation → measurement → diagnosis →
+deployment feedback loop. This cloud plan supplies its serving infrastructure.
+InferStack remains multi-engine; references to vLLM below describe the first
+Kubernetes integration profile, not a requirement for every deployment. Native,
+vLLM and SGLang profiles each need their own compatibility and runtime evidence.
+
 Use InferStack as the verification and optimization control plane over a standard serving data plane. Start with one qualified vLLM deployment profile on an existing GPU Kubernetes cluster. Integrate llm-d's Gateway API Inference Extension implementation for replica selection, Prometheus for operational evidence, and KEDA with inference metrics for autoscaling. Add immutable weight caching before enabling automatic scaling.
 
 InferStack continues to own candidate isolation, frozen release identity, trusted evaluation, promotion eligibility, rollout state, rollback obligations and experiment budgets. The external router owns replica selection within a release. KEDA owns its generated HPA and the replica count. Do not install overlapping serving controllers for the same workload.
@@ -164,6 +171,8 @@ No serving code, cluster resources, credentials or existing qualification proces
 ## Subsequent research addendum
 
 The [Vercel / Fireworks Ultrafast review](research/VERCEL_ULTRAFAST_RESEARCH_2026-11-09.md) verifies the 7 November 1,000+ tokens/s announcement, captures public endpoint metrics and pricing, and proposes external-route qualification plus an engine-supported speculative-decoding experiment. It supplements P0–P5; it does not establish production qualification or replace the serving-stack plan.
+
+The [logged-in X scan](research/X_INFERENCE_SCAN_2026-11-09.md) screens 143 unique posts (116 retained), then checks selected leads against first-party projects. It adds Together Compiler/JITEngine to the optimization comparison, DSpine/NF12 as experimental techniques, and Kinference/DeepInfer/Lebrel as further integration or competitive-review leads. It corrects the earlier narrow autotuning comparison; reported speedups and trust guarantees remain unqualified on InferStack hardware.
 
 
 ## Implementation status — 9 November 2026 (implementation agent)

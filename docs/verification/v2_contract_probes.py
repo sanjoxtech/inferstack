@@ -184,6 +184,9 @@ async def test_latency_gated_rollout_can_finish_100_percent_stage(repo):
     assert await controller.step('r1') == 'promoted'
 
 
+# Amended 9 Nov 2026 (platform semantics): on Linux/bwrap a path outside the boundary is
+# invisible (FileNotFoundError) or on a read-only root (EROFS) rather than EPERM as on macOS.
+# Any OS-level denial is accepted; the asserted property (no secret read, no outside write) is unchanged.
 def test_sandbox_cannot_rewrite_files_outside_candidate_workspace(tmp_path):
     protected = tmp_path / 'trusted-evaluator-sentinel'
     protected.write_text('trusted')
@@ -196,7 +199,7 @@ def test_sandbox_cannot_rewrite_files_outside_candidate_workspace(tmp_path):
     code, output = sandbox.run([sys.executable, '-c',
         'from pathlib import Path; Path("inside").write_text("ok")\n'
         f'try:\n    Path({str(protected)!r}).write_text("tampered")\n'
-        'except PermissionError:\n    print("denied")'],
+        'except OSError:\n    print("denied")'],
         cwd=workspace, home=workspace)
     assert code == 0, output
     assert (workspace / 'inside').read_text() == 'ok', output

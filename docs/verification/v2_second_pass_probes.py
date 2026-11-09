@@ -77,6 +77,9 @@ def verifier(repo, tmp_path):
         [{'metric': 'e2e_ms', 'direction': 'min'}])
 
 
+# Amended 9 Nov 2026 (platform semantics): on Linux/bwrap a path outside the boundary is
+# invisible (FileNotFoundError) or on a read-only root (EROFS) rather than EPERM as on macOS.
+# Any OS-level denial is accepted; the asserted property (no secret read, no outside write) is unchanged.
 def test_candidate_cannot_read_host_project_dotenv(tmp_path):
     sentinel = tmp_path / 'host-project/.env'
     sentinel.parent.mkdir()
@@ -86,7 +89,7 @@ def test_candidate_cannot_read_host_project_dotenv(tmp_path):
     sandbox = Sandbox(require_filesystem_isolation=True)
     code, output = sandbox.run([sys.executable, '-c',
         f'from pathlib import Path\ntry:\n Path({str(sentinel)!r}).read_text(); print("HOST_SECRET_READABLE")\n'
-        'except PermissionError:\n print("denied")'], cwd=workspace, home=workspace)
+        'except OSError:\n print("denied")'], cwd=workspace, home=workspace)
     assert code == 0, output
     assert 'HOST_SECRET_READABLE' not in output, sandbox.describe()
 

@@ -6,6 +6,15 @@ Do not require the user to install or benchmark each intermediate version.
 This document supersedes release-by-release delivery in IMPLEMENTATION_PLAN.md.
 ARCHITECTURE.md remains the product architecture; this document defines execution.
 
+Product clarification, 9 November 2026: read
+[INFERENCE_HARNESS_PLAN.md](INFERENCE_HARNESS_PLAN.md) before choosing new work.
+It defines the integrated inference-improvement loop and H0–H5 integration
+priorities around the existing implementation. FactoryOS is the first operational
+consumer; external research and measured bottleneck feedback remain equally valid
+inputs. Preserve this handoff's dated implementation/qualification history and the
+single integrated-delivery requirement. The cloud P0–P5 status is recorded in its
+own plan; do not rebuild completed packages merely from their original descriptions.
+
 ## 1. Goal and project boundaries
 
 InferStack hosts supported models and improves measured serving goodput under

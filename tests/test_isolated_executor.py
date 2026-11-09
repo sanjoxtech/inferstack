@@ -126,6 +126,9 @@ def test_required_network_isolation_is_enforced(monkeypatch):
     assert sb.Sandbox().describe()['filesystem_isolation'] == 'unavailable'
 
 
+# Amended 9 Nov 2026 (platform semantics): on Linux/bwrap a path outside the boundary is
+# invisible (FileNotFoundError) or on a read-only root (EROFS) rather than EPERM as on macOS.
+# Any OS-level denial is accepted; the asserted property (no secret read, no outside write) is unchanged.
 def test_sandbox_confines_writes_reads_and_network(tmp_path):
     # V01: the boundary itself (no monkeypatching). Skips name the missing backend.
     import inferstack.execution.sandbox as sb
@@ -137,7 +140,7 @@ def test_sandbox_confines_writes_reads_and_network(tmp_path):
     ws.mkdir()
     code, out = box.run([sys.executable, '-c',
         'import socket\nfrom pathlib import Path\n'
-        f'try:\n    Path({str(outside)!r}).write_text("x"); print("WROTE")\nexcept PermissionError: print("fs-denied")\n'
+        f'try:\n    Path({str(outside)!r}).write_text("x"); print("WROTE")\nexcept OSError: print("fs-denied")\n'
         'try:\n    socket.create_connection(("1.1.1.1", 80), timeout=3); print("NET")\n'
         'except OSError: print("net-denied")'], cwd=ws, home=ws)
     assert code == 0 and 'fs-denied' in out and 'net-denied' in out, out

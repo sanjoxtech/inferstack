@@ -142,8 +142,11 @@ def bwrap_prefix(writable, *, offline, readable=(), home=None, readable_files=()
     writable paths bound read-write, fresh /dev, /proc (own PID namespace, so other
     processes' environments are not visible), /tmp, and credential paths masked."""
     home = Path(home or os.path.expanduser('~'))
+    # No writable /tmp: TMPDIR points inside the workspace (scrubbed_env). The root
+    # (bwrap's own tmpfs holding the mount points) is remounted read-only last, so a
+    # write anywhere outside the bound workspace fails instead of landing in memory.
     prefix = ['bwrap', '--die-with-parent', '--new-session', '--unshare-pid', '--unshare-ipc',
-              '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp']
+              '--dev', '/dev', '--proc', '/proc']
     seen = set()
     for root in read_roots(readable):
         source = Path(root)
@@ -165,6 +168,7 @@ def bwrap_prefix(writable, *, offline, readable=(), home=None, readable_files=()
             prefix += ['--ro-bind', '/dev/null', str(path)]
     for w in writable:
         prefix += ['--bind', str(Path(w).resolve()), str(Path(w).resolve())]
+    prefix += ['--remount-ro', '/']
     if offline:
         prefix.append('--unshare-net')
     return prefix

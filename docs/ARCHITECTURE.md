@@ -1,11 +1,22 @@
-# InferStack: serving platform and inference optimization harness
+# InferStack: inference improvement harness and deployment platform
 
 Status: target architecture, agreed from the user's November 7, 2026 clarification.
+Product intent clarified 9 November 2026: the integrated research, implementation,
+experiment, diagnosis and deployment feedback loop is the product center. See
+[INFERENCE_HARNESS_PLAN.md](INFERENCE_HARNESS_PLAN.md) for the current product plan
+and next integration priorities. Historical audit baselines below remain dated evidence.
 Runtime audit baseline: `33f897e39f484447036867e7c7e4c296e1b50806`.
 The imported v1.6.0 Qwen runtime is the starting implementation. Components below
 are planned unless the [repository audit](CURRENT_STATE_AUDIT.md) establishes otherwise.
 
 ## Product goal and ownership
+
+InferStack owns an inference improvement harness. FactoryOS feedback and external
+research enter the same evidence-backed planning and execution workflow; experiment
+and production outcomes drive diagnosis and bounded replanning. Deployment is part
+of that loop. Engine runtimes are pluggable execution backends. The harness itself
+can improve through independently evaluated, versioned changes without letting a
+candidate alter its own authoritative evaluator or acceptance rules.
 
 Serve supported model deployments at the best measured capacity available from
 their engines, hardware and cloud infrastructure, subject to latency, quality,
