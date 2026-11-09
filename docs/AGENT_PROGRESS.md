@@ -17,6 +17,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 11:25 UTC — Claude Code (implementation agent)
+- H3 step 2 committed (acf3848); CI green (6 jobs; provider smoke manual/skipped). Full suite 395 passed / 18 skipped locally.
+- Left untouched (another agent's, uncommitted): docs/INFERENCE_HARNESS_PLAN.md native-order paragraphs, docs/NATIVE_ENGINE_OPTIMIZATION_PLAN.md, docs/research/GPU_INFRA_*.json.
+- Next: native A100 campaign prep (N0/N1 fair native/vLLM/SGLang comparison notebook) per the plan's execution order.
+
 ### 2026-11-09 11:10 UTC — Claude Code (implementation agent)
 - Task: H3 step 2 (campaign control) + "investigate this claim" action. In progress, uncommitted.
 - Built: optimization/campaign.py (diagnose_outcome, CampaignState, targets); worker loop now plan -> execute -> verify -> diagnose -> replan with lineage; stops on target_met / kept / iteration_limit / budget_exhausted / stagnation / needs_implementation; failed builds are diagnosed outcomes; best verified candidate kept; ProblemDesk.investigate + POST /control/problems/{id}/investigate.
