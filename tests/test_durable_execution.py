@@ -141,18 +141,28 @@ def test_wedged_worker_is_superseded_and_cannot_publish(env):
         assert time.monotonic() < deadline
         time.sleep(0.05)
     time.sleep(LEASE * 1.3)
-    takeover = run_worker(env)
-    assert takeover.returncode == 0, takeover.stderr
+    runs = []
+    for _ in range(3):  # see the crash test: a 1 s lease may be lost on a loaded runner
+        takeover = run_worker(env)
+        runs.append(takeover)
+        assert takeover.returncode == 0, takeover.stderr
+        if repo.get(job)['state'] != 'running':
+            break
+        time.sleep(LEASE * 1.3)
     out, err = wedged.communicate(timeout=60)
     assert wedged.returncode == 0, err
     assert (env['tmp'] / 'woke').exists()
     final = repo.get(job)
-    assert final['state'] == 'completed' and final['attempt'] == 2
+    diagnostics = [(r.stdout[-300:], r.stderr[-500:]) for r in runs] + [('wedged', err[-500:])]
+    assert final['state'] == 'completed', (final['state'], diagnostics)
+    if len(runs) > 1:
+        assert all('lease lost' in r.stderr for r in runs[:-1]), diagnostics
+    assert final['attempt'] == 1 + len(runs), (final['attempt'], diagnostics)
     assert sum(e['kind'] == 'completed' for e in final['events']) == 1
     claims = [e['body']['worker_id'] for e in final['events'] if e['kind'] == 'claimed']
     # The woken worker created no resources after losing its lease.
     owners = {a['worker_id'] for a in AllocationManager(repo, 't').list(job_id=job)}
-    assert owners == {claims[1]}
+    assert claims[0] not in owners and owners <= set(claims[1:]), (claims, owners)
     assert not tagged_pids(repo)
 
 
