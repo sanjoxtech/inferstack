@@ -39,10 +39,24 @@ def _start_token(pid):
 
 
 def _zombie(pid):
+    stat = Path(f'/proc/{pid}/stat')
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] == 'Z'
-    except (OSError, IndexError):
+        if stat.exists():
+            return stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z'
+        # No /proc (macOS): ask ps for the process state.
+        out = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True, timeout=5)
+        return out.returncode == 0 and out.stdout.strip().startswith('Z')
+    except (OSError, IndexError, subprocess.SubprocessError):
         return False
+
+
+_CHILDREN = {}  # pid -> Popen for children this process spawned (reaped so they never linger as zombies)
+
+
+def _reap():
+    for pid, popen in list(_CHILDREN.items()):
+        if popen.poll() is not None:
+            _CHILDREN.pop(pid, None)
 
 
 class DetachedProcess:
@@ -93,12 +107,14 @@ class LocalProcessProvider:
         popen = await asyncio.to_thread(subprocess.Popen, list(argv), stdout=log, stderr=log, env=child_env,
                                         start_new_session=True)
         self._allocation_of[popen.pid] = alloc_id
+        _CHILDREN[popen.pid] = popen
         return DetachedProcess(popen)
 
     def owns(self, external):
         return isinstance(external, dict) and external.get('host') == self.host
 
     def alive(self, external):
+        _reap()  # our own exited children must not count as alive zombies
         pid = external.get('pid')
         if pid is None:
             return False  # tag-identified allocation (build steps): no single leader process
@@ -181,6 +197,10 @@ class LocalProcessProvider:
         return members
 
     def ownership(self, external):
+        _reap()
+        return self._ownership(external)
+
+    def _ownership(self, external):
         """(owned_pids, uncertain_pids, group_verified) or None when membership is unknown.
 
         Ownership is proven only by durable identity: the leader with a matching start
