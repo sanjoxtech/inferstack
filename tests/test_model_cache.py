@@ -180,8 +180,11 @@ def test_downloader_job_owns_credentials_and_write_access(source):
 
 
 def test_load_format_is_an_allowlisted_versioned_option():
-    argv = with_flags(['vllm', 'serve', 'm'], 'vllm', {'load_format': 'runai_streamer'})
+    declared = {'profile': {'supported_load_formats': ['runai_streamer']}}
+    argv = with_flags(['vllm', 'serve', 'm'], 'vllm', {'load_format': 'runai_streamer'}, deployment=declared)
     assert argv[-2:] == ['--load-format', 'runai_streamer']
+    with pytest.raises(BuildFailed, match='supported_load_formats'):  # image/weights not declared capable
+        with_flags(['vllm', 'serve', 'm'], 'vllm', {'load_format': 'runai_streamer'})
     with pytest.raises(BuildFailed, match='load_format'):
         with_flags(['vllm', 'serve'], 'vllm', {'load_format': '/etc/passwd'})
 

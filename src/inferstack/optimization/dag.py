@@ -27,14 +27,9 @@ KNOWN_GATES = MANDATORY_GATES | {'numerical_oracle', 'quality_budget', 'logit_ag
                                  'cache_isolation', 'overload',
                                  'liveness', 'performance', 'slo'}
 PATCH_ROOTS = ('src/inferstack/kernels/', 'src/inferstack/runtime/')
-PROFILE_KEYS = {
-    'vllm': {'max_num_seqs', 'max_num_batched_tokens', 'enable_prefix_caching', 'enable_chunked_prefill',
-             'gpu_memory_utilization', 'block_size', 'kv_cache_dtype'},
-    'sglang': {'max_running_requests', 'chunked_prefill_size', 'disable_radix_cache', 'mem_fraction_static',
-               'schedule_policy', 'kv_cache_dtype'},
-    'inferstack_native': {'max_num_batched_tokens', 'max_running_requests', 'max_prefill_chunk_tokens',
-                          'decode_priority', 'forward_fusion'},
-}
+from inferstack.engines.profiles import PROFILES, ProfileError, check as check_profile
+# Derived from the one schema the executor also materializes (engines/profiles.py).
+PROFILE_KEYS = {engine: set(options) for engine, options in PROFILES.items()}
 
 
 class Strict(BaseModel):
@@ -155,9 +150,10 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
                 if p['candidate_deployment_id'] in protected:
                     raise PlanRejected(f'{action.id}: may not modify the baseline or a production deployment')
             elif set(p) == {'profile_patch'} and isinstance(p['profile_patch'], dict) and p['profile_patch']:
-                bad = set(p['profile_patch']) - PROFILE_KEYS.get(engine, set())
-                if bad:
-                    raise PlanRejected(f'{action.id}: profile keys not allowed for {engine}: {sorted(bad)}')
+                try:
+                    check_profile(engine, p['profile_patch'], baseline['body'])
+                except ProfileError as exc:
+                    raise PlanRejected(f'{action.id}: {exc}') from None
             else:
                 raise PlanRejected(f'{action.id}: config_change needs candidate_deployment_id or profile_patch')
         elif action.type in ('plugin_install', 'source_patch'):
@@ -205,8 +201,15 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
             if limit is not None and getattr(plan.estimate, key) > limit:
                 raise PlanRejected(f'estimate {key}={getattr(plan.estimate, key)} exceeds remaining {limit}')
     normalized = plan.model_dump(mode='json')
+    # A source change described in prose is a proposal, not an executable treatment: it
+    # stays `needs_implementation` until a validated, content-addressed patch artifact
+    # (patch_sha256) exists. Only fully materializable plans are executable.
+    pending = [{'action_id': a.id, 'technique_id': a.params.get('technique_id'), 'files': a.params.get('files'),
+                'description': a.params.get('description')}
+               for a in plan.actions if a.type == 'source_patch' and 'patch_sha256' not in a.params]
     normalized.update({'action_order': order, 'treatment_signature': signature,
-                       'baseline_id': baseline_id, 'baseline_revision': baseline['revision']})
+                       'baseline_id': baseline_id, 'baseline_revision': baseline['revision'],
+                       'executable': not pending, 'needs_implementation': pending})
     candidate = next((a.params['candidate_deployment_id'] for a in plan.actions
                       if a.type == 'config_change' and 'candidate_deployment_id' in a.params), None)
     if candidate is not None:  # compatibility with the endpoint executor

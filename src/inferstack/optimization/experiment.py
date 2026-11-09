@@ -119,7 +119,7 @@ class EndpointExecutor:
         alloc=self.allocations.intent(context['job'],context['step_key'],purpose='candidate:'+spec.id,
             provider=self.provider.name,resource_type=self.provider.resource_type,
             spec={'deployment_id':spec.id,'container':container,**self._price(gpus)},gpu_count=gpus)
-        external=self.provider.launch(alloc['id'],container)
+        external=await asyncio.to_thread(self.provider.launch,alloc['id'],container)  # off the lease loop
         self.allocations.record_external(alloc['id'],external)
         self.owned[namespace]=(alloc['id'],external)
         self.allocations.activate(alloc['id'],context['job'],external)
@@ -132,7 +132,7 @@ class EndpointExecutor:
                 await asyncio.sleep(2)
         except BaseException:
             await engine.close()
-            self._release(namespace,'launch_failed')
+            await self._release(namespace,'launch_failed')
             raise
         self.active[namespace]=engine
         return {'id':namespace,'deployment_id':spec.id,'revision':record['revision'],'external':external,
@@ -154,18 +154,26 @@ class EndpointExecutor:
             await engine.start(self.log_root/(namespace+'.log'),spawn=self._spawner(context,spec,env,record['body'].get('resources')))
         except BaseException:
             await engine.close()
-            self._release(namespace,'launch_failed')
+            await self._release(namespace,'launch_failed')
             raise
         self.active[namespace]=engine
         return {'id':namespace, 'deployment_id':spec.id, 'revision':record['revision'],
                 'spec_sha256':hashlib.sha256(self.repository.encode(record['body']).encode()).hexdigest(),
                 **(extra or {})}
 
-    def _release(self, namespace, note):
+    async def _release(self, namespace, note):
+        """Stop and release a launched resource. The provider stop (process polling, kubectl,
+        docker) runs in a worker thread so the event loop keeps renewing job and worker
+        leases during a slow stop; ownership stays fenced by the allocation row."""
         owned=self.owned.pop(namespace,None)
         if owned is None:return
         alloc_id,external=owned
-        if self.provider.stop(external):self.allocations.release(alloc_id,note)
+        try:
+            stopped=await asyncio.to_thread(self.provider.stop,external)
+        except asyncio.CancelledError:
+            self.allocations.mark_orphaned(alloc_id,'stop_interrupted_during_'+note)
+            raise
+        if stopped:self.allocations.release(alloc_id,note)
         else:self.allocations.mark_orphaned(alloc_id,'stop_failed_during_'+note)
 
     async def retain(self, candidate, context):
@@ -191,7 +199,7 @@ class EndpointExecutor:
     async def cleanup(self, candidate):
         engine=self.active.pop(candidate['id'],None)
         if engine:await engine.close()
-        if self.allocations is not None:self._release(candidate['id'],'cleanup')
+        if self.allocations is not None:await self._release(candidate['id'],'cleanup')
 
 
 def _code_sha256():

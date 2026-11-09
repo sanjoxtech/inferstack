@@ -200,7 +200,8 @@ class ReleaseRuntime:
         launched_at = time.monotonic()
         try:
             if container is not None:
-                external = {**provider.launch(alloc_id, container), 'allocation_id': alloc_id}
+                external = {**await asyncio.to_thread(provider.launch, alloc_id, container),
+                            'allocation_id': alloc_id}
             else:
                 # Exactly the frozen, credential-free launch environment: never the control
                 # process's own environment. Only reserved devices are added deliberately.
@@ -247,7 +248,7 @@ class ReleaseRuntime:
             return {'allocation_id': alloc_id, 'replaced': True, 'provider': provider.name, 'startup': startup}
         except BaseException:
             ext = manager.get(alloc_id)['external']
-            if ext is None or provider.stop(ext):
+            if ext is None or await asyncio.to_thread(provider.stop, ext):
                 manager.release(alloc_id, 'replacement_failed')
             else:
                 manager.mark_orphaned(alloc_id, 'replacement_stop_failed')
@@ -326,7 +327,7 @@ class ReleaseRuntime:
                 manager.mark_orphaned(alloc['id'], f"retire_no_provider_{alloc['provider']}")
                 outcomes.append({'allocation_id': alloc['id'], 'state': 'orphaned',
                                  'reason': f"provider {alloc['provider']!r} not configured"})
-            elif provider.stop(alloc['external']):
+            elif await asyncio.to_thread(provider.stop, alloc['external']):
                 manager.release(alloc['id'], 'retired')
                 outcomes.append({'allocation_id': alloc['id'], 'state': 'released'})
             else:

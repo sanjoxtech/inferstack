@@ -274,9 +274,60 @@ def test_compatibility_claims_vs_proof(repo):
     repo.put_record('technique', 'ok', {'name': 'ok', 'summary': 's', 'dtypes': ['bfloat16'],
                                         'engines': [{'engine': 'vllm', 'versions': '>=0.10,<0.12'}],
                                         'proven_by': ['t1@1'], 'status': 'proven'}, expected_revision=1)
-    assert assess(repo, 'ok', 'd') | {} and assess(repo, 'ok', 'd')['verdict'] == 'compatible_proven'
+    # A trial reference alone is not proof: its verification evidence must exist and pass.
+    weak = assess(repo, 'ok', 'd')
+    assert weak['verdict'] == 'compatible_claimed' and weak['proven_by'] == []
+    assert weak['transferable'][0]['reason'] == 'verification evidence artifact missing'
     with pytest.raises(ValueError, match='dangling'):
         technique(repo, 'fake-proof', proven_by=['invented-trial'])
+
+
+def proof_fixture(repo, *, verdict='keep', quality=True, errors=(), plugin=True, cand_dtype='bfloat16',
+                  cand_version='0.11.0', cand_model_rev='b' * 40):
+    import json as _json
+    repo.put_record('hardware', 'a100', {'provider': 'colab', 'observed_at': 1.0, 'gpus': [
+        {'uuid': 'GPU-1', 'name': 'NVIDIA A100-SXM4-40GB', 'memory_bytes': 40 * 2**30, 'compute_capability': '8.0'}]})
+    repo.put_record('model', 'mdl', {'source': 'huggingface', 'repo_id': 'org/m', 'revision': 'b' * 40})
+    repo.put_record('model', 'mdl2', {'source': 'huggingface', 'repo_id': 'org/m', 'revision': cand_model_rev})
+    repo.put_record('technique', 'tech', {'name': 'tech', 'summary': 's', 'engines': [{'engine': 'vllm'}]})
+    base = {'engine': 'vllm', 'model': 'm', 'engine_version': '0.11.0', 'profile': {'dtype': 'bfloat16'},
+            'hardware_ref': 'a100@1', 'model_ref': 'mdl@1'}
+    repo.put_record('deployment', 'target', {'id': 'target', 'base_url': 'http://t', **base})
+    repo.put_record('deployment', 'cand', {'id': 'cand', 'base_url': 'http://c', **base,
+                                           'engine_version': cand_version, 'profile': {'dtype': cand_dtype},
+                                           'model_ref': 'mdl2@1', 'plugin_refs': ['tech'] if plugin else []})
+    evidence = {'verdict': {'decision': verdict}, 'gates': {'correctness': True, 'quality': quality},
+                'policy': {'required': ['correctness', 'quality']}}
+    sha = repo.artifact(_json.dumps(evidence).encode())['sha256']
+    repo.put_record('trial', 'tr', {'experiment_id': 'e', 'deployment_ref': 'cand@1', 'role': 'candidate',
+                                    'repeat_index': 0, 'metrics': {'e2e_ms': 1.0}, 'raw_artifact_sha256': sha,
+                                    'errors': list(errors), 'started_at': 1, 'ended_at': 2})
+    repo.put_record('technique', 'tech', {'name': 'tech', 'summary': 's', 'engines': [{'engine': 'vllm'}],
+                                          'proven_by': ['tr@1']}, expected_revision=1)
+    return assess(repo, 'tech', 'target')
+
+
+def test_verified_trial_on_same_identity_proves(repo):
+    result = proof_fixture(repo)
+    assert result['verdict'] == 'compatible_proven' and result['proven_by'] == ['tr@1']
+
+
+@pytest.mark.parametrize('kwargs,reason', [
+    ({'verdict': 'reject'}, 'not keep'), ({'quality': False}, 'gates did not all pass'),
+    ({'errors': ['quality gate failed']}, 'recorded errors'), ({'plugin': False}, 'lineage'),
+    ({'cand_dtype': 'float16'}, 'dtype'), ({'cand_version': '0.10.0'}, 'engine_version'),
+    ({'cand_model_rev': 'c' * 40}, 'model_ref')])
+def test_invalid_or_inapplicable_trials_never_prove(repo, kwargs, reason):
+    result = proof_fixture(repo, **kwargs)
+    assert result['verdict'] == 'compatible_claimed' and result['proven_by'] == []
+    assert reason in result['transferable'][0]['reason']
+
+
+def test_tampered_evidence_is_not_proof(repo):
+    proof_fixture(repo)
+    trial = repo.read('trial', 'tr')['body']
+    (repo.artifact_root / trial['raw_artifact_sha256']).write_bytes(b'{"verdict": {"decision": "keep"}}')
+    assert 'digest mismatch' in assess(repo, 'tech', 'target')['transferable'][0]['reason']
 
 
 # --- planner & submission -------------------------------------------------------------

@@ -164,6 +164,13 @@ class OptimizationWorker:
                 return plan
             try:
                 plan = await self.step(job, f'iter{iteration}.plan', plan_fn, idempotent=True)
+                if isinstance(plan, dict) and plan.get('executable') is False:
+                    # Nothing to run yet: the proposal waits for an implementation artifact
+                    # (bounded implementer handoff, H3). It is recorded, never executed.
+                    self.record(job, 'needs_implementation', {'iteration': iteration,
+                                                              'proposals': plan.get('needs_implementation')})
+                    return {'decision': 'needs_implementation', 'experiments': history,
+                            'proposal': plan, 'stop_reason': 'source change has no validated patch artifact'}
                 outcome = await self.step(
                     job, f'iter{iteration}.experiment',
                     lambda j, key, plan=plan, iteration=iteration: self.experiment(j, key, plan, iteration),

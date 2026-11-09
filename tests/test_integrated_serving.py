@@ -58,7 +58,9 @@ async def test_integrated_lifecycle_and_cost(tmp_path):
     prices = PriceTable({'local/test-gpu': {'usd_per_gpu_hour': 3.6, 'source': 'test fixture', 'as_of': '2026-11-09'}})
     runtime = ReleaseRuntime(repo, LocalProcessProvider(), log_root=tmp_path / 'logs', ready_timeout=15,
                              gpu_devices=['GPU-a', 'GPU-b', 'GPU-c'], pricing=prices, gpu_name='test-gpu')
-    base, slow, good = release(repo, 'base', 0.0), release(repo, 'slow', 0.25), release(repo, 'good', 0.0)
+    # Base and good share a stable 50 ms service time so relative latency gates compare real
+    # differences, not scheduler noise on near-zero values; slow adds a clear 250 ms regression.
+    base, slow, good = release(repo, 'base', 0.05), release(repo, 'slow', 0.25), release(repo, 'good', 0.05)
     started = time.time()
     try:
         await runtime.ensure(base)
@@ -95,7 +97,7 @@ async def test_integrated_lifecycle_and_cost(tmp_path):
 
         # 3. A healthy candidate advances through every stage and is promoted; the old stable retires.
         await RolloutController(repo, observe=evidence_observer(repo), runtime=runtime).start(
-            'r2', 'm', good, [{**stages[0], 'max_latency_regression': 3.0}, stages[1]], min_requests=8)
+            'r2', 'm', good, [{**stages[0], 'max_latency_regression': 1.0}, stages[1]], min_requests=8)
         controller = RolloutController(repo, observe=evidence_observer(repo), runtime=runtime)
         traffic(client, 30)
         assert await controller.step('r2') == 'advanced'

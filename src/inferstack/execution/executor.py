@@ -41,20 +41,11 @@ from inferstack.execution.patches import check_patch
 from inferstack.execution.sandbox import Sandbox
 from inferstack.optimization.experiment import EndpointExecutor
 
-ENGINE_FLAGS = {
-    'vllm': {'max_num_seqs': '--max-num-seqs', 'max_num_batched_tokens': '--max-num-batched-tokens',
-             'gpu_memory_utilization': '--gpu-memory-utilization', 'block_size': '--block-size',
-             'kv_cache_dtype': '--kv-cache-dtype',
-             'enable_prefix_caching': ('--enable-prefix-caching', '--no-enable-prefix-caching'),
-             'enable_chunked_prefill': ('--enable-chunked-prefill', '--no-enable-chunked-prefill'),
-             # Versioned loader option; runai_streamer needs the optional dependency in the image
-             # and Safetensors weights, and must be qualified per vLLM/image combination.
-             'load_format': '--load-format'},
-    'sglang': {'max_running_requests': '--max-running-requests', 'chunked_prefill_size': '--chunked-prefill-size',
-               'mem_fraction_static': '--mem-fraction-static', 'schedule_policy': '--schedule-policy',
-               'kv_cache_dtype': '--kv-cache-dtype', 'disable_radix_cache': ('--disable-radix-cache', None)},
-}
-FLAG_VALUES = {'load_format': {'auto', 'safetensors', 'runai_streamer'}}
+from inferstack.engines.profiles import PROFILES, ProfileError, check as check_profile, native_overlay, to_flags
+
+# Kept for callers that inspect supported flags; the single source is engines/profiles.py.
+ENGINE_FLAGS = {engine: {k: o.flag for k, o in options.items() if o.flag is not None}
+                for engine, options in PROFILES.items() if engine != 'inferstack_native'}
 _PIN = re.compile(r'^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.+!_-]*)$')
 
 
@@ -68,28 +59,21 @@ def free_port():
         return s.getsockname()[1]
 
 
-def with_flags(argv, engine, patch):
-    flags = ENGINE_FLAGS.get(engine)
-    if flags is None:
-        raise BuildFailed(f'profile_patch is not supported for engine {engine}')
-    argv = list(argv)
-    for key, value in patch.items():
-        if key in FLAG_VALUES and value not in FLAG_VALUES[key]:
-            raise BuildFailed(f'{key}={value!r} is not one of {sorted(FLAG_VALUES[key])}')
-        flag = flags[key]
-        names = [f for f in (flag if isinstance(flag, tuple) else (flag,)) if f]
-        for name in names:  # remove any existing occurrence (with its value for valued flags)
-            while name in argv:
-                i = argv.index(name)
-                del argv[i:i + (1 if isinstance(flag, tuple) else 2)]
-        if isinstance(flag, tuple):
-            on, off = flag
-            chosen = on if value else off
-            if chosen:
-                argv.append(chosen)
-        else:
-            argv += [flag, str(value)]
-    return argv
+def with_flags(argv, engine, patch, *, workspace=None, source_root='.', deployment=None):
+    """Materialize a validated profile patch: engine flags, or a native TOML overlay in the workspace.
+
+    Uses the same schema the planner validated against, so an accepted patch is
+    always materializable (and an unsupported one is refused before scheduling)."""
+    try:
+        check_profile(engine, patch, deployment)
+        if engine == 'inferstack_native':
+            if workspace is None:
+                raise BuildFailed('inferstack_native profile changes need a candidate workspace for the overlay')
+            argv, _ = native_overlay(argv, patch, workspace, source_root=source_root)
+            return argv
+        return to_flags(engine, argv, patch)
+    except ProfileError as exc:
+        raise BuildFailed(str(exc)) from None
 
 
 def relocate(body, port):
@@ -228,12 +212,12 @@ class IsolatedExecutor(EndpointExecutor):
         self.allocations.activate(alloc['id'], context['job'], external)
         return alloc['id']
 
-    def _end_build(self, alloc_id, note):
+    async def _end_build(self, alloc_id, note):
         """Release the build allocation only after no tagged build process remains."""
         from inferstack.infrastructure.local import LocalProcessProvider
         external = self.allocations.get(alloc_id)['external'] or {'allocation_id': alloc_id}
         provider = self.provider if getattr(self.provider, 'name', None) == 'local' else LocalProcessProvider()
-        if provider.stop(external, grace_seconds=5.0):
+        if await asyncio.to_thread(provider.stop, external, 5.0):  # off the lease-renewal loop
             self.allocations.release(alloc_id, note)
         else:
             self.allocations.mark_orphaned(alloc_id, note + '_stop_failed')
@@ -243,6 +227,11 @@ class IsolatedExecutor(EndpointExecutor):
             return await super().execute(plan, namespace, context)
         if context is None:
             raise ValueError('isolated execution requires a job context (allocation ownership)')
+        missing = [a['id'] for a in plan['actions'] if a.get('type') == 'source_patch'
+                   and 'patch_sha256' not in (a.get('params') or {})]
+        if plan.get('executable') is False or missing:
+            raise BuildFailed(f'plan needs implementation before execution (no stored patch for {missing}); '
+                              'a source description is a proposal, not an executable treatment')
         untrusted = [a['id'] for a in plan['actions'] if a.get('type') in ('plugin_install', 'source_patch')]
         remote = getattr(self.provider, 'launches_remotely', False)
         if untrusted and remote and self.image_builder is None:
@@ -276,7 +265,8 @@ class IsolatedExecutor(EndpointExecutor):
                         raise ValueError('candidate changed after planning')
                     body = dict(source['body'])
                 elif action['type'] == 'config_change':
-                    body['command'] = with_flags(body.get('command') or [], body['engine'], params['profile_patch'])
+                    body['command'] = with_flags(body.get('command') or [], body['engine'], params['profile_patch'],
+                                                 workspace=ws, source_root=self.source_root, deployment=body)
                     body['profile'] = {**(body.get('profile') or {}), **params['profile_patch']}
                 elif action['type'] == 'plugin_install':
                     venv = await self._offload(self.build_plugin, ws, action, artifacts, log)
@@ -299,7 +289,7 @@ class IsolatedExecutor(EndpointExecutor):
                 owner.__exit__(None, None, None)
                 owner = None
             if build_alloc is not None:
-                self._end_build(build_alloc, 'build_complete')  # confirmed no tagged build process remains
+                await self._end_build(build_alloc, 'build_complete')  # confirmed no tagged build process remains
                 build_alloc = None
             if derived and not remote:
                 body['command'], body['base_url'] = relocate(body, free_port())
@@ -322,8 +312,8 @@ class IsolatedExecutor(EndpointExecutor):
                 owner.__exit__(None, None, None)
             if build_alloc is not None:
                 self.sandbox.terminate_all()
-                self._end_build(build_alloc, 'build_aborted')
-            self._discard(namespace)
+                await self._end_build(build_alloc, 'build_aborted')
+            await asyncio.to_thread(self._discard, namespace)
             raise
 
     async def _containerize(self, body, ws, namespace, plan, actions, src, artifacts, allocation_id=None):
@@ -381,4 +371,4 @@ class IsolatedExecutor(EndpointExecutor):
         try:
             await super().cleanup(candidate)
         finally:
-            self._discard(candidate['id'])
+            await asyncio.to_thread(self._discard, candidate['id'])  # rmtree off the lease loop

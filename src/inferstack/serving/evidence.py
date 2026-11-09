@@ -7,8 +7,13 @@ Each request through the gateway produces one record with separate phases:
 - `e2e_ms`: full completion, streamed or not;
 - `max_gap_ms`: longest interval between content events (a stall signal; content
   events are NOT tokens);
-- `output_tokens` from engine usage when reported, and `itl_ms` (mean inter-token
-  latency) only when the token count is authoritative;
+- `output_tokens` from engine usage when reported, and `itl_ms`: the mean observed
+  client-side gap between tokens, only when every token arrived as its own content
+  event (events == authoritative tokens). Grouped/coalesced events cannot show when
+  tokens were generated, so ITL is unavailable for them (never 0). This is client
+  timing, not engine token-emission timing; engine decode timing comes from engine
+  telemetry (verifier `tpot_engine_ms`). The `itl` series is a per-request mean, so
+  its percentiles are over requests, not over individual token gaps;
 - `outcome`: ok | error | cancelled | timeout | rejected, with `rejection_source`
   for admission rejections (draining, unhealthy, capacity).
 
@@ -101,8 +106,8 @@ class LiveStream:
         times = self.content_times
         gaps = [(b - a) * 1000 for a, b in zip(times, times[1:])]
         itl = None
-        if self.tokens is not None and self.tokens > 1 and len(times) >= 1:
-            itl = (times[-1] - times[0]) * 1000 / (self.tokens - 1)
+        if self.tokens is not None and self.tokens > 1 and len(times) == self.tokens:
+            itl = (times[-1] - times[0]) * 1000 / (self.tokens - 1)  # one observed event per token
         return {'upstream_first_byte_ms': ms(self.first_byte), 'first_content_ms': ms(times[0]) if times else None,
                 'e2e_ms': ms(ended), 'max_gap_ms': max(gaps) if gaps else None, 'content_events': len(times),
                 'output_tokens': self.tokens, 'input_tokens': self.input_tokens, 'itl_ms': itl}

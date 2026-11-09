@@ -53,13 +53,25 @@ def test_metadata_only_stream_has_no_first_content():
     assert summary['streams_without_content'] == 1 and summary['samples']['ttft'] == 0
 
 
-def test_itl_only_from_authoritative_token_counts():
+def test_itl_only_from_one_observed_event_per_token():
     live = LiveStream(started=0.0)
     live.feed(b'data: {"choices":[{"text":"a"}]}\n\n', 0.010)
     live.feed(b'data: {"choices":[{"text":"bcd"}]}\n\n', 0.040)
-    assert live.phases(0.05)['itl_ms'] is None  # two content events are not two tokens
+    assert live.phases(0.05)['itl_ms'] is None  # no token count yet
     live.feed(b'data: {"choices":[],"usage":{"completion_tokens":4}}\n\ndata: [DONE]\n\n', 0.041)
-    assert live.phases(0.05)['itl_ms'] == pytest.approx(10.0)
+    assert live.phases(0.05)['itl_ms'] is None  # 2 grouped events cannot time 4 tokens
+    exact = LiveStream(started=0.0)
+    for i, t in enumerate((0.010, 0.020, 0.040)):
+        exact.feed(b'data: {"choices":[{"text":"x"}]}\n\n', t)
+    exact.feed(b'data: {"choices":[],"usage":{"completion_tokens":3}}\n\ndata: [DONE]\n\n', 0.041)
+    assert exact.phases(0.05)['itl_ms'] == pytest.approx(15.0)
+
+
+def test_one_grouped_event_never_reports_zero_itl():
+    """R4: one event carrying two tokens is not evidence of 0 ms between them."""
+    live = LiveStream(started=0.0)
+    live.feed(b'data: {"choices":[{"delta":{"content":"two tokens"}}],"usage":{"completion_tokens":2}}\n\n', 1.0)
+    assert live.phases(1.2)['itl_ms'] is None
 
 
 def test_percentiles_need_their_minimum_samples(repo):

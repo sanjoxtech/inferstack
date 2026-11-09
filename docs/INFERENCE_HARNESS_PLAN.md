@@ -199,8 +199,37 @@ Adapt industry work in three ways: reproduce a published technique, find a usefu
 
 Continue learning from [the X scan](research/X_INFERENCE_SCAN_2026-11-09.md), [Vercel/Fireworks research](research/VERCEL_ULTRAFAST_RESEARCH_2026-11-09.md) and engine release changes. These sources seed a review queue; they do not install code or change production automatically. Manual paper/text submission is sufficient for the first release. A continuous external-research service is a later opt-in capability, not a prerequisite for the loop.
 
+The [research-to-plan map](research/RESEARCH_TO_PLAN_MAP.md) records the major collected leads, their adopt/experiment/defer decisions, relevant work packages and remaining evidence. The X ledger is a screening/permalink record, not full source ingestion or per-post technical verification. Complete the selected-candidate capture, applicability audit, experiment manifest, database ingestion and reproduction steps before describing research as operationally integrated.
+
 Defer universal engine coverage, global cloud provisioning, training algorithms, a general application-agent framework, multi-node/P-D/LoRA infrastructure without a demonstrated need, and a new universal kernel compiler. Add them when a recorded workload problem and a qualified experiment justify the cost.
 
 ## Document precedence
 
 This document defines product intent and next harness-integration priorities. [ARCHITECTURE.md](ARCHITECTURE.md) defines architectural/ownership contracts. [V2_AGENT_HANDOFF.md](V2_AGENT_HANDOFF.md) records implementation history and original work packages. [CLOUD_SERVING_RESEARCH_PLAN.md](CLOUD_SERVING_RESEARCH_PLAN.md) defines the serving-infrastructure packages and their dated implementation status. [CONTROL_RUNBOOK.md](CONTROL_RUNBOOK.md) defines operational procedures. Preserve dated evidence; do not treat historical baseline descriptions as current qualification.
+
+## Implementation status
+
+### H0 — 9 November 2026 (implementation agent)
+
+Implemented against the review's findings; acceptance tests in `tests/test_harness_h0.py`.
+CPU/local-process evidence only. No GPU qualification is claimed.
+
+| Finding | Change | Acceptance evidence |
+|---|---|---|
+| R1 proof reuse | `research/techniques.proof_of`: a `proven_by` trial counts only if it is a candidate trial without errors, its verification artifact is present and digest-intact, the authoritative verdict is `keep` with every required gate true, treatment lineage to this technique is established (plugin ref or plan action), and the reuse key (engine, engine version, model, pinned model revision, dtype, hardware) equals the target's. Otherwise it is listed in `transferable` with the reason. | `tests/test_research.py`: rejected verdict, failed gate, recorded errors, missing lineage, different dtype / engine version / model revision, missing and tampered artifacts all stay `compatible_claimed`; a verified same-identity trial is `compatible_proven`. |
+| R2 prose source change | Validation marks a `source_patch` without `patch_sha256` as `executable: false` with `needs_implementation`; the worker records the proposal and ends with decision `needs_implementation` without executing; `IsolatedExecutor` refuses such plans as a second guard. The coding stage is H3. | Planner, worker and executor tests in `tests/test_harness_h0.py`. |
+| R3 profile contract | One schema (`engines/profiles.py`) used by planner validation and executor materialization, with typed and bounded values. Native keys are written as a TOML overlay of the pinned profile in the candidate workspace (loaded by the native profile loader). `load_format` other than `auto` requires the deployment to declare it in `profile.supported_load_formats`. | Native overlay round-trips through `load_profile`; loader accepted only where both layers can execute it. |
+| R4 ITL semantics | `itl_ms` exists only when every token arrived as its own client content event; grouped events give unavailable, never 0. Documented as client timing; engine decode timing stays separate. | One grouped two-token event gives `None`; one-event-per-token gives the observed mean gap. |
+| R5 blocking cleanup | Provider `stop`/`launch` in executor cleanup, build teardown and release runtime, plus workspace `rmtree`, run in worker threads; interrupted stops mark the allocation orphaned. | A 650 ms synchronous stop with a 300 ms lease now ends `completed` with a terminal result; the event loop keeps ticking during build teardown. |
+| Capability truth | Every `tested` capability must cite an existing test; native `kernel_patch` downgraded to `declared` (the cited A100 run has no repository artifact). | `test_capability_evidence_references_are_current`. |
+
+Verification on this host (macOS, CPU): full suite and all three earlier probe
+files, 361 passed / 17 skipped (PostgreSQL and kind variants need their
+environment). `docs/verification/harness_gap_probes.py` is the reviewer's
+reproduction script and is left unchanged; its loader step now raises by design
+(an undeclared loader is refused by both layers).
+
+Remaining limits: proof reuse needs pinned model and hardware references, so
+older trials without them stay claims; native overlay keys are limited to the
+five schema keys; engine ITL percentiles need engine token telemetry; GPU
+qualification (A100 BF16, T4 FP16) is still pending.

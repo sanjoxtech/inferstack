@@ -149,12 +149,35 @@ def test_sandbox_confines_writes_reads_and_network(tmp_path):
 
 # --- flags ------------------------------------------------------------------------------------
 
-def test_profile_flags_replace_existing_values():
+def test_profile_flags_replace_existing_values(tmp_path):
     argv = ['vllm', 'serve', 'm', '--max-num-seqs', '64', '--enable-prefix-caching']
     out = with_flags(argv, 'vllm', {'max_num_seqs': 256, 'enable_prefix_caching': False})
     assert out == ['vllm', 'serve', 'm', '--max-num-seqs', '256', '--no-enable-prefix-caching']
-    with pytest.raises(BuildFailed, match='not supported'):
+    with pytest.raises(BuildFailed, match='workspace'):
         with_flags([], 'inferstack_native', {'max_running_requests': 4})
+    with pytest.raises(BuildFailed, match='must be int'):
+        with_flags(argv, 'vllm', {'max_num_seqs': 'many'})
+
+
+def test_native_profile_patch_materializes_a_toml_overlay(tmp_path):
+    """R3: every native key the planner accepts is materialized (overlay of the pinned profile)."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+    from inferstack.config import load_profile
+    root = Path(__file__).resolve().parents[1]
+    argv = ['python', '-m', 'inferstack', 'serve', '--profile', 'configs/profiles/production-v1.6.0.toml']
+    out = with_flags(argv, 'inferstack_native', {'decode_priority': False, 'max_running_requests': 4,
+                                                'forward_fusion': True}, workspace=tmp_path, source_root=root)
+    overlay = Path(out[out.index('--profile') + 1])
+    assert overlay.parent == tmp_path
+    profile = load_profile(overlay)  # the native loader accepts it
+    assert profile.scheduler.decode_priority is False and profile.scheduler.max_running_requests == 4
+    assert profile.native.forward_fusion is True
+    base = tomllib.loads((root / 'configs/profiles/production-v1.6.0.toml').read_text())
+    written = tomllib.loads(overlay.read_text())
+    assert written['kernels'] == base['kernels'] and written['hardware'] == base['hardware']  # untouched
 
 
 # --- end to end -----------------------------------------------------------------------------

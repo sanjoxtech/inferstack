@@ -696,6 +696,14 @@ what was verified on this CPU host and what still needs a GPU cluster.
 Migrations 6–8 add serving evidence, endpoint attribution and token/shadow
 columns.
 
+### Inference harness H0 — 9 November 2026
+
+`docs/INFERENCE_HARNESS_PLAN.md` (Implementation status) lists the H0 changes for
+review findings R1–R5 with acceptance tests in `tests/test_harness_h0.py`: strict
+proof reuse, non-executable prose source changes, one shared profile schema
+(native TOML overlays, declared loaders), honest ITL semantics, lease-safe cleanup,
+and evidence-referenced capability claims. Next: H1 → H5.
+
 ## 9. v2.0 release-candidate status
 
 | Package | Implemented | Verified here (CPU, real processes) | Gate still requiring the user's environment |

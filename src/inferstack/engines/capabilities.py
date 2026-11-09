@@ -61,7 +61,10 @@ _DEFAULTS = {
         'prefix_cache': (S, 'tested', 'runtime/hybrid_prefix_cache.py, tests/test_cache_sampler.py'),
         'paged_kv': (U, 'declared', 'runtime reports paged_kv_active=False (CURRENT_STATE_AUDIT A6)'),
         'cuda_graph_replay': (K, 'none', 'actual_cuda_graph_replay_proven=False; needs GPU evidence'),
-        'kernel_patch': (S, 'tested', 'fused norm/silu kernels <=0.5 ULP vs FP32 oracle on A100, 2026-11-07 baseline run'),
+        # No repository artifact backs the earlier A100 claim: declared until the GPU
+        # kernel_equivalence gate (scripts/v160_kernel_equivalence.py) records evidence.
+        'kernel_patch': (S, 'declared', 'fused norm/silu kernels; CPU emulation in tests/test_kernels_reference.py; '
+                                        'A100 kernel_equivalence qualification pending'),
         'prometheus_metrics': (U, 'declared', 'native API exposes status JSON, not Prometheus text'),
         'graceful_drain': (U, 'declared', 'not implemented (Package I)'),
         'gpu_telemetry': (K, 'none', 'nvidia-smi polling scripts only; no per-deployment pipeline'),
@@ -69,9 +72,9 @@ _DEFAULTS = {
     },
     'vllm': {
         'launch_local': (S, 'declared', 'engines/catalog.py launch_plan; no live run in this repo'),
-        'attach': (S, 'tested', 'OpenAI-compatible HTTP adapter with mock transport'),
-        'ready_probe': (S, 'tested', 'GET /v1/models'),
-        'complete': (S, 'tested', 'mock transport only'),
+        'attach': (S, 'tested', 'OpenAI-compatible HTTP adapter with mock transport; tests/test_quality_phases.py'),
+        'ready_probe': (S, 'tested', 'GET /v1/models; tests/test_managed_control.py::test_engine_readiness_and_model_override'),
+        'complete': (S, 'tested', 'mock transport only; tests/test_quality_phases.py, tests/test_engines.py'),
         'stream': (S, 'declared', 'adapter forwards SSE; not exercised live'),
         'continuous_batching': (S, 'declared', 'vLLM documentation'),
         'paged_kv': (S, 'declared', 'vLLM documentation'),
@@ -94,9 +97,9 @@ _DEFAULTS = {
     },
     'generic_openai': {
         'launch_local': (U, 'declared', 'remote API; InferStack does not own the process'),
-        'attach': (S, 'tested', 'OpenAI-compatible HTTP adapter with mock transport'),
-        'ready_probe': (S, 'tested', 'GET /v1/models'),
-        'complete': (S, 'tested', 'mock transport only'),
+        'attach': (S, 'tested', 'OpenAI-compatible HTTP adapter with mock transport; tests/test_quality_phases.py'),
+        'ready_probe': (S, 'tested', 'GET /v1/models; tests/test_managed_control.py::test_engine_readiness_and_model_override'),
+        'complete': (S, 'tested', 'mock transport only; tests/test_quality_phases.py, tests/test_engines.py'),
         'stream': (S, 'declared', 'adapter forwards SSE'),
         'kernel_patch': (U, 'declared', 'no access to remote kernels'),
         'gpu_telemetry': (U, 'declared', 'remote API exposes no GPU telemetry'),
