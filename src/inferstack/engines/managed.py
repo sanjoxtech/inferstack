@@ -106,12 +106,14 @@ class ManagedEngine:
     async def complete(self,payload,chat=False,headers=None):
         body=dict(payload);body['model']=self.spec.model;body['stream']=False
         response=await self.client.post('v1/chat/completions' if chat else 'v1/completions',json=body,headers=headers)
+        self.last_headers=response.headers  # routing attribution (e.g. the endpoint the picker chose)
         response.raise_for_status()
         return response.json()
 
     async def stream(self,payload,chat=False,headers=None):
         body=dict(payload);body['model']=self.spec.model;body['stream']=True
         async with self.client.stream('POST','v1/chat/completions' if chat else 'v1/completions',json=body,headers=headers) as response:
+            self.last_headers=response.headers
             response.raise_for_status()
             async for chunk in response.aiter_bytes():yield chunk
 

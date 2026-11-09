@@ -26,7 +26,7 @@ class RuntimeUnavailable(RuntimeError):
 
 class ReleaseRuntime:
     def __init__(self, repository, provider, *, log_root, engine_factory=ManagedEngine, attest=None,
-                 drain=None, undrain=None, ready_timeout=900, providers=None, gpu_devices=None):
+                 drain=None, undrain=None, ready_timeout=900, providers=None, gpu_devices=None, routing=None):
         """drain(deployment_id, deadline_s) -> {'drained': bool, 'remaining': int} (gateway admission);
         undrain(deployment_id) restores admission for a runtime brought back into service.
 
@@ -41,6 +41,9 @@ class ReleaseRuntime:
         # Identified host devices: GPU-engine replacements reserve specific free ones
         # through the same exclusive placement as experiments (fail closed without them).
         self.gpu_devices = list(gpu_devices or [])
+        # Optional routing.pools.PoolRouting: Kubernetes releases get a release-scoped
+        # InferencePool whose membership is identity-gated (admit_pods).
+        self.routing = routing
 
     def _manifest(self, release_id):
         release = self.repository.read('release', release_id)
@@ -179,6 +182,11 @@ class ReleaseRuntime:
             raise RuntimeUnavailable(f'no exclusive GPU placement for {release_id}: {exc}') from exc
         if container is not None and spec.get('gpu_devices') and not isinstance(container.get('gpus'), list):
             container = {**container, 'gpus': spec['gpu_devices']}  # docker --gpus device=<reserved>
+        pooled = container is not None and self.routing is not None and provider.name == 'kubernetes'
+        if pooled:
+            from inferstack.routing.pools import RELEASE_LABEL, release_key
+            container = {**container, 'pod_labels': {**(container.get('pod_labels') or {}),
+                                                     RELEASE_LABEL: release_key(release_id)}}
         self.log_root.mkdir(parents=True, exist_ok=True)
         log = (self.log_root / f'{alloc_id}.log').open('ab')
         launched_at = time.monotonic()
@@ -199,10 +207,22 @@ class ReleaseRuntime:
                 db.execute("UPDATE allocations SET state='active',active_at=?,updated_at=? WHERE id=?",
                            (now, now, alloc_id))
             deadline = time.monotonic() + self.ready_timeout
-            while not await self._ready(deployment):
-                if time.monotonic() > deadline or not provider.alive(external):
-                    raise RuntimeUnavailable(f'replacement for {release_id} did not become ready')
-                await asyncio.sleep(0.25)
+            if pooled:
+                # Ready means: the release pool exists and at least one pod passed the identity
+                # check and was admitted to it. Readiness of a Service proves nothing about replicas.
+                self.routing.apply(release_id, port=int(container['container_port']))
+                while True:
+                    admission = self.admit(release_id, external)
+                    if admission.get('admitted'):
+                        break
+                    if time.monotonic() > deadline or not provider.alive(external):
+                        raise RuntimeUnavailable(f'no pod of {release_id} passed identity admission: {admission}')
+                    await asyncio.sleep(2)
+            else:
+                while not await self._ready(deployment):
+                    if time.monotonic() > deadline or not provider.alive(external):
+                        raise RuntimeUnavailable(f'replacement for {release_id} did not become ready')
+                    await asyncio.sleep(0.25)
             startup = {'ready_s': time.monotonic() - launched_at}
             if hasattr(provider, 'startup_phases'):
                 try:
@@ -250,6 +270,27 @@ class ReleaseRuntime:
         extra = {k: v for k, v in (frozen or {}).items() if k not in ('HOME', 'TMPDIR')}
         return scrubbed_env(extra, home=home)
 
+    def expected_identity(self, release_id):
+        release, deployment = self._manifest(release_id)
+        frozen = release['body'].get('identity') or {}
+        image = ((deployment.get('profile') or {}).get('container') or {}).get('image') or ''
+        digest = deployment.get('image_digest') or (image.split('@', 1)[1] if '@sha256:' in image else None)
+        return {'image_digest': digest, 'model_revision': frozen.get('model_revision')}
+
+    def admit(self, release_id, external=None):
+        """Identity-gated pool membership for every pod of the release (also re-run periodically:
+        replacement and scale-out pods are admitted only after the same check)."""
+        from inferstack.routing.pools import admit_pods
+        provider = self.providers['kubernetes']
+        reports = []
+        targets = [external] if external is not None else \
+            [a['external'] for a in self.serving_allocations(release_id) if a['provider'] == 'kubernetes']
+        for ext in targets:
+            reports.append(admit_pods(provider, ext, self.expected_identity(release_id)))
+        return {'admitted': sum(r.get('admitted', 0) for r in reports),
+                'quarantined': sum(r.get('quarantined', 0) for r in reports),
+                'known': all(r.get('known') for r in reports), 'allocations': reports}
+
     async def retire(self, release_id, *, drain_seconds=30.0):
         """Drain in-flight requests (deadline), then stop and release every serving runtime of the release.
 
@@ -257,6 +298,8 @@ class ReleaseRuntime:
         provider is not configured is marked orphaned (operator-visible), never left active."""
         _, deployment = self._manifest(release_id)
         drained = await self.drain(deployment['id'], drain_seconds) if self.drain else {'drained': None}
+        if self.routing is not None and any(a['provider'] == 'kubernetes' for a in self._owned(release_id)):
+            self.routing.retire(release_id)  # stop routing to the pool before its pods are stopped
         outcomes = []
         for alloc in self.unresolved_allocations(release_id):
             manager = AllocationManager(self.repository, alloc['worker_id'])

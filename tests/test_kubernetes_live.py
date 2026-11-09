@@ -59,3 +59,30 @@ def test_cluster_lifecycle_with_quota_scale_and_drain(namespace):
     assert not provider.alive(external) and provider.pods(external) == []
     assert json.loads(kubectl('get', 'all', '-n', namespace, '-l', f'inferstack.allocation={alloc}',
                               '-o', 'json').stdout)['items'] == []
+
+
+def test_identity_admission_labels_real_pods(namespace):
+    """P3 on a real API server: every pod is enumerated and labelled; a wrong pin quarantines."""
+    from inferstack.routing.pools import ADMITTED_LABEL, RELEASE_LABEL, admit_pods, release_key
+    provider = KubernetesProvider(namespace=namespace, context=CONTEXT)
+    alloc = 'alloc-admit' + uuid.uuid4().hex[:6]
+    spec = {'image': IMAGE, 'container_port': 8000, 'ready_path': '/', 'cpu': '100m', 'memory': '128Mi',
+            'drain_seconds': 1, 'shutdown_seconds': 2, 'replicas': 2,
+            'pod_labels': {RELEASE_LABEL: release_key('rel-live')},
+            'args': ['python', '-m', 'http.server', '8000', '--directory', '/tmp']}
+    external = provider.launch(alloc, spec)
+    try:
+        provider.scale(external, 2, timeout=300)
+        digest = IMAGE.split('@', 1)[1]
+        report = admit_pods(provider, external, {'image_digest': digest})
+        assert report['admitted'] == 2, report
+        admitted = json.loads(kubectl('get', 'pods', '-n', namespace, '-l',
+                                      f'{ADMITTED_LABEL}=true,{RELEASE_LABEL}={release_key("rel-live")}',
+                                      '-o', 'json').stdout)['items']
+        assert len(admitted) == 2
+        wrong = admit_pods(provider, external, {'image_digest': 'sha256:' + '0' * 64})
+        assert wrong['quarantined'] == 2
+        assert json.loads(kubectl('get', 'pods', '-n', namespace, '-l', f'{ADMITTED_LABEL}=true',
+                                  '-o', 'json').stdout)['items'] == []
+    finally:
+        assert provider.stop(external, grace_seconds=60) is True

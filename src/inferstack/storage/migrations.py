@@ -156,6 +156,10 @@ def _serving_evidence(database, db, now):
     ''')
 
 
+def _routing_attribution(database, db, now):
+    _add_columns(database, db, 'serving_events', [('endpoint', 'TEXT')])
+
+
 MIGRATIONS = [
     (1, 'baseline jobs, events and records (v1.6 layout)', _baseline),
     (2, 'record schema versions and immutable revision history', _history),
@@ -163,6 +167,7 @@ MIGRATIONS = [
     (4, 'durable steps, budgets, deadlines, workers and resource allocations', _execution),
     (5, 'integration outbox and bounded optimization triggers', _integrations),
     (6, 'durable per-request serving evidence for rollout windows', _serving_evidence),
+    (7, 'selected endpoint attribution for routed serving evidence', _routing_attribution),
 ]
 LATEST = MIGRATIONS[-1][0]
 

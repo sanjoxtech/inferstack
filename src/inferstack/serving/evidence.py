@@ -120,6 +120,7 @@ class RequestRecord:
     itl_ms: float | None = None
     rejection_source: str | None = None
     status: int | None = None
+    endpoint: str | None = None  # replica chosen by the endpoint picker, when the data plane reports it
 
     def __post_init__(self):
         if self.outcome not in OUTCOMES:
@@ -128,7 +129,7 @@ class RequestRecord:
 
 COLUMNS = ('id', 'at', 'worker', 'release_id', 'deployment_id', 'outcome', 'stream', 'status', 'rejection_source',
            'upstream_first_byte_ms', 'first_content_ms', 'e2e_ms', 'max_gap_ms', 'content_events', 'output_tokens',
-           'itl_ms')
+           'itl_ms', 'endpoint')
 
 
 class EvidenceStore:

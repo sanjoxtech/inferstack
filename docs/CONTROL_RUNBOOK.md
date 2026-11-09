@@ -446,6 +446,37 @@ config revisions and every file digest, so revisions never share an entry.
 Not verified here: a real >2Gi model on a GPU cluster, the streamer loader, and
 storage-class access modes or zone binding for multi-replica topologies.
 
+## Release-scoped routing (P3)
+
+InferStack keeps the only stable/candidate split (per request, in its gateway).
+Within a release, replica choice belongs to the llm-d / Gateway API Inference
+Extension endpoint picker; InferStack does not implement a cache scheduler.
+
+- Each immutable release gets an `InferencePool` (`pool-r-<hash>`) and an
+  `HTTPRoute` on the shared inference Gateway that matches the
+  `x-inferstack-release` header (`routing/pools.py`). Set
+  `profile.routing.release_header` on the deployment (its `base_url` is the
+  shared Gateway) and the InferStack gateway adds the header upstream, so the
+  picker only chooses among that release's pods. The endpoint the picker chose is
+  recorded per request when the data plane reports it
+  (`x-gateway-destination-endpoint`, configurable via `endpoint_headers`).
+- Membership is identity-gated: the pool selects `inferstack.io/admitted=true`,
+  which no pod template sets. `ReleaseRuntime(routing=PoolRouting(...))` applies
+  the pool and is ready only after `admit` enumerates every pod and labels those
+  whose observed image digest and `--revision` match the release's frozen
+  identity. Mismatches get `inferstack.io/quarantine=<reason>`; unready or
+  unreported pods stay out. Call `ReleaseRuntime.admit(release_id)` periodically
+  so replacement and scale-out pods are admitted only after their own check.
+- Retirement deletes the pool and route before stopping pods. A previous stable
+  keeps its pool (warm rollback) until its release is retired.
+- Trust level: kubelet imageID and API-reported container arguments show what was
+  launched, not the tensors resident in GPU memory.
+
+Verified here: object generation, admission logic and pool lifecycle (unit
+tests), and admission labelling of real pods on kind. Not verified: an installed
+llm-d / GAIE data plane, measured cache-affinity gains, and router restart or
+draining behaviour on a GPU cluster.
+
 ## Progressive rollout and FactoryOS feedback
 
 Run the control server with `INFERSTACK_GATEWAY_URL` (and

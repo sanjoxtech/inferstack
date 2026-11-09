@@ -146,6 +146,12 @@ class KubernetesProvider(_CLIProvider):
             raise ValueError('container image must be pinned by digest (image@sha256:...)')
         name = k8s_name(alloc_id)
         labels = {LABEL: alloc_id, INSTANCE_LABEL: name, 'app.kubernetes.io/managed-by': 'inferstack'}
+        extra = dict(spec.get('pod_labels') or {})
+        for key, value in extra.items():  # e.g. inferstack.io/release; never the admission label
+            if key in ('inferstack.io/admitted', LABEL, INSTANCE_LABEL) or \
+                    not re.fullmatch(r'([a-z0-9.-]+/)?[A-Za-z0-9_.-]{1,63}', key) or \
+                    not re.fullmatch(r'[A-Za-z0-9_.-]{0,63}', str(value)):
+                raise ValueError(f'invalid or reserved pod label {key}')
         port = int(spec['container_port'])
         resources = {'limits': {'memory': spec.get('memory', '32Gi'), 'cpu': str(spec.get('cpu', 8))},
                      'requests': {'memory': spec.get('memory', '32Gi'), 'cpu': str(spec.get('cpu', 8))}}
@@ -199,7 +205,7 @@ class KubernetesProvider(_CLIProvider):
         return [
             {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {'name': name, 'labels': labels},
              'spec': {'replicas': int(spec.get('replicas', 1)), 'selector': {'matchLabels': {LABEL: alloc_id}},
-                      'template': {'metadata': {'labels': labels},
+                      'template': {'metadata': {'labels': {**labels, **extra}},
                                    'spec': {'automountServiceAccountToken': False, 'enableServiceLinks': False,
                                             'terminationGracePeriodSeconds': int(spec.get('drain_seconds', 15)) +
                                             int(spec.get('shutdown_seconds', 30)),
@@ -242,6 +248,11 @@ class KubernetesProvider(_CLIProvider):
                                                'volumes': [{'name': 'model-cache',
                                                             'persistentVolumeClaim': {'claimName': claim}},
                                                            {'name': 'scratch', 'emptyDir': {'sizeLimit': '4Gi'}}]}}}}
+
+    def label_pod(self, name, labels):
+        """Set (value) or remove (None) labels on one pod; used for identity-gated pool membership."""
+        args = [f'{k}={v}' if v is not None else f'{k}-' for k, v in sorted(labels.items())]
+        self.run(self.base + ['label', 'pod', name, '--overwrite', *args])
 
     def startup_phases(self, external):
         """Per-pod startup breakdown from the API's own timestamps (seconds after creation):

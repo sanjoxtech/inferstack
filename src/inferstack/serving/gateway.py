@@ -112,6 +112,19 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
         key = spec_body['id']
         headers = {'X-InferStack-Release': release['id'], 'X-Request-Id': rid, 'X-InferStack-Deployment': key}
         upstream = {'X-Request-Id': rid}
+        # Release-scoped pool routing: the shared inference Gateway matches this header to the
+        # release's own InferencePool, so the picker only chooses among that release's pods.
+        routing = ((spec_body.get('profile') or {}).get('routing') or {})
+        if routing.get('release_header'):
+            from inferstack.routing.pools import RELEASE_HEADER
+            upstream[RELEASE_HEADER] = routing['release_header']
+
+        def endpoint_of(engine):
+            got = getattr(engine, 'last_headers', None) or {}
+            for name in routing.get('endpoint_headers') or ('x-gateway-destination-endpoint',):
+                if got.get(name):
+                    return str(got[name])[:200]
+            return None
         trace = request.headers.get('traceparent', '')
         if _TRACEPARENT.match(trace):
             upstream['traceparent'] = headers['traceparent'] = trace
@@ -177,7 +190,8 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
                     if outcome == 'ok' and (live.error or not live.done):
                         outcome = 'error'  # engine error event or stream ended without its terminal event
                     admission.release(key, ok=outcome in ('ok', 'cancelled'), probe=probe, ttfb_ms=first_byte_ms)
-                    await record(RequestRecord(release['id'], key, outcome, True, status=200, **live.phases(ended)))
+                    await record(RequestRecord(release['id'], key, outcome, True, status=200,
+                                               endpoint=endpoint_of(engine), **live.phases(ended)))
             # Existing streams remain pinned during route changes; no worker is killed.
             return StreamingResponse(generate(), media_type='text/event-stream', headers=headers)
         outcome, status, tokens = 'error', 502, None
@@ -201,7 +215,7 @@ def create_gateway(repository, token, engine_factory=ManagedEngine, admission=No
             admission.release(key, ok=ok, probe=probe, ttfb_ms=latency if ok else None)
             await engine.close()
             # Non-streamed: no first-content phase exists; only full completion latency.
-            await record(RequestRecord(release['id'], key, outcome, False, status=status,
+            await record(RequestRecord(release['id'], key, outcome, False, status=status, endpoint=endpoint_of(engine),
                                        e2e_ms=latency if outcome == 'ok' else None, output_tokens=tokens))
 
     @app.post('/v1/completions')
