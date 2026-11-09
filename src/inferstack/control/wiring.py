@@ -92,3 +92,21 @@ def build_fetcher(config):
         return None
     from inferstack.research.fetch import SafeFetcher
     return SafeFetcher(**{k: v for k, v in (config.get('research') or {}).items() if k != 'retrieval'})
+
+
+def implementation_desk(repository, executor=None, *, source_root=None, state='.inferstack'):
+    """H3 implementer handoff wired to the isolated executor's pinned source and sandbox.
+
+    Returns None when there is no pinned source tree (endpoint-only executor): proposals
+    are then recorded as `needs_implementation` without a handoff."""
+    from inferstack.implementation import ImplementationDesk
+    if executor is not None and getattr(executor, 'source_revision', None):
+        return ImplementationDesk(repository, source_root=executor.source_root, sandbox=executor.sandbox,
+                                  work_root=Path(executor.work_root) / 'implementations',
+                                  test_timeout=executor.test_timeout)
+    if source_root:
+        from inferstack.execution.sandbox import Sandbox
+        return ImplementationDesk(repository, source_root=Path(source_root).resolve(),
+                                  sandbox=Sandbox(require_filesystem_isolation=True),
+                                  work_root=Path(state) / 'implementations')
+    return None

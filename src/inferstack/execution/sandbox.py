@@ -268,11 +268,15 @@ class Sandbox:
         finally:
             _ALLOCATION.reset(token)
 
-    def run(self, argv, *, cwd, home, env=None, offline=True, timeout=None, log=None, extra_writable=(), readable=()):
-        """Run a build/test step inside the boundary. Returns (returncode, output). Never raises on non-zero."""
+    def run(self, argv, *, cwd, home, env=None, offline=True, timeout=None, log=None, extra_writable=(), readable=(),
+            readable_files=()):
+        """Run a build/test step inside the boundary. Returns (returncode, output). Never raises on non-zero.
+
+        `readable_files` grants read access to single files (e.g. an implementer program)
+        without exposing their directories."""
         argv = self.wrap(argv, workspace=home, offline=offline,
                          extra_writable=[cwd, *extra_writable] if Path(cwd).resolve() != Path(home).resolve()
-                         else extra_writable, readable=[*self.readable, *readable])
+                         else extra_writable, readable=[*self.readable, *readable], readable_files=readable_files)
         limits = self.limits
 
         def preexec():

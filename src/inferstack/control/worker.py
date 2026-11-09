@@ -22,7 +22,8 @@ from inferstack.control.store import LeaseLost
 
 class OptimizationWorker:
     def __init__(self, repository, planner, executor, verifier, *, lease_seconds=30, max_iterations=3,
-                 worker_id=None, allocations=None, provider=None, faults=None, fetcher=None):
+                 worker_id=None, allocations=None, provider=None, faults=None, fetcher=None, implementations=None,
+                 source_revision=None):
         if lease_seconds < .3 or not 1 <= max_iterations <= 20:
             raise ValueError('invalid worker bounds')
         self.repository = repository
@@ -32,6 +33,9 @@ class OptimizationWorker:
         self.allocations, self.provider = allocations, provider
         self.faults = faults or (lambda point: None)
         self.fetcher = fetcher
+        # H3: bounded implementer handoff (ImplementationDesk) and the pinned source revision
+        # every handoff is made against. Without them a proposal is only recorded.
+        self.implementations, self.source_revision = implementations, source_revision
         self.history = {}
 
     def record(self, job, stage, body):
@@ -166,6 +170,11 @@ class OptimizationWorker:
             request['evidence_ids'] += [s['evidence_id'] for s in sources]
         for iteration in range(self.max_iterations):
             async def plan_fn(j, key, iteration=iteration):
+                if iteration == 0 and request.get('implementation_ids'):
+                    plan = self.implemented_plan(request, history)
+                    self.record(job, 'planned', {'iteration': iteration, 'plan': plan,
+                                                 'implementation_ids': request['implementation_ids']})
+                    return plan
                 remaining = self.repository.remaining(job['id'])
                 try:
                     plan = await self.planner.plan({**request, 'budget_remaining': remaining}, list(history))
@@ -181,10 +190,15 @@ class OptimizationWorker:
                 if isinstance(plan, dict) and plan.get('executable') is False:
                     # Nothing to run yet: the proposal waits for an implementation artifact
                     # (bounded implementer handoff, H3). It is recorded, never executed.
+                    handoffs = await self.step(job, f'iter{iteration}.handoff',
+                                               lambda j, key, plan=plan: self.request_implementation(j, plan),
+                                               idempotent=True)
                     self.record(job, 'needs_implementation', {'iteration': iteration,
-                                                              'proposals': plan.get('needs_implementation')})
+                                                              'proposals': plan.get('needs_implementation'),
+                                                              **handoffs})
                     return {'decision': 'needs_implementation', 'experiments': history,
-                            'proposal': plan, 'stop_reason': 'source change has no validated patch artifact'}
+                            'proposal': plan, 'stop_reason': 'source change has no validated patch artifact',
+                            **handoffs}
                 outcome = await self.step(
                     job, f'iter{iteration}.experiment',
                     lambda j, key, plan=plan, iteration=iteration: self.experiment(j, key, plan, iteration),
@@ -198,6 +212,42 @@ class OptimizationWorker:
                 return {'decision': 'keep', 'experiments': history}
         return {'decision': history[-1]['verdict']['decision'], 'experiments': history,
                 'stop_reason': 'iteration budget exhausted'}
+
+    async def request_implementation(self, job, plan):
+        """Open one bounded implementer handoff per proposal (nothing is executed here)."""
+        if self.implementations is None or not self.source_revision:
+            return {'implementation_ids': [], 'handoff_error': 'no implementation desk configured'}
+        ids, errors = [], []
+        for proposal in plan.get('needs_implementation') or []:
+            try:
+                record = self.implementations.request(
+                    proposal, plan, baseline_id=plan['baseline_id'], source_revision=self.source_revision,
+                    job_id=job['id'], evidence_refs=plan.get('evidence_ids') or ())
+                ids.append(record['id'])
+            except (KeyError, ValueError) as exc:
+                errors.append({'action_id': proposal.get('action_id'), 'error': str(exc)[:500]})
+        return {'implementation_ids': ids, 'handoff_errors': errors}
+
+    def implemented_plan(self, request, history):
+        """Resume with validated implementer artifacts: the recorded plan with the exact patches."""
+        from inferstack.implementation import ValidationFailed
+        from inferstack.memory.experience import experience
+        from inferstack.optimization.dag import PlanRejected, validate_plan
+        if self.implementations is None:
+            raise PlanRejected('implementation_ids given but no implementation desk is configured')
+        try:
+            raw = self.implementations.executable_plan(request['implementation_ids'])
+        except (KeyError, ValueError, ValidationFailed) as exc:
+            raise PlanRejected(f'cannot resume from implementations: {exc}') from None
+        baseline_id = request['deployment_id']
+        failed = {e['plan'].get('treatment_signature') for e in history
+                  if e['verdict'].get('decision') != 'retest' and e['plan'].get('treatment_signature')}
+        failed |= set(experience(self.repository, baseline_id, limit=10)['failed_here_signatures'])
+        _, plan = validate_plan(raw, repository=self.repository, baseline_id=baseline_id,
+                                candidate_ids=tuple(getattr(self.planner, 'candidate_ids', ()) or ()),
+                                allowed_evidence=tuple(raw.get('evidence_ids') or ()), history_signatures=failed,
+                                production_ids=tuple(getattr(self.planner, 'production_ids', ()) or ()))
+        return plan
 
     # --- job lifecycle ------------------------------------------------------------
 

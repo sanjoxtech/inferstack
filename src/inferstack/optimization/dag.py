@@ -176,7 +176,7 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
                                        f'of {technique_id}')
             else:
                 files = p.get('files')
-                if set(p) - {'technique_id', 'files', 'description', 'patch_sha256', 'tests'} \
+                if set(p) - {'technique_id', 'files', 'description', 'patch_sha256', 'tests', 'implementation_id'} \
                         or not isinstance(files, list) or not files:
                     raise PlanRejected(f'{action.id}: source_patch needs technique_id, files, description')
                 for path in files:
@@ -188,6 +188,18 @@ def validate_plan(raw: dict, *, repository, baseline_id, candidate_ids, allowed_
                         check_patch(repository.read_artifact(p['patch_sha256']).decode(), files)
                     except (ValueError, FileNotFoundError, UnicodeDecodeError) as exc:
                         raise PlanRejected(f'{action.id}: stored patch rejected: {exc}') from None
+                if 'implementation_id' in p:
+                    # Bound to a validated implementer handoff: the exact candidate artifact,
+                    # files and source revision must match what was validated.
+                    try:
+                        impl = repository.read('implementation', p['implementation_id'])['body']
+                    except KeyError:
+                        raise PlanRejected(f"{action.id}: unknown implementation {p['implementation_id']!r}") from None
+                    candidate = impl.get('candidate') or {}
+                    if impl['state'] != 'validated' or candidate.get('patch_sha256') != p.get('patch_sha256') \
+                            or sorted(files) != sorted(impl['proposal']['files']):
+                        raise PlanRejected(f"{action.id}: patch does not match validated implementation "
+                                           f"{p['implementation_id']}")
         elif action.type == 'measure':
             if set(p) - {'workload_ref', 'objective_ref', 'repeats'}:
                 raise PlanRejected(f'{action.id}: measure accepts workload_ref, objective_ref, repeats')

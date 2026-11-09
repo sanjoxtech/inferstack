@@ -554,11 +554,44 @@ class Problem(Record):
         return self
 
 
+class Implementation(Record):
+    """Bounded implementer handoff for one source-change proposal (harness H3).
+
+    The controller fixes the handoff (pinned source revision, allowed files, limits and
+    independent acceptance tests). An implementer (a human diff or a coding agent) can
+    only submit attempts; each is journaled. A validated attempt yields an immutable,
+    content-addressed candidate manifest. A different diff is a different candidate."""
+    KIND = 'implementation'
+    REFS = {'baseline_ref': 'deployment', 'parent_ref': 'implementation'}
+    PINNED = {'baseline_ref'}
+    job_id: str | None = None
+    baseline_ref: str
+    parent_ref: str | None = None
+    proposal: dict
+    plan: dict
+    handoff: dict
+    handoff_sha256: str = Field(pattern=SHA256)
+    state: Literal['requested', 'implementing', 'validated', 'exhausted', 'cancelled'] = 'requested'
+    attempts: list[dict] = Field(default_factory=list, max_length=50)
+    candidate: dict | None = None
+    created_at: float = Field(gt=0)
+
+    @model_validator(mode='after')
+    def candidate_only_when_validated(self):
+        if (self.state == 'validated') != (self.candidate is not None):
+            raise ValueError('a candidate manifest exists exactly when the implementation is validated')
+        if not re.fullmatch(r'[0-9a-f]{40}', str(self.handoff.get('source_revision', ''))):
+            raise ValueError('handoff.source_revision must be a full commit hash')
+        if not self.handoff.get('allowed_files'):
+            raise ValueError('handoff.allowed_files is required')
+        return self
+
+
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
 for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
              Technique, TechniqueV2,
              Plan, Trial, Release, Route, Shadow, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue,
-             Problem):
+             Problem, Implementation):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}
 

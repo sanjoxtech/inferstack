@@ -10,11 +10,14 @@ from inferstack.storage.repository import Repository
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention','outbox-deliver',
-                                          'triggers-tick','context','experience'])
+                                          'triggers-tick','context','experience','implementation'])
     parser.add_argument('--deployment',help='context/experience: deployment id')
     parser.add_argument('--limit',type=int,default=20,help='experience: maximum items returned')
     parser.add_argument('--treatment',help='experience: only this treatment signature')
     parser.add_argument('--workload',type=Path,help='context: JSON workload fixture (list of cases)')
+    parser.add_argument('--id',help='implementation: implementation record id')
+    parser.add_argument('--diff',type=Path,help='implementation: submit this unified diff as an attempt')
+    parser.add_argument('--source-root',type=Path,help='implementation: pinned source checkout used for validation')
     parser.add_argument('--callback-url',help='outbox-deliver: FactoryOS outcome endpoint (https)')
     parser.add_argument('--callback-token-env',default='FACTORYOS_CALLBACK_TOKEN')
     parser.add_argument('--max-active',type=int,default=2,help='triggers-tick: global unfinished triggered jobs')
@@ -70,7 +73,11 @@ def main():
                 host_gpu_devices({},'local')
             runtime=ReleaseRuntime(repo,providers['local'],providers=providers,log_root=state/'release-logs',
                                    attest=attest,drain=drain,undrain=undrain,gpu_devices=gpu_devices)
-        app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest,release_runtime=runtime) \
+        from inferstack.control.wiring import implementation_desk
+        desk=implementation_desk(repo,source_root=os.environ.get('INFERSTACK_SOURCE_ROOT'),state=state) \
+            if args.action=='serve' else None
+        app=create_control_app(repo,token,rollout_observer=observer,rollout_attest=attest,release_runtime=runtime,
+                               implementations=desk) \
             if args.action=='serve' \
             else create_gateway(repo,token)
         uvicorn.run(app,host=args.host,port=args.port)
@@ -92,6 +99,16 @@ def main():
             observe=gateway_slo_observer(os.environ['INFERSTACK_GATEWAY_URL'],
                                          os.environ.get('INFERSTACK_GATEWAY_TOKEN') or os.environ.get('INFERSTACK_CONTROL_TOKEN',''))
         print(json.dumps(asyncio.run(TriggerService(repo,observe=observe,max_active=args.max_active).tick()),indent=2))
+    elif args.action=='implementation':
+        if not args.id:parser.error('--id required')
+        from inferstack.control.wiring import implementation_desk
+        if args.diff:
+            desk=implementation_desk(repo,source_root=args.source_root or '.',state=state)
+            out=desk.submit(args.id,args.diff.read_text(),implementer={'kind':'human','via':'cli'})
+        else:
+            from inferstack.implementation import ImplementationDesk
+            out=ImplementationDesk(repo).read(args.id)
+        print(json.dumps(out,indent=2,default=str))
     elif args.action in ('context','experience'):
         if not args.deployment:parser.error('--deployment required')
         if args.action=='experience':
@@ -145,7 +162,7 @@ def main():
                 planner=ToolPlanner(repo,create_provider(config['provider']),telemetry=telemetry,**config['planner'])
             else:
                 planner=ProviderPlanner(repo,**config['planner'])
-            from inferstack.control.wiring import host_gpu_devices
+            from inferstack.control.wiring import host_gpu_devices, implementation_desk
             executor=build_executor(repo,config,state=state,allocations=allocations,provider=provider,
                                     pricing=pricing,gpu_name=infra.get('gpu_name'),
                                     gpu_devices=host_gpu_devices(config,provider.name))
@@ -153,7 +170,9 @@ def main():
             try:
                 result=await OptimizationWorker(repo,planner,executor,verifier,lease_seconds=lease,
                     max_iterations=config.get('max_iterations',3),worker_id=worker_id,
-                    allocations=allocations,provider=provider,fetcher=build_fetcher(config)).once()
+                    allocations=allocations,provider=provider,fetcher=build_fetcher(config),
+                    implementations=implementation_desk(repo,executor,state=state),
+                    source_revision=getattr(executor,'source_revision',None)).once()
                 print(json.dumps(result,indent=2))
             finally:
                 await planner.close()

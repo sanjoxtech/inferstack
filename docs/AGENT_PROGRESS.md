@@ -16,6 +16,19 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-09 10:09 UTC — Claude Code (implementation agent)
+- Task: H3 step 1 (implementer handoff) complete and committed.
+- Evidence: tests/test_harness_h3.py 18 passed; full suite 380 passed / 18 skipped; probes 36 passed (macOS, CPU).
+- Added: control API /control/implementations/{id} (GET, /patch, /revise, /cancel, /resume); CLI `implementation --id [--diff --source-root]`; serve uses INFERSTACK_SOURCE_ROOT for validation.
+- Next: wait for CI, then H3 step 2 (verifier-driven parent/child hypotheses + controller stop policy).
+
+### 2026-11-09 10:03 UTC — Claude Code (implementation agent)
+- Task: H3 step 1, implementer handoff (uncommitted, in progress).
+- Done so far: new `implementation` record + `src/inferstack/implementation/handoff.py` (ImplementationDesk: controller-owned handoff, journaled attempts, isolated validation, immutable content-addressed candidate; CommandImplementer = coding-agent path in the sandbox). Worker opens a handoff for a needs_implementation plan and resumes from `implementation_ids` with the exact patch. dag binds `implementation_id` to the validated patch. Executor and desk share `materialize_source`. Sandbox.run gained `readable_files`.
+- Evidence: tests/test_harness_h3.py 17 passed (macOS Seatbelt).
+- Files I am editing (please avoid): implementation/, control/worker.py, optimization/dag.py, execution/{patches,executor,sandbox}.py, contracts/records.py.
+- Next: control API + CLI for implementations, full suite, plan status, commit, CI.
+
 ### 2026-11-09 09:53 UTC — Claude Code (implementation agent)
 - Task: H2 verified on CI (8dfea02 green: py3.11, py3.12, Docker image, kind, lock).
 - State: H2 complete. Waiting for owner go-ahead on H3.

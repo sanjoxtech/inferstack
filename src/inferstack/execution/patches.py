@@ -63,3 +63,43 @@ def check_patch(diff: str, declared_files) -> set[str]:
     if undeclared:
         raise PatchRejected(f'patch touches files the plan did not declare: {sorted(undeclared)}')
     return paths
+
+
+PROTECTED_TREES = ('tests', 'src/inferstack/evaluation')
+
+
+def _export(source_root, revision, dest, *paths):
+    import subprocess
+    archive = subprocess.run(['git', '-C', str(source_root), 'archive', '--format=tar', revision, *paths],
+                             capture_output=True)
+    if archive.returncode:
+        raise RuntimeError(f"cannot export {' '.join(paths) or 'source'} at revision {revision}")
+    subprocess.run(['tar', '-x', '-C', str(dest)], input=archive.stdout, check=True)
+
+
+def materialize_source(source_root, revision, diff, src):
+    """Apply an inspected diff to a pristine export of `revision` in `src`.
+
+    Exports the revision when `src` does not exist yet (several patches can stack), then
+    restores tests and the evaluator from the pinned revision: a patch never changes the
+    code that judges it. Raises RuntimeError with the reason on failure."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+    src = Path(src)
+    if not src.exists():
+        src.mkdir(parents=True)
+        _export(source_root, revision, src)
+        subprocess.run(['git', 'init', '-q', str(src)], check=True)
+    apply = subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], cwd=src, input=diff.encode(),
+                           capture_output=True)
+    if apply.returncode:
+        raise RuntimeError(f'patch does not apply: {apply.stderr.decode()[-500:]}')
+    for protected in PROTECTED_TREES:
+        shutil.rmtree(src / protected, ignore_errors=True)
+        try:
+            _export(source_root, revision, src, protected)
+        except RuntimeError:
+            if (Path(source_root) / protected).exists():
+                raise
+    return src

@@ -37,7 +37,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from inferstack.execution.patches import check_patch
+from inferstack.execution.patches import check_patch, materialize_source
 from inferstack.execution.sandbox import Sandbox
 from inferstack.optimization.experiment import EndpointExecutor
 
@@ -114,27 +114,10 @@ class IsolatedExecutor(EndpointExecutor):
             raise BuildFailed(f"{action['id']}: source_patch has no stored patch (patch_sha256)")
         diff = self.repository.read_artifact(params['patch_sha256']).decode()
         touched = check_patch(diff, params['files'])
-        src = ws / 'src'
-        if not src.exists():
-            archive = subprocess.run(['git', '-C', str(self.source_root), 'archive', '--format=tar',
-                                      self.source_revision], capture_output=True)
-            if archive.returncode:
-                raise BuildFailed(f'cannot export source revision {self.source_revision}')
-            src.mkdir(parents=True)
-            subprocess.run(['tar', '-x', '-C', str(src)], input=archive.stdout, check=True)
-            subprocess.run(['git', 'init', '-q', str(src)], check=True)
-        apply = subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], cwd=src, input=diff.encode(),
-                               capture_output=True)
-        if apply.returncode:
-            raise BuildFailed(f"{action['id']}: patch does not apply: {apply.stderr.decode()[-500:]}")
-        # Tests and evaluator always come from the pinned revision, never the patch.
-        for protected in ('tests', 'src/inferstack/evaluation'):
-            shutil.rmtree(src / protected, ignore_errors=True)
-            archive = subprocess.run(['git', '-C', str(self.source_root), 'archive', '--format=tar',
-                                      self.source_revision, protected], capture_output=True)
-            if archive.returncode:
-                raise BuildFailed(f'cannot restore {protected} from {self.source_revision}')
-            subprocess.run(['tar', '-x', '-C', str(src)], input=archive.stdout, check=True)
+        try:
+            src = materialize_source(self.source_root, self.source_revision, diff, ws / 'src')
+        except RuntimeError as exc:
+            raise BuildFailed(f"{action['id']}: {exc}") from None
         self._artifact(artifacts, f"{action['id']}.diff", diff)
         code, out = self.sandbox.run([sys.executable, '-m', 'compileall', '-q', *sorted(touched)], cwd=src, home=ws,
                                      log=log, timeout=300)

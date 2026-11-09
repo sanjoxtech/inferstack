@@ -321,3 +321,86 @@ research text, idempotency, API) and full suite 398 passed / 18 skipped (macOS, 
 Limits: rule-based attribution with fixed thresholds; no profiler is invoked yet
 (measurement requests are recorded for an operator or a later campaign); kv-cache
 attribution needs engine prefix-cache telemetry to become evidenced.
+
+### H3 step 1: implementer handoff, 9 November 2026 (implementation agent)
+
+This is the first H3 deliverable the plan asks for: the patch-artifact handoff and
+executable-plan validation, built before autonomous code generation or a broader search
+policy. Code is in `src/inferstack/implementation/` with a new `implementation` record (v1).
+Acceptance tests are in `tests/test_harness_h3.py`.
+
+- **Controller-owned handoff.** A plan whose `source_patch` has no stored patch still
+  ends as `needs_implementation`. The worker now also opens one `implementation`
+  record per proposal (a durable, idempotent step). The record fixes:
+  - the pinned source revision and baseline revision;
+  - the hypothesis, technique and evidence references;
+  - the allowed files (patchable roots only);
+  - the limits: attempts, wall time and patch size;
+  - the independent acceptance tests (controller defaults per root, plus planner-named tests).
+
+  The implementer can only submit attempts.
+- **Two implementer paths, one validation.** A human diff (`POST
+  /control/implementations/{id}/patch`, or the CLI `implementation --id --diff`) and a
+  coding-agent command (`CommandImplementer`) feed the same validation. The agent runs
+  in the sandbox on a pinned export, and only its program file is readable. Its git
+  metadata lives outside the writable workspace.
+
+  Validation has four steps:
+  1. Inspect the diff (confinement rules unchanged).
+  2. Apply it to a pristine export with tests and the evaluator restored from the pinned revision.
+  3. Compile it.
+  4. Run the independent tests, then any candidate-owned tests.
+
+  Candidate tests supplement the independent tests and cannot replace them. Validation
+  fails closed without a filesystem isolation boundary.
+- **Immutable, content-addressed candidate.** A validated attempt stores:
+  - the diff;
+  - the manifest (source revision, patch hash, touched files, tests, handoff hash);
+  - the validation log.
+
+  `candidate_id` is derived from the source revision, the patch, the dependencies and
+  the candidate tests. Resubmitting the same diff is idempotent. A different diff is
+  refused (`409`); it needs `revise`, which creates a child handoff with `parent_ref`.
+- **Journaled attempts.** Each attempt is recorded as `in_progress` before work
+  starts. It ends with one of these outcomes:
+  - `validated`
+  - `rejected` (with the reason)
+  - `failed`
+  - `timeout`
+  - `cancelled`
+  - `abandoned`: a later attempt found it interrupted. Its late output is refused, so
+    recovery never silently regenerates a treatment.
+
+  Wall time and reported provider tokens are recorded per attempt. When the limit is
+  reached the record is `exhausted`.
+- **Exact artifact at execution.** `POST /control/implementations/{id}/resume` queues a
+  job (idempotent per candidate) that rebuilds the recorded plan with the validated
+  patch, the controller's tests and `implementation_id`. Then:
+  - `validate_plan` rejects any plan whose patch, files or state disagree with the
+    validated implementation;
+  - an unchanged baseline revision is required;
+  - earlier failed signatures still block repeats;
+  - the executor re-applies and re-tests that exact patch.
+
+Evidence: 18 acceptance tests. They cover:
+- the handoff contract;
+- the human and agent paths;
+- wrong, uncompilable, out-of-scope and empty diffs;
+- candidate tests that cannot override the independent tests;
+- attempt limits, crash/abandon and cancel;
+- validation that refuses to run without isolation;
+- tamper detection on the plan;
+- the worker's handoff and resume path;
+- the agent's timeout and write-escape;
+- the API: conflicts, idempotency, auth and a missing validator.
+
+The full suite gave 380 passed / 18 skipped, and the contract probes 36 passed (macOS
+Seatbelt, CPU).
+
+Limits:
+- No coding agent is bundled. `CommandImplementer` runs whatever command the operator
+  configures (offline by default; network and credentials are an explicit opt-in).
+- Source candidates cannot add dependencies; those still go through `plugin_install`.
+- Remaining H3 work: the parent/child hypothesis chain driven by the verifier's
+  diagnosis, the controller-owned stop policy, and the induced kernel/cache-bottleneck
+  demonstration.

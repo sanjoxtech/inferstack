@@ -66,7 +66,7 @@ ACTIONABLE={'latency','throughput','capacity','cost'}
 
 
 def create_control_app(repository:Repository,token:str,fetcher=None,rollout_observer=None,rollout_attest=None,
-                       release_runtime=None):
+                       release_runtime=None,implementations=None):
     if not token:raise ValueError('control API token required')
     from inferstack.research import EvidenceStore,EvidenceIntegrityError,SafeFetcher
     evidence_store=EvidenceStore(repository)
@@ -265,6 +265,55 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
         try:return ProblemDesk(repository).add_observations(problem_id,body.get('observations') or {})
         except KeyError:raise HTTPException(404,'unknown problem')
         except ValueError as exc:raise HTTPException(409,str(exc))
+
+    # --- H3: bounded implementer handoff ------------------------------------------------
+    from inferstack.implementation import ArtifactLocked,AttemptLimit,ImplementationDesk
+    readonly_desk=ImplementationDesk(repository)
+
+    def _impl(impl_id):
+        try:return readonly_desk.read(impl_id)
+        except KeyError:raise HTTPException(404,'unknown implementation')
+
+    @app.get('/control/implementations/{impl_id}',dependencies=auth)
+    def read_implementation(impl_id:str):
+        return _impl(impl_id)
+
+    @app.post('/control/implementations/{impl_id}/patch',dependencies=auth)
+    def submit_patch(impl_id:str,body:dict):
+        """Human/operator implementer: submit a unified diff (and optional candidate tests).
+        It is validated in an isolated workspace before it can become the candidate."""
+        _impl(impl_id)
+        if implementations is None:raise HTTPException(503,'no implementation validator configured')
+        diff=body.get('diff')
+        if not isinstance(diff,str):raise HTTPException(422,'diff (unified diff text) required')
+        tests=body.get('candidate_tests') or {}
+        if not isinstance(tests,dict):raise HTTPException(422,'candidate_tests must be an object')
+        try:return implementations.submit(impl_id,diff,implementer={'kind':'human','via':'control_api'},
+                                          candidate_tests=tests)
+        except (ArtifactLocked,AttemptLimit) as exc:raise HTTPException(409,str(exc))
+
+    @app.post('/control/implementations/{impl_id}/revise',dependencies=auth)
+    def revise_implementation(impl_id:str):
+        _impl(impl_id)
+        return readonly_desk.revise(impl_id)
+
+    @app.post('/control/implementations/{impl_id}/cancel',dependencies=auth)
+    def cancel_implementation(impl_id:str):
+        _impl(impl_id)
+        try:return (implementations or readonly_desk).cancel(impl_id)
+        except ArtifactLocked as exc:raise HTTPException(409,str(exc))
+
+    @app.post('/control/implementations/{impl_id}/resume',dependencies=auth)
+    def resume_implementation(impl_id:str):
+        """Queue an experiment job that executes exactly the validated candidate."""
+        record=_impl(impl_id)['body']
+        if record['state']!='validated':raise HTTPException(409,f"implementation is {record['state']}, not validated")
+        candidate=record['candidate']
+        job_id=repository.submit('implementation:'+candidate['candidate_id'],{
+            'deployment_id':record['baseline_ref'].split('@')[0],'implementation_ids':[impl_id],
+            'goal':f"Measure validated candidate {candidate['candidate_id']} for: {record['handoff']['hypothesis'][:500]}",
+            'source':'implementation','evidence_ids':list(record['plan'].get('evidence_ids') or [])})
+        return {'job_id':job_id,'candidate_id':candidate['candidate_id']}
 
     from inferstack.integrations.outbox import Outbox
     from inferstack.integrations.triggers import TriggerService
