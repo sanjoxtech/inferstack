@@ -176,7 +176,9 @@ def test_factoryos_feedback_contract(tmp_path):
     assert status['status'] == 'pending' and 'explicit progressive rollout' in status['note']
     quality = client.post('/control/feedback', headers=h, json=issue(issue_id='fos-2', idempotency_key='fos-2',
                                                                      category='quality')).json()
-    assert quality == {'issue_id': 'fos-2', 'contract_version': 1, 'job_id': None, 'status': 'recorded_not_actionable'}
+    assert {k: quality[k] for k in ('issue_id', 'contract_version', 'job_id', 'status')} == \
+        {'issue_id': 'fos-2', 'contract_version': 1, 'job_id': None, 'status': 'recorded_not_actionable'}
+    assert quality['problem']['state'] == 'needs_measurement' and quality['problem']['measurement_requests']
     assert client.post('/control/feedback', headers=h, json=issue(issue_id='fos-3', category='mystery')).status_code == 422
     assert client.post('/control/feedback', headers=h, json={**issue(issue_id='fos-4'), 'approve': True}).status_code == 422
     assert client.post('/control/feedback', headers=h,

@@ -290,3 +290,34 @@ treatment is rejected. Full suite plus earlier probes: 376 passed / 18 skipped (
 CPU). Limits: no semantic/vector search (relational and bounded by design); workload
 applicability is compared by fixture digest only; live evidence appears only where
 gateways record it.
+
+### H2 — 9 November 2026 (implementation agent)
+
+Implemented in `src/inferstack/diagnosis/` with a new `problem` record (v1). Acceptance
+tests: `tests/test_harness_h2.py`.
+
+- **One intake.** FactoryOS/operator/telemetry issues (`POST /control/feedback`) and
+  submitted research (`POST /control/research`) both become `problem` records with
+  lineage to their feedback or evidence record. Intake is idempotent per source.
+- **Diagnosis before treatment** (`diagnose.py`, deterministic, numbers only): owner
+  `inference` / `model` / `application` / `unknown`; for inference symptoms a
+  bottleneck (`queue_admission`, `prefill`, `decode`, `kv_cache_reuse`,
+  `network_streaming`, `capacity`) or `uncertain`; confidence, the signals used, and
+  alternatives. Live gateway evidence (>= 50 requests) is used when recorded.
+- **Routing by diagnosis only**: evidenced inference symptoms queue one job whose goal
+  is built from the category, numeric observations and the structured diagnosis (no
+  submitter free text); model problems route to Model Foundry and application problems
+  to FactoryOS with no inference job; a quality regression after an inference release
+  is `diagnosed` with a compare/rollback recommendation; insufficient evidence gives
+  `needs_measurement` with explicit requests, and `POST /control/problems/{id}/observations`
+  re-diagnoses (new revision).
+- **Research is a claim**: stored as untrusted, unverified evidence; `claim_recorded`;
+  the record's `authority` is fixed to no execution and no dependency install (the
+  schema rejects anything else); optional compatibility assessment for a target.
+
+Evidence: 14 acceptance tests (queue/decode/prefill attribution from live evidence,
+measurement-then-queue, application/model routing, release regression, prompt-injection
+research text, idempotency, API) and full suite 398 passed / 18 skipped (macOS, CPU).
+Limits: rule-based attribution with fixed thresholds; no profiler is invoked yet
+(measurement requests are recorded for an operator or a later campaign); kv-cache
+attribution needs engine prefix-cache telemetry to become evidenced.

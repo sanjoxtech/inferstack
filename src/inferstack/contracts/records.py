@@ -527,10 +527,38 @@ class InferenceIssue(Record):
     reported_at: float = Field(gt=0)
 
 
+class Problem(Record):
+    """One typed problem/research intake item (harness H2): a symptom or a technique claim,
+    with its source lineage, diagnosis, ownership and routing. Submitted text never
+    carries authority: `authority` is fixed by the intake, not by the content."""
+    KIND = 'problem'
+    REFS = {'deployment_ref': 'deployment', 'feedback_ref': 'feedback', 'evidence_ref': 'evidence'}
+    source: Literal['factoryos', 'operator', 'telemetry', 'research']
+    kind: Literal['symptom', 'technique_claim']
+    deployment_ref: str | None = None
+    feedback_ref: str | None = None
+    evidence_ref: str | None = None
+    category: Literal['latency', 'throughput', 'error', 'quality', 'capacity', 'cost', 'unknown'] = 'unknown'
+    summary: str = Field(default='', max_length=2000)
+    diagnosis: dict = Field(default_factory=dict)
+    state: Literal['needs_measurement', 'diagnosed', 'routed_elsewhere', 'queued', 'claim_recorded'] = \
+        'needs_measurement'
+    job_id: str | None = None
+    authority: dict = Field(default_factory=lambda: {'execute': False, 'install_dependencies': False})
+    created_at: float = Field(gt=0)
+
+    @model_validator(mode='after')
+    def no_authority_from_intake(self):
+        if any(self.authority.get(k) for k in ('execute', 'install_dependencies')):
+            raise ValueError('an intake item cannot grant execution or dependency-install authority')
+        return self
+
+
 SCHEMAS: dict[str, dict[int, type[Record]]] = {}
 for _cls in (ModelArtifact, HardwareEnvironment, Deployment, WorkloadSpec, Objective, Evidence, EvidenceV2,
              Technique, TechniqueV2,
-             Plan, Trial, Release, Route, Shadow, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue):
+             Plan, Trial, Release, Route, Shadow, Rollout, RolloutV2, RolloutV3, ResourceAllocation, InferenceIssue,
+             Problem):
     SCHEMAS.setdefault(_cls.KIND, {})[_cls.VERSION] = _cls
 CURRENT_VERSIONS = {kind: max(versions) for kind, versions in SCHEMAS.items()}
 

@@ -220,20 +220,51 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
             if repository.read('feedback',issue.issue_id)['body']!=issue.model_dump(mode='json'):
                 raise HTTPException(409,'issue_id reused with different content')
         record=repository.read('feedback',issue.issue_id)
-        job_id=None
-        if issue.category in ACTIONABLE and issue.deployment_ref:
-            deployment_id,_=parse_ref(issue.deployment_ref)
-            goal=(f'Address {issue.category} issue {issue.issue_id} reported by {issue.source}. '
-                  f'Observations: {json.dumps(issue.observations,sort_keys=True)[:2000]}')
-            payload={'deployment_id':deployment_id,'goal':goal,'source':issue.source,
-                     'feedback_ref':f'{issue.issue_id}@{record["revision"]}','evidence_ids':[]}
-            if issue.source=='factoryos':
-                # Terminal job state writes a durable InferenceOutcome to the outbox (same transaction).
-                payload['outcome_callback']={'issue_id':issue.issue_id,'idempotency_key':issue.idempotency_key,
-                                             'trace_ids':issue.trace_ids[:100],'topic':'factoryos.outcome'}
-            job_id=repository.submit('feedback:'+issue.idempotency_key,payload)
+        if issue.deployment_ref:
+            try:repository.read('deployment',parse_ref(issue.deployment_ref)[0])
+            except KeyError:raise HTTPException(409,'unknown deployment')
+        # H2: every issue becomes a typed problem, is diagnosed from evidence (owner,
+        # bottleneck, confidence) and only an evidenced inference symptom queues a job.
+        callback=None
+        if issue.source=='factoryos':
+            # Terminal job state writes a durable InferenceOutcome to the outbox (same transaction).
+            callback={'issue_id':issue.issue_id,'idempotency_key':issue.idempotency_key,
+                      'trace_ids':issue.trace_ids[:100],'topic':'factoryos.outcome'}
+        problem=ProblemDesk(repository).from_feedback(issue.issue_id,callback=callback)['body']
+        job_id=problem.get('job_id')
         return {'issue_id':issue.issue_id,'contract_version':record['schema_version'],'job_id':job_id,
-                'status':'queued' if job_id else 'recorded_not_actionable'}
+                'status':'queued' if job_id else 'recorded_not_actionable',
+                'problem':{'id':ProblemDesk_id(issue.issue_id),'state':problem['state'],
+                           'owner':problem['diagnosis'].get('owner'),'bottleneck':problem['diagnosis'].get('bottleneck'),
+                           'confidence':problem['diagnosis'].get('confidence'),
+                           'route_to':problem['diagnosis'].get('route_to'),
+                           'measurement_requests':problem['diagnosis'].get('measurement_requests')}}
+
+    @app.post('/control/research',dependencies=auth)
+    def research_submission(body:dict):
+        """Submit a paper/post/technique text: stored as untrusted evidence, recorded as a claim."""
+        text=body.get('text')
+        if not isinstance(text,str) or not text.strip():raise HTTPException(422,'text required')
+        try:
+            problem=ProblemDesk(repository).from_research(
+                text,source_key=str(body.get('source_key') or body.get('uri') or 'submission')[:300],
+                title=body.get('title'),uri=body.get('uri'),deployment_id=body.get('deployment_id'),
+                technique_id=body.get('technique_id'))
+        except KeyError:raise HTTPException(404,'unknown deployment')
+        except ValueError as exc:raise HTTPException(422,str(exc)[:500])
+        return problem
+
+    @app.get('/control/problems/{problem_id}',dependencies=auth)
+    def read_problem(problem_id:str):
+        try:return repository.read('problem',problem_id)
+        except KeyError:raise HTTPException(404,'unknown problem')
+
+    @app.post('/control/problems/{problem_id}/observations',dependencies=auth)
+    def problem_observations(problem_id:str,body:dict):
+        """Attach new numeric measurements and re-diagnose (e.g. after a measurement request)."""
+        try:return ProblemDesk(repository).add_observations(problem_id,body.get('observations') or {})
+        except KeyError:raise HTTPException(404,'unknown problem')
+        except ValueError as exc:raise HTTPException(409,str(exc))
 
     from inferstack.integrations.outbox import Outbox
     from inferstack.integrations.triggers import TriggerService
@@ -343,6 +374,8 @@ def create_control_app(repository:Repository,token:str,fetcher=None,rollout_obse
                 'database_schema_version':repository.schema_version}
 
     from inferstack.releases.manager import ReleaseManager
+    from inferstack.diagnosis.intake import ProblemDesk, _problem_id
+    ProblemDesk_id=lambda issue_id:_problem_id('feedback',issue_id)
     releases=ReleaseManager(repository)
 
     @app.post('/control/jobs/{job_id}/release',dependencies=auth)
