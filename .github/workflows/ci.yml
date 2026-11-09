@@ -1,5 +1,5 @@
 # CI separates evidence classes: CPU conformance, PostgreSQL, sandbox, container,
-# Kubernetes (kind, CPU) and live providers (manual, secrets). GPU qualification is
+# Kubernetes (kind, CPU), hosted PostgreSQL (Neon) and live providers (secrets; main and manual). GPU qualification is
 # not CI: it runs on a declared GPU host with scripts/v2_qualify.py.
 name: ci
 on:
@@ -108,9 +108,28 @@ jobs:
           pip install uv && uv venv && uv pip install --require-hashes -r requirements-dev.lock && uv pip install --no-deps -e .
           INFERSTACK_TEST_K8S_CONTEXT=kind-inferstack uv run --no-sync python -m pytest -o addopts='' -q -rs tests/test_kubernetes_live.py
 
+  neon-postgres:
+    # The same PostgreSQL tests against hosted Neon (TLS, network latency). Each test
+    # creates and drops its own database. Secrets are not available to pull requests.
+    name: PostgreSQL tests on hosted Neon
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: neon-postgres
+      cancel-in-progress: false
+    env:
+      INFERSTACK_TEST_POSTGRES_URL: ${{ secrets.NEON_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install uv && uv venv && uv pip install --require-hashes -r requirements-dev.lock && uv pip install --no-deps -e .
+      - name: postgres-parametrized tests on Neon
+        run: |
+          if [ -z "$INFERSTACK_TEST_POSTGRES_URL" ]; then echo "NEON_DATABASE_URL secret not set; skipping"; exit 0; fi
+          uv run --no-sync python -m pytest -o addopts='' -q -rs -k postgres tests
+
   provider-smoke:
-    name: live provider planning smoke (manual)
-    if: github.event_name == 'workflow_dispatch' && inputs.provider_smoke
+    name: live provider planning smoke
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.provider_smoke)
     runs-on: ubuntu-24.04
     env:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
