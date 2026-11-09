@@ -45,6 +45,28 @@ def _zombie(pid):
         return False
 
 
+class DetachedProcess:
+    """Awaitable view of a Popen child for code written against asyncio processes."""
+
+    def __init__(self, popen):
+        self.popen, self.pid = popen, popen.pid
+
+    @property
+    def returncode(self):
+        return self.popen.poll()
+
+    async def wait(self):
+        while self.popen.poll() is None:
+            await asyncio.sleep(0.05)
+        return self.popen.returncode
+
+    def terminate(self):
+        self.popen.terminate()
+
+    def kill(self):
+        self.popen.kill()
+
+
 class LocalProcessProvider:
     name = 'local'
     resource_type = 'process'
@@ -61,12 +83,17 @@ class LocalProcessProvider:
 
     async def spawn(self, alloc_id, argv, log, env=None, inherit_env=True):
         """Launch tagged in a new session. With inherit_env=False the child gets exactly
-        `env` (plus the tag): no worker credentials leak into candidates."""
+        `env` (plus the tag): no worker credentials leak into candidates.
+
+        Uses subprocess.Popen, not asyncio subprocesses: an asyncio subprocess transport
+        that is garbage-collected (or whose event loop goes away) kills its child, which
+        would stop retained candidates and serving runtimes whose process handle was
+        dropped. A dropped Popen never kills its child."""
         child_env = {**(os.environ if inherit_env else {}), **(env or {}), TAG: alloc_id}
-        process = await asyncio.create_subprocess_exec(*argv, stdout=log, stderr=log, env=child_env,
-                                                       start_new_session=True)
-        self._allocation_of[process.pid] = alloc_id
-        return process
+        popen = await asyncio.to_thread(subprocess.Popen, list(argv), stdout=log, stderr=log, env=child_env,
+                                        start_new_session=True)
+        self._allocation_of[popen.pid] = alloc_id
+        return DetachedProcess(popen)
 
     def owns(self, external):
         return isinstance(external, dict) and external.get('host') == self.host

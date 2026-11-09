@@ -244,3 +244,28 @@ def test_allocation_quotas_and_rescale_accounting(tmp_path):
     now[0] += 100           # 100 s at 1 GPU
     manager.release(a['id'], 'done')
     assert repo._usage(repo.get(job))['gpu_seconds'] == pytest.approx(300.0)
+
+
+@pytest.mark.asyncio
+async def test_dropped_process_handle_never_kills_the_child(tmp_path):
+    """A retained/serving runtime outlives its spawn handle and its event loop (GC must not kill it)."""
+    import gc
+    import sys
+    import threading
+    from inferstack.infrastructure.local import LocalProcessProvider
+    provider = LocalProcessProvider()
+    holder = {}
+
+    def spawn_in_short_lived_loop():
+        import asyncio as _asyncio
+        holder['pid'] = _asyncio.run(provider.spawn('alloc-gc', [sys.executable, '-c', 'import time; time.sleep(30)'],
+                                                    None)).pid
+    thread = threading.Thread(target=spawn_in_short_lived_loop)
+    thread.start()
+    thread.join()
+    gc.collect()
+    external = {**provider.external_for(holder['pid']), 'allocation_id': 'alloc-gc'}
+    try:
+        assert provider.alive(external), 'child was killed when its handle/loop went away'
+    finally:
+        assert provider.stop(external, grace_seconds=2)
