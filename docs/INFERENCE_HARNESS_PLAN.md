@@ -461,3 +461,21 @@ Limits:
   only `suspected`.
 - The complete loop has not yet run on a GPU. The first GPU demonstration is the native
   A100 campaign.
+
+
+## Portable experiment execution (E1)
+
+A cross-cutting execution track is defined in [PORTABLE_EXPERIMENT_EXECUTION_PLAN.md](PORTABLE_EXPERIMENT_EXECUTION_PLAN.md). It does not replace H1-H5. It gives H3/H4 a reproducible way to execute the same pinned experiment across attached hosts, Colab/Kaggle notebooks, paid GPU providers and later GPU Kubernetes.
+
+The key rule is **one experiment identity, many execution substrates**. E1 adds a thin ExecutionManifest over the existing ModelArtifact/Deployment/WorkloadSpec/Objective/Technique/Hardware/Allocation records, a fail-closed CompatibilityResolver, a notebook ResultBundle round trip, and then provider adapters behind the existing allocation lifecycle.
+
+Immediate execution order:
+
+1. Run the already-prepared fair A100 Native/vLLM/SGLang scorecard and preserve its raw result ZIP.
+2. Implement E1.0/E1.1: ExecutionManifest v1 and CompatibilityResolver; no cloud spend required.
+3. Implement E1.2: generated Colab/Kaggle notebook plus verified ResultBundle import into Trial/Evidence/Hardware/H1 memory.
+4. Add RunPod as the first paid GPU provider only after notebook execution uses the same manifest contract.
+5. Deploy one verified release through an autoscaling endpoint provider (initial recommendation: Modal) and exercise one FactoryOS workload.
+6. Qualify the same manifest on a real GPU Kubernetes node pool when cluster placement/scaling/rollout behavior is the question.
+
+Another agent should begin from [PORTABLE_EXECUTION_AGENT_HANDOFF.md](PORTABLE_EXECUTION_AGENT_HANDOFF.md), which defines file targets, negative cases, tests, non-goals and a reviewable commit sequence.
