@@ -17,6 +17,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-10 UTC — Claude Code (implementation agent, SGLang install fix for Colab Python 3.13)
+
+- Owner's L4 run: vLLM installed; SGLang failed building `outlines_core` from source. Cause verified on PyPI: sglang 0.5.23 pins `outlines==0.1.11` (outlines_core 0.1.x), whose latest 0.1.27 has no cp313 wheel; Colab is Python 3.13.
+- Fix: the engine-install cell creates the SGLang venv with uv-managed Python 3.12 (replacing a stale 3.13 venv); vLLM unchanged. Cell dry-run locally with installs stubbed: stale venv replaced, 3.12 venv created. Not yet run on Colab.
+
 ### 2026-11-10 UTC — Claude Code (implementation agent, scorecard notebook accepts L4)
 
 - Owner could not get an A100 on Colab (only T4/L4). `docs/notebooks/colab_a100_engine_scorecard.ipynb` now accepts A100 or L4 (both BF16, CC >= 8.0); T4 is still refused (no BF16).
