@@ -17,6 +17,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-10 UTC — Claude Code (implementation agent, scorecard notebook accepts L4)
+
+- Owner could not get an A100 on Colab (only T4/L4). `docs/notebooks/colab_a100_engine_scorecard.ipynb` now accepts A100 or L4 (both BF16, CC >= 8.0); T4 is still refused (no BF16).
+- The GPU label (`a100`/`l4`) is written into the output dir, run-context.json, scorecard run id and ZIP name, so an L4 run can never be filed as A100. Scorecard wall-time cap is 10 h on L4 (5 h on A100).
+- Source pin unchanged (787c567); no runtime code changed. Nothing A100-specific found in the profile config or native loader (no quantization in either profile). Not yet run on an L4.
+
 ### 2026-11-10 UTC — Claude Code (implementation agent, E1.2 notebook round trip)
 - `execution/runner.py`: ordered contract `python -m inferstack.execution.runner --manifest --workload --out`: discover environment -> workload fixture sha256 must equal the manifest's -> CompatibilityResolver (unsupported/declared-fallback-only = refused, nothing launched) -> probe_required runs a launch+readiness+largest-case probe only when every probe is one the runner performs -> measured rounds through the N0 scorecard measurement code -> engine version observed vs pinned -> ResultBundle. Gates the runner does not execute (quality/correctness) are `missing`. `--preflight-only` exits 2 on unsupported. Derived vLLM/SGLang launch pins revision, tokenizer revision, dtype, context, TP and profile flags; native needs an explicit template.
 - `execution/results.py`: ResultBundle v1 zip (`bundle.json` + raw files). `open_bundle` refuses unsafe names, unlisted/missing members, checksum mismatch, manifest digest/experiment-id mismatch, unexpected manifest and credential-looking text. `import_bundle` stores the zip as an artifact and records HardwareEnvironment, Evidence and (completed + deployment-bound) one Trial per round x case x concurrency; non-passed gates go into trial errors so they can never be proof. Idempotent.
