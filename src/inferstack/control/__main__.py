@@ -10,7 +10,8 @@ from inferstack.storage.repository import Repository
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=['serve','gateway','worker-once','reconcile','retention','outbox-deliver',
-                                          'triggers-tick','context','experience','implementation'])
+                                          'triggers-tick','context','experience','implementation',
+                                          'experiment-export','experiment-import'])
     parser.add_argument('--deployment',help='context/experience: deployment id')
     parser.add_argument('--limit',type=int,default=20,help='experience: maximum items returned')
     parser.add_argument('--treatment',help='experience: only this treatment signature')
@@ -18,6 +19,14 @@ def main():
     parser.add_argument('--id',help='implementation: implementation record id')
     parser.add_argument('--diff',type=Path,help='implementation: submit this unified diff as an attempt')
     parser.add_argument('--source-root',type=Path,help='implementation: pinned source checkout used for validation')
+    parser.add_argument('--manifest',type=Path,help='experiment-export/import: ExecutionManifest JSON')
+    parser.add_argument('--experiment-workload',type=Path,help='experiment-export: workload fixture JSON')
+    parser.add_argument('--provider',default='colab',choices=['colab','kaggle'],help='experiment-export target')
+    parser.add_argument('--source-revision',help='experiment-export: pinned 40-hex InferStack commit to run')
+    parser.add_argument('--launch',help='experiment-export: JSON argv template with {port} (native engine)')
+    parser.add_argument('--served-model',help='experiment-export: model id the server reports')
+    parser.add_argument('--out',type=Path,help='experiment-export: notebook path to write')
+    parser.add_argument('--bundle',type=Path,help='experiment-import: ResultBundle zip')
     parser.add_argument('--callback-url',help='outbox-deliver: FactoryOS outcome endpoint (https)')
     parser.add_argument('--callback-token-env',default='FACTORYOS_CALLBACK_TOKEN')
     parser.add_argument('--max-active',type=int,default=2,help='triggers-tick: global unfinished triggered jobs')
@@ -109,6 +118,23 @@ def main():
             from inferstack.implementation import ImplementationDesk
             out=ImplementationDesk(repo).read(args.id)
         print(json.dumps(out,indent=2,default=str))
+    elif args.action=='experiment-export':
+        if not (args.manifest and args.experiment_workload and args.source_revision and args.out):
+            parser.error('--manifest, --experiment-workload, --source-revision and --out required')
+        from inferstack.execution.manifest import ExecutionManifestV1
+        from inferstack.execution.notebooks import export_notebook
+        manifest=ExecutionManifestV1.from_json(args.manifest.read_text())
+        notebook=export_notebook(manifest,json.loads(args.experiment_workload.read_text()),provider=args.provider,
+                                 source_revision=args.source_revision,
+                                 launch=json.loads(args.launch) if args.launch else None,served_model=args.served_model)
+        args.out.write_text(json.dumps(notebook,indent=1))
+        print(json.dumps({'notebook':str(args.out),**notebook['metadata']['inferstack']},indent=2))
+    elif args.action=='experiment-import':
+        if not args.bundle:parser.error('--bundle required')
+        from inferstack.execution.manifest import ExecutionManifestV1
+        from inferstack.execution.results import import_bundle
+        expected=ExecutionManifestV1.from_json(args.manifest.read_text()) if args.manifest else None
+        print(json.dumps(import_bundle(repo,args.bundle,expected=expected),indent=2,default=str))
     elif args.action in ('context','experience'):
         if not args.deployment:parser.error('--deployment required')
         if args.action=='experience':
