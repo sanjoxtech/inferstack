@@ -17,6 +17,14 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-11 UTC — Claude Code (implementation agent, first L4 scorecard ZIP reviewed)
+
+- ZIP `inferstack-colab-l4-evidence-20261110T160619Z.zip` (sha256 fec73fe2…2cee): NVIDIA L4, commit 787c567, 3 rounds. Only the two native profiles produced measurements.
+- Result (L4, measurement only): native_full beats native_unfused in all 16 cells, out tok/s x1.16-x1.51, non-overlapping ranges; decode ~30 vs ~45 ms/tok at concurrency 1. shared_prefix c1 equal-work = False.
+- vLLM 0.33.0: conformance failed, CUDA OOM during startup. Conformance launched without a context cap, so vLLM sized for 262144 tokens. Never reached the scorecard.
+- SGLang 0.5.23: the Python 3.12 venv fix worked and conformance passed, but every scorecard launch died with `FileNotFoundError: 'ninja'` (FlashInfer JIT). The scorecard PATH lacked the SGLang venv bin; conformance had it.
+- Notebook fixes (no runtime code change, pin still 787c567): conformance passes `--max-model-len=8192` / `--context-length=8192` via `--extra`; scorecard PATH = native venv, then engine venv bins. Not yet re-run on GPU.
+
 ### 2026-11-10 UTC — Claude Code (implementation agent, SGLang install fix for Colab Python 3.13)
 
 - Owner's L4 run: vLLM installed; SGLang failed building `outlines_core` from source. Cause verified on PyPI: sglang 0.5.23 pins `outlines==0.1.11` (outlines_core 0.1.x), whose latest 0.1.27 has no cp313 wheel; Colab is Python 3.13.
