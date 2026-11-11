@@ -17,6 +17,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-11 UTC — Claude Code (implementation agent, vLLM conformance log reviewed)
+
+- conformance-vllm.log (L4, vLLM 0.33.0, max_model_len 8192): healthy. Requests 200, clean stop. Ready only after 857.8 s: vLLM profiled the unused vision encoder with a video item and retried OOM allocations (3.5 GiB) for ~10 min; peak activation 11.57 GiB, KV cache 4.16 GiB = 248,366 tokens (30x at 8192), enough for the workload.
+- Notebook: scorecard ready timeout raised from 1200 s to 2400 s (smoke and final run).
+- Open fairness/time question for the owner: run vLLM text-only (`--limit-mm-per-prompt {"image":0,"video":0}`) like the native engine. Not applied; it changes the pinned vLLM profile.
+- The log does not list /metrics names, so the vLLM inter-token metric name is still unverified.
+
 ### 2026-11-11 UTC — Claude Code (implementation agent, vLLM conformance waiver)
 
 - Staged L4 run: native_unfused and native_full smoke PASS. vLLM 0.33.0 with the 8192 cap: ready, deterministic, usage, abandoned-stream and clean-stop checks all pass; only `metric_families_present` failed (missing `engine_tpot_ms`).
