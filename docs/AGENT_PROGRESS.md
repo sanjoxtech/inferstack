@@ -17,6 +17,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-11 UTC — Claude Code (implementation agent, scorecard notebook staged one engine at a time)
+
+- Owner request: in one session, bring up and test one engine, then the next. Notebook restructured: stage helpers cell, then 4a native_unfused, 4b native_full, 4c vLLM (install + qualify + smoke), 4d SGLang (same), then 5 = fair rotated 3-round measurement over the profiles that passed, then download.
+- Smoke = the exact scorecard argv/env for one profile with a small workload (2 cases x concurrency 1/4, 16 requests); prints PASS/FAIL with the server-log tail, and GPU memory before/after stop to catch leftover processes. A failed stage only needs that cell re-run; stages.json is saved in the ZIP.
+- Tested locally against fake engines (pass, failed requests, exit-before-ready, final measurement cell). Pin unchanged (787c567). Not yet run on GPU.
+
 ### 2026-11-11 UTC — Claude Code (implementation agent, first L4 scorecard ZIP reviewed)
 
 - ZIP `inferstack-colab-l4-evidence-20261110T160619Z.zip` (sha256 fec73fe2…2cee): NVIDIA L4, commit 787c567, 3 rounds. Only the two native profiles produced measurements.
