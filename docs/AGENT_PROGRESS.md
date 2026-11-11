@@ -17,6 +17,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-11 UTC — Claude Code (implementation agent, leftover-engine guard)
+
+- Owner interrupted a final run started without vLLM; a server survived holding 6126 MiB, and the next vLLM smoke failed in 59 s (needs 0.92 of the GPU free). Cleared with pkill; GPU back to 0 MiB.
+- Notebook: `require_empty_gpu()` runs before every smoke and the final run, killing leftover engine processes and refusing to continue if memory stays above 1 GiB. Final run id is now `<gpu>-<unix time>` so a re-run never collides with an interrupted one; final-run wall cap 12 h on L4.
+
 ### 2026-11-11 UTC — Claude Code (implementation agent, vLLM conformance log reviewed)
 
 - conformance-vllm.log (L4, vLLM 0.33.0, max_model_len 8192): healthy. Requests 200, clean stop. Ready only after 857.8 s: vLLM profiled the unused vision encoder with a video item and retried OOM allocations (3.5 GiB) for ~10 min; peak activation 11.57 GiB, KV cache 4.16 GiB = 248,366 tokens (30x at 8192), enough for the workload.
