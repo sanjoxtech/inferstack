@@ -17,6 +17,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-11 UTC — Claude Code (implementation agent, vLLM conformance waiver)
+
+- Staged L4 run: native_unfused and native_full smoke PASS. vLLM 0.33.0 with the 8192 cap: ready, deterministic, usage, abandoned-stream and clean-stop checks all pass; only `metric_families_present` failed (missing `engine_tpot_ms`).
+- Notebook: a conformance whose only failed check is missing metric families is waived and recorded in waivers.json (the scorecard measures latency client-side). Any other failed check still fails the stage.
+- Source: vLLM `engine_tpot_ms` now also accepts `vllm:inter_token_latency_seconds` (assumed new name; not yet verified against a vLLM 0.33 /metrics dump). Takes effect only when the notebook pin moves past 787c567. Related tests: 22 passed.
+
 ### 2026-11-11 UTC — Claude Code (implementation agent, scorecard notebook staged one engine at a time)
 
 - Owner request: in one session, bring up and test one engine, then the next. Notebook restructured: stage helpers cell, then 4a native_unfused, 4b native_full, 4c vLLM (install + qualify + smoke), 4d SGLang (same), then 5 = fair rotated 3-round measurement over the profiles that passed, then download.

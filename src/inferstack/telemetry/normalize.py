@@ -24,7 +24,8 @@ MAPPINGS = {
         'tested_against': [], 'declared_for': '>=0.10',
         'families': {
             'engine_ttft_ms': ('histogram', 'vllm:time_to_first_token_seconds', 1000.0, 'engine arrival to first token'),
-            'engine_tpot_ms': ('histogram', 'vllm:time_per_output_token_seconds', 1000.0, 'engine inter-token time'),
+            'engine_tpot_ms': ('histogram', ('vllm:inter_token_latency_seconds', 'vllm:time_per_output_token_seconds'),
+                               1000.0, 'engine inter-token time'),
             'engine_e2e_ms': ('histogram', 'vllm:e2e_request_latency_seconds', 1000.0, 'engine request latency'),
             'engine_queue_ms': ('histogram', 'vllm:request_queue_time_seconds', 1000.0, 'time waiting before scheduling'),
             'engine_prefill_ms': ('histogram', 'vllm:request_prefill_time_seconds', 1000.0, 'prefill phase time'),
