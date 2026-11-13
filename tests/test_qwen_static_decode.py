@@ -102,6 +102,34 @@ def test_gqa_and_head_repeat_shapes():
     torch.testing.assert_close(got, ref, rtol=1e-4, atol=1e-4)
 
 
+def test_forward_fused_model_matches_transformers():
+    """native_full installs forward fusion, which removes the original projection modules
+    (seen on L4 2026-11-13: 'NoneType' object is not callable). The static step must use
+    the fused weights."""
+    from types import SimpleNamespace
+    from inferstack.kernels.qwen_forward_fusion import install_qwen35_forward_fusion
+    model = tiny_model(seed=4)
+    flags = ('forward_fusion', 'fuse_rmsnorm', 'fuse_add_rmsnorm', 'fuse_gated_rmsnorm', 'fuse_mlp_gate_up',
+             'fuse_mlp_activation', 'fuse_gdn_projections', 'fuse_gdn_beta_g', 'grouped_gdn_decode',
+             'fuse_attention_qkv', 'forward_fusion_strict')
+    diag = install_qwen35_forward_fusion(model, SimpleNamespace(native=SimpleNamespace(**dict.fromkeys(flags, True))))
+    assert diag['gdn_modules'] >= 3 and diag['attention_modules'] >= 1, diag
+    assert model.model.layers[0].linear_attn.in_proj_qkv is None
+    assert model.model.layers[2].self_attn.q_proj is None
+    ref, got, _ = run_both(model, [[5, 7, 11, 13, 2], [3, 1, 8]], steps=5)
+    torch.testing.assert_close(got, ref, rtol=1e-4, atol=1e-4)
+
+
+def test_gdn_backend_resolution_on_cpu():
+    model = tiny_model()
+    assert QwenStaticDecoder(model, 'cpu').gdn_backend == 'torch'
+    assert QwenStaticDecoder(model, 'cpu', gdn_backend='torch').stats['gdn_backend'] == 'torch'
+    with pytest.raises(RuntimeError):
+        QwenStaticDecoder(model, 'cpu', gdn_backend='triton')
+    with pytest.raises(ValueError):
+        QwenStaticDecoder(model, 'cpu', gdn_backend='fla')
+
+
 def test_load_rejects_oversized_cache():
     model = tiny_model()
     ids, mask, pos, w = left_padded([[1, 2, 3, 4]] * 3)

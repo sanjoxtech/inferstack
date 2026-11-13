@@ -38,9 +38,9 @@ def left_pad(tok_lists, pad, device):
     return ids, mask, pos, w
 
 
-def bench_case(model, tok, dec, batch, words, steps, bucket_len):
+def bench_case(model, tok, decoders, batch, words, steps, bucket_len):
     import torch
-    dev = dec.device
+    dev = decoders['static_graph'].device
     toks = [tok.encode(t, add_special_tokens=False) for t in prompts(batch, words)]
     pad = tok.pad_token_id if tok.pad_token_id is not None else 0
     ids, mask, pos, w = left_pad(toks, pad, dev)
@@ -68,7 +68,8 @@ def bench_case(model, tok, dec, batch, words, steps, bucket_len):
     ref_tokens.append(nxt.clone())
 
     results = {}
-    for mode in ('static_eager', 'static_graph'):
+    for mode in ('static_eager', 'static_graph_torch_gdn', 'static_graph'):
+        dec = decoders[mode]
         cache, first = prefill()
         st = dec.new_state(batch, bucket_len)
         dec.load(st, cache, mask, w)
@@ -76,7 +77,7 @@ def bench_case(model, tok, dec, batch, words, steps, bucket_len):
         for s in range(steps):
             feed = ref_tokens[s]  # teacher-forced on the reference so step s compares like with like
             torch.cuda.synchronize(); t0 = time.perf_counter()
-            lg = dec.step(st, feed, p, w + s, use_graph=(mode == 'static_graph'))
+            lg = dec.step(st, feed, p, w + s, use_graph=(mode != 'static_eager'))
             torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1000)
             lg = lg.float()
             agree += int((lg.argmax(-1) == ref_logits[s].argmax(-1)).sum())
@@ -84,7 +85,7 @@ def bench_case(model, tok, dec, batch, words, steps, bucket_len):
             p = p + 1
         dec.release(st)
         warm = ms[3:] if len(ms) > 6 else ms  # first graph step includes capture
-        results[mode] = {'ms_per_step_median': statistics.median(warm), 'ms_first_step': ms[0],
+        results[mode] = {'gdn_backend': dec.gdn_backend, 'ms_per_step_median': statistics.median(warm), 'ms_first_step': ms[0],
                          'greedy_agreement': agree / (steps * batch), 'max_abs_logit_diff': max_diff}
     warm_ref = ref_ms[3:] if len(ref_ms) > 6 else ref_ms
     results['native_current'] = {'ms_per_step_median': statistics.median(warm_ref)}
@@ -112,20 +113,24 @@ def main():
     _, model, tok, _ = FoundryModelLoader(FileSystemFoundryRepository(a.foundry_root), a.device).load(a.model_ref, cfg)
     eng = QwenHybridContinuousEngine(model, tok, cfg, a.device)
     eng._maybe_patch()  # same kernels the served native profile installs
-    dec = QwenStaticDecoder(model, a.device)
+    decoders = {'static_eager': QwenStaticDecoder(model, a.device, gdn_backend='torch'),
+                'static_graph_torch_gdn': QwenStaticDecoder(model, a.device, gdn_backend='torch'),
+                'static_graph': QwenStaticDecoder(model, a.device, gdn_backend='auto')}
+    import traceback
     rows = []
     for words in a.words:
         for b in a.batches:
             try:
                 bucket = 256 * (-(-(int(words * 1.4) + a.steps + 16) // 256))
-                row = bench_case(model, tok, dec, b, words, a.steps, bucket)
+                row = bench_case(model, tok, decoders, b, words, a.steps, bucket)
             except Exception as exc:
-                row = {'batch': b, 'prompt_words': words, 'error': f'{type(exc).__name__}: {str(exc)[:400]}'}
+                row = {'batch': b, 'prompt_words': words, 'error': f'{type(exc).__name__}: {str(exc)[:400]}',
+                       'traceback': traceback.format_exc()[-2000:]}
                 torch.cuda.empty_cache()
             print(json.dumps(row), flush=True)
             rows.append(row)
     out = {'version': 1, 'profile': a.profile, 'gpu': torch.cuda.get_device_name(0),
-           'gdn_kernel': eng.diagnostics().get('gdn_kernel'), 'decoder_stats': dec.stats, 'rows': rows}
+           'gdn_kernel': eng.diagnostics().get('gdn_kernel'), 'decoder_stats': {k: d.stats for k, d in decoders.items()}, 'rows': rows}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2, default=str) + '\n')
     eng._gpu_executor.shutdown(wait=False, cancel_futures=True)

@@ -12,7 +12,8 @@ Design
   has static shapes and addresses and can be captured once and replayed.
 - The step reuses the model's own modules and weights (norms, MLP, projections, rotary)
   and the modeling file's helpers, and mirrors the Transformers decode math, so the
-  Transformers path is the numerical oracle.
+  Transformers path is the numerical oracle. When forward fusion has replaced the
+  projections with concatenated weights, the step uses those weights instead.
 - Layout matches the engine's left-padded batches: every row writes its new token to
   the same physical column; a per-row mask marks which columns are real tokens.
 
@@ -69,11 +70,15 @@ class StaticDecodeState:
 
 
 class QwenStaticDecoder:
-    def __init__(self, model, device, dtype=None):
+    def __init__(self, model, device, dtype=None, gdn_backend='auto'):
+        """gdn_backend: 'torch' (reference math), 'triton' (the repo's grouped GDN decode
+        kernel, updates the recurrent state in place), or 'auto' (triton on CUDA when available)."""
         import torch
         ok, why = supports_static_decode(model)
         if not ok:
             raise TypeError(why)
+        if gdn_backend not in ('auto', 'torch', 'triton'):
+            raise ValueError(f'unknown gdn_backend {gdn_backend!r}')
         self.model = model
         self.text, self.lm_head, self.cfg = _text_parts(model)
         self.device = torch.device(device)
@@ -82,6 +87,20 @@ class QwenStaticDecoder:
         self.mod = _modeling(self.text.layers[0])
         self.graphs: dict = {}
         self.stats = {'captures': 0, 'replays': 0, 'eager_steps': 0, 'loads': 0}
+        self.gdn_backend = self._resolve_gdn_backend(gdn_backend)
+        self.stats['gdn_backend'] = self.gdn_backend
+
+    def _resolve_gdn_backend(self, wanted):
+        if wanted == 'torch':
+            return 'torch'
+        try:
+            from inferstack.kernels import gdn_triton
+            ok = gdn_triton._HAS_TRITON and self.device.type == 'cuda'
+        except Exception:
+            ok = False
+        if wanted == 'triton' and not ok:
+            raise RuntimeError('gdn_backend=triton needs CUDA and Triton')
+        return 'triton' if ok else 'torch'
 
     # ---- buffers -----------------------------------------------------------------
     def new_state(self, batch: int, max_len: int) -> StaticDecodeState:
@@ -141,10 +160,16 @@ class QwenStaticDecoder:
         import torch.nn.functional as F
         mod = self.mod
         B = x.shape[0]
-        mixed = g.in_proj_qkv(x).transpose(1, 2)                      # [B, C, 1]
-        z = g.in_proj_z(x).reshape(B, 1, -1, g.head_v_dim)
-        b = g.in_proj_b(x)
-        a = g.in_proj_a(x)
+        if getattr(g, 'in_proj_qkv', None) is None:
+            # Forward fusion (kernels/qwen_forward_fusion.py) replaced the four projections
+            # with two concatenated weights and removed the original modules.
+            qkv, z = F.linear(x, g._inferstack_qkvz_weight).split([g.conv_dim, g.value_dim], dim=-1)
+            b, a = F.linear(x, g._inferstack_ba_weight).split([g.num_v_heads, g.num_v_heads], dim=-1)
+        else:
+            qkv, z = g.in_proj_qkv(x), g.in_proj_z(x)
+            b, a = g.in_proj_b(x), g.in_proj_a(x)
+        mixed = qkv.transpose(1, 2)                                     # [B, C, 1]
+        z = z.reshape(B, 1, -1, g.head_v_dim)
         conv = st.conv[i]
         w = g.conv1d.weight
         full = torch.cat([conv, mixed], dim=-1).to(w.dtype)          # [B, C, K+1]
@@ -157,6 +182,15 @@ class QwenStaticDecoder:
         v = v.reshape(B, 1, -1, g.head_v_dim)
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
+        if self.gdn_backend == 'triton':
+            # Grouped kernel: Q/K L2 norm and head grouping fused; st.rec[i] (fp32,
+            # contiguous) is updated in place, so nothing is allocated for the state.
+            from inferstack.kernels.gdn_triton import inferstack_grouped_gdn_decode
+            o, _ = inferstack_grouped_gdn_decode(q, k, v, gate, beta, initial_state=st.rec[i],
+                                                 output_final_state=False, use_qk_l2norm_in_kernel=True)
+            o = o.reshape(-1, g.head_v_dim)
+            o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, 1, -1)
+            return g.out_proj(o)
         rep = g.num_v_heads // g.num_k_heads
         if rep > 1:
             q = q.repeat_interleave(rep, dim=2)
@@ -181,11 +215,17 @@ class QwenStaticDecoder:
         import torch.nn.functional as F
         mod = self.mod
         B = x.shape[0]
-        q, gate = torch.chunk(a.q_proj(x).view(B, 1, -1, a.head_dim * 2), 2, dim=-1)
+        if getattr(a, 'q_proj', None) is None:
+            # Forward fusion: one concatenated q/k/v weight, original modules removed.
+            qraw, kraw, vraw = F.linear(x, a._inferstack_qkv_weight, a._inferstack_qkv_bias).split(
+                a._inferstack_qkv_splits, dim=-1)
+        else:
+            qraw, kraw, vraw = a.q_proj(x), a.k_proj(x), a.v_proj(x)
+        q, gate = torch.chunk(qraw.view(B, 1, -1, a.head_dim * 2), 2, dim=-1)
         gate = gate.reshape(B, 1, -1)
         q = a.q_norm(q.reshape(B, 1, -1, a.head_dim)).transpose(1, 2)
-        k = a.k_norm(a.k_proj(x).view(B, 1, -1, a.head_dim)).transpose(1, 2)
-        v = a.v_proj(x).view(B, 1, -1, a.head_dim).transpose(1, 2)
+        k = a.k_norm(kraw.view(B, 1, -1, a.head_dim)).transpose(1, 2)
+        v = vraw.view(B, 1, -1, a.head_dim).transpose(1, 2)
         q, k = mod.apply_rotary_pos_emb(q, k, cos, sin)
         kc, vc = st.kv[i]
         kc.index_copy_(2, st.col, k)
