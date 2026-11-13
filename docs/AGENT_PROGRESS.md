@@ -7,6 +7,8 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Current state (summary)
 
+- 2026-11-13: HEAD before this entry `c2d534d`. E1.0–E1.2 implemented (3516693, 484e5ed). Fair engine scorecard (N0/N1) completed on Colab **L4**: all 4 engines passed, 3 rounds, 5760/5760 requests ok. Output tok/s vs native_unfused: native_full 1.15–1.52×, vLLM 2.53–4.19×, SGLang 2.56–4.69×. Largest native gap: prefill. See docs/verification/COLAB_L4_SCORECARD_2026-11-13.md. No A100 scorecard yet.
+- Older summary (2026-11-09) below is historical.
 - Reviewed HEAD `main`: c460793 (H3 step 1). CI: five successful jobs; manual provider smoke skipped.
 - Harness plan: H0 accepted; H1/H2 implemented; H3 step 1 implemented (bounded implementer handoff, immutable validated patch and resume). H3 refinement/stop policy/demo and H4/H5 remain.
 - Independent focused check on c460793: 39 H1/H2/H3 tests passed, no failures/skips (PostgreSQL parametrizations excluded).
@@ -16,6 +18,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 - In-progress work observed: uncommitted CI workflow changes for hosted PostgreSQL/provider checks; preserve the implementation agent's edits. No result from the running hosted PostgreSQL verification is claimed here.
 
 ## Log
+
+### 2026-11-13 UTC — Claude Code (implementation agent, L4 scorecard recorded)
+
+- Owner ran the scorecard notebook on Colab L4 (pin 787c567, run l4-1794553433). Stages: all 4 passed; vLLM metric-only waiver. Fair run: 3 rotated rounds, 12 × 480 requests, 0 failed.
+- Recorded: docs/verification/COLAB_L4_SCORECARD_2026-11-13.md plus scorecard summary and manifest under docs/verification/evidence/. Raw ZIP stays a user download (sha256 in the doc).
+- Next per PORTABLE_EXPERIMENT_EXECUTION_PLAN §14 step 4: import this result through the E1.2 ResultBundle path without rewriting the raw evidence. RunPod/Modal/K8s and native optimization (N2) wait for owner go-ahead.
 
 ### 2026-11-11 UTC — Claude Code (implementation agent, leftover-engine guard)
 
