@@ -19,6 +19,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, N2 prefill diagnosis prepared)
+
+- N2 (NATIVE_ENGINE_OPTIMIZATION_PLAN) started on the largest measured gap, prefill. Diagnosis only: no source/profile change.
+- Added scripts/n2_prefill_diagnosis.py (phases: model / prefix-snapshot / other split across cohort 1,4 × chunk 128,512,2048 × prefix cache on/off; ops: torch.profiler table + trace) and tests/test_n2_prefill_diagnosis.py (5 passed; with scheduler tests 16 passed, CPU fake model).
+- Notebook docs/notebooks/colab_n2_prefill_diagnosis.ipynb pins 476bf3f; Colab clones from GitHub, so it needs a push before running.
+- Code-read suspects to confirm or reject with the run: 128-token prefill chunks, one chunk per scheduler turn with decode priority, full KV snapshot every 128 tokens for single-request cohorts.
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, L4 scorecard recorded)
 
 - Owner ran the scorecard notebook on Colab L4 (pin 787c567, run l4-1794553433). Stages: all 4 passed; vLLM metric-only waiver. Fair run: 3 rotated rounds, 12 × 480 requests, 0 failed.
