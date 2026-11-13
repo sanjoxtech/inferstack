@@ -19,6 +19,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, step 1 wired into the server)
+
+- a96cfd6: static decode lane in QwenHybridContinuousEngine (runtime/qwen_static_lane.py). After prefill, rows move into a 16-slot pool (per-row positions, packed live rows, graphs per batch x length bucket captured at start, attention over the live length bucket). Rows that do not fit (prompt + max_new > 4096 or pool full) stay on the Transformers path. Profile production-v1.7.0 (= v1.6.0 + static_decode, strict); scorecard lane native_static.
+- Tests (Docker, transformers 5.22.2, CPU eager): 11 decoder tests (mixed lengths, row moves, mask holes, length buckets) and 3 engine tests (lane on == lane off greedy output with early finishes, late arrivals and a long-row fallback; prefix-cache hit; cancellation). Local suite green.
+- Scorecard notebook repinned to a96cfd6 with a native_static stage. Needs push, then a full L4 scorecard run; keep v1.7 only if the whole scorecard improves.
+- Also: official Colab MCP server (googlecolab/colab-mcp) registered at user scope as colab-proxy-mcp; it drives a Colab tab the owner opens in the browser.
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, step 1 second GPU run)
 
 - L4 (ff92334): all 24 cells ran. native_full graph + Triton GDN: 16.4 / 18.3 / 22.2 ms per step at batch 1/4/16 (short prompts), 26.4 at batch 16 with 400-word prompts; vLLM 19.3 at batch 16. Triton GDN beats the torch-GDN graph by 17-20% at batch 16. Agreement 0.984-1.000. Record: docs/verification/STATIC_DECODE_L4_2026-11-13.md (second run section).
