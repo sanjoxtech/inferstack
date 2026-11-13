@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "profile": "configs/profiles/production-v1.6.0.toml",
+  "gpu": "NVIDIA L4",
+  "gdn_kernel": {
+    "patched": true,
+    "calls": 0,
+    "triton_calls": 0,
+    "fallback_calls": 0,
+    "chunk_calls": 216,
+    "chunk_triton_calls": 0,
+    "chunk_fallback_calls": 216,
+    "patch_error": null,
+    "triton_installed": true,
+    "decode_kernel": "triton",
+    "chunk_kernel": "upstream/reference",
+    "conv": {
+      "patched": true,
+      "calls": 6912,
+      "triton_calls": 6912,
+      "fallback_calls": 0,
+      "patch_error": null,
+      "triton_installed": true
+    }
+  },
+  "decoder_stats": {
+    "captures": 0,
+    "replays": 0,
+    "eager_steps": 0,
+    "loads": 6
+  },
+  "rows": [
+    {
+      "batch": 1,
+      "prompt_words": 48,
+      "error": "TypeError: 'NoneType' object is not callable"
+    },
+    {
+      "batch": 4,
+      "prompt_words": 48,
+      "error": "TypeError: 'NoneType' object is not callable"
+    },
+    {
+      "batch": 16,
+      "prompt_words": 48,
+      "error": "TypeError: 'NoneType' object is not callable"
+    },
+    {
+      "batch": 1,
+      "prompt_words": 400,
+      "error": "TypeError: 'NoneType' object is not callable"
+    },
+    {
+      "batch": 4,
+      "prompt_words": 400,
+      "error": "TypeError: 'NoneType' object is not callable"
+    },
+    {
+      "batch": 16,
+      "prompt_words": 400,
+      "error": "TypeError: 'NoneType' object is not callable"
+    }
+  ]
+}

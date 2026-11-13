@@ -19,6 +19,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, step 1 first GPU numbers)
+
+- L4 (405692e): static graph decode native_unfused 18.4 ms/step vs 43.3 now at batch 1 (2.35x); 1.38-2.35x over batch 1/4/16; greedy agreement 0.996-1.000. Eager static = same speed as now, so the gain is the graph. native_full failed (fusion removes projection modules). Record: docs/verification/STATIC_DECODE_L4_2026-11-13.md.
+- ff92334: fused-weight support (test reproduces and fixes the error), Triton grouped GDN decode inside the graph (targets batch 16: 33.5 ms vs vLLM 19.3). Notebook repinned to ff92334; needs push and an L4 rerun.
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, native step 1: static decode + CUDA graph)
 
 - Owner decision (replaces the handoff rule "no new native kernels or another optimization version yet"): native optimization is now in scope; goal is a world-class native engine; a change is kept only if it improves the whole scorecard, no single-knob hacks.
