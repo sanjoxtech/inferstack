@@ -19,6 +19,12 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, N2 prefill diagnosis recorded)
+
+- Owner ran colab_n2_prefill_diagnosis.ipynb on L4 (pin 476bf3f); CI for 286d0fa green. Report: docs/verification/N2_PREFILL_DIAGNOSIS_L4_2026-11-13.md, JSON under docs/verification/evidence/n2-l4-20261113/.
+- Ranked: (1) 128-token prefill chunks: cohort-1 prefill 978 ms -> 214 ms at one 2048 chunk (4.6x), config-only lever, decode-stall trade-off unmeasured; (2) cohort 4 compute-bound (~7k tok/s), GDN prefill runs the upstream/reference PyTorch chain (bmm, FP32 trsm/sgemm, copies), fused GDN prefill kernel = N3 kernel work; (3) prefix snapshots 1.3%, rejected; (4) served overhead ~160 ms at c=1, ~0 at c=4.
+- Next: owner decision. Cheapest: scorecard treatment with larger prefill_chunk_tokens (config only). Larger: N3 GDN prefill kernel (blocked by owner rule).
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, N2 prefill diagnosis prepared)
 
 - N2 (NATIVE_ENGINE_OPTIMIZATION_PLAN) started on the largest measured gap, prefill. Diagnosis only: no source/profile change.
