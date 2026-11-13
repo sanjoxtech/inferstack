@@ -38,7 +38,39 @@ fusion removes the original q/k/v and GDN input projection modules and keeps
 concatenated weights. Fixed in `ff92334` (uses the fused weights; a new test runs the
 real fusion installer and reproduces the error on the old code).
 
-## Next run (`ff92334`)
+## Second run (`ff92334`): native_full fixed, Triton GDN inside the graph
 
-Re-run with native_full fixed and the Triton GDN decode kernel inside the graph
-(`gdn_backend='auto'`), with the PyTorch-GDN graph kept as a comparison column.
+- Archive: `inferstack-colab-l4-static-decode-20261113T163206Z.zip`, sha256
+  `cc17f9fee72241c0ce19f56b9f21a0f4828e32da9b31379b44828c3c7e8da029`; evidence under
+  `evidence/static-decode-l4-ff92334-20261113/`.
+- All 24 cells ran (0 errors). Graph decoders: 6 captures, 384 replays each; the
+  Triton-GDN decoder reports `gdn_backend: triton`.
+
+ms per decode step (median of steps 4–64):
+
+| profile | words | batch | native now | graph + torch GDN | graph + Triton GDN | speedup | agreement | max logit diff |
+|---|---|---|---|---|---|---|---|---|
+| native_unfused | 48 | 1 | 45.0 | 18.4 | 17.6 | 2.56× | 1.000 | 0.16 |
+| native_unfused | 48 | 16 | 48.1 | 29.0 | 23.5 | 2.05× | 1.000 | 0.53 |
+| native_unfused | 400 | 16 | 48.0 | 33.4 | 27.8 | 1.72× | 0.996 | 0.38 |
+| native_full | 48 | 1 | 30.0 | 17.2 | 16.4 | 1.83× | 1.000 | 0.16 |
+| native_full | 48 | 4 | 35.4 | 20.3 | 18.3 | 1.94× | 1.000 | 0.38 |
+| native_full | 48 | 16 | 36.4 | 27.9 | 22.2 | 1.64× | 0.999 | 0.50 |
+| native_full | 400 | 1 | 29.9 | 17.6 | 16.7 | 1.78× | 0.984 | 0.16 |
+| native_full | 400 | 16 | 35.3 | 32.1 | 26.4 | 1.34× | 0.994 | 0.31 |
+
+Full table: `evidence/static-decode-l4-ff92334-20261113/static-decode-summary.md`.
+
+Reading:
+- The Triton GDN kernel inside the graph cuts batch 16 by 17–20% versus the PyTorch GDN
+  graph. Batch 1 (16.4 ms) now matches vLLM/SGLang's ~16 ms client decode.
+- Batch 16 remains 15–37% above vLLM's 19.3 ms (22.2 short prompts, 26.4 long). The gap
+  grows with prompt length, which points at full-attention cost: the 6 attention
+  layers attend over the whole padded bucket (masked), not the live length. Next
+  structural candidates: length-aware attention (paged/varlen) and a fused decode
+  attention kernel.
+- Agreement: native_full 400-word batch 1 is 0.984 (1 token in 64) in every static
+  mode including eager, so it is a fused-vs-static numerical difference (logit diff
+  0.16, BF16), not a graph or Triton fault. Full scorecard and quality checks decide.
+- Still model-step timing only. The decision to keep it comes from wiring it into the
+  served engine and running the full L4 scorecard.

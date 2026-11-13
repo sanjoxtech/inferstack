@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "profile": "configs/profiles/production-v1.6.0.toml",
+  "gpu": "NVIDIA L4",
+  "gdn_kernel": {
+    "patched": true,
+    "calls": 0,
+    "triton_calls": 0,
+    "fallback_calls": 0,
+    "chunk_calls": 432,
+    "chunk_triton_calls": 0,
+    "chunk_fallback_calls": 432,
+    "patch_error": null,
+    "triton_installed": true,
+    "decode_kernel": "triton",
+    "chunk_kernel": "upstream/reference",
+    "conv": {
+      "patched": true,
+      "calls": 6912,
+      "triton_calls": 6912,
+      "fallback_calls": 0,
+      "patch_error": null,
+      "triton_installed": true
+    }
+  },
+  "decoder_stats": {
+    "static_eager": {
+      "captures": 0,
+      "replays": 0,
+      "eager_steps": 384,
+      "loads": 6,
+      "gdn_backend": "torch"
+    },
+    "static_graph_torch_gdn": {
+      "captures": 6,
+      "replays": 384,
+      "eager_steps": 0,
+      "loads": 6,
+      "gdn_backend": "torch"
+    },
+    "static_graph": {
+      "captures": 6,
+      "replays": 384,
+      "eager_steps": 0,
+      "loads": 6,
+      "gdn_backend": "triton"
+    }
+  },
+  "rows": [
+    {
+      "batch": 1,
+      "prompt_words": 48,
+      "prompt_tokens_max": 55,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 38.18995000005998,
+        "ms_first_step": 66.3716020000038,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.15625
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 17.196606000084103,
+        "ms_first_step": 172.2625090000065,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.15625
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 16.361816999960865,
+        "ms_first_step": 110.98853700002564,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.15625
+      },
+      "native_current": {
+        "ms_per_step_median": 29.95411399990644
+      },
+      "speedup_graph_vs_current": 1.8307327358555645
+    },
+    {
+      "batch": 4,
+      "prompt_words": 48,
+      "prompt_tokens_max": 55,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 40.11725700001989,
+        "ms_first_step": 41.111045999969065,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.375
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 20.31471899999815,
+        "ms_first_step": 143.79840399999466,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.375
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 18.302379000033397,
+        "ms_first_step": 119.30205500004831,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.375
+      },
+      "native_current": {
+        "ms_per_step_median": 35.4210890000104
+      },
+      "speedup_graph_vs_current": 1.9353270413614405
+    },
+    {
+      "batch": 16,
+      "prompt_words": 48,
+      "prompt_tokens_max": 57,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 40.010864999999285,
+        "ms_first_step": 42.69179699997494,
+        "greedy_agreement": 0.9990234375,
+        "max_abs_logit_diff": 0.375
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 27.88267599999017,
+        "ms_first_step": 150.4646619999903,
+        "greedy_agreement": 0.9990234375,
+        "max_abs_logit_diff": 0.375
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 22.181799999998475,
+        "ms_first_step": 131.84773600005428,
+        "greedy_agreement": 0.9990234375,
+        "max_abs_logit_diff": 0.5
+      },
+      "native_current": {
+        "ms_per_step_median": 36.409279000054084
+      },
+      "speedup_graph_vs_current": 1.641403267546213
+    },
+    {
+      "batch": 1,
+      "prompt_words": 400,
+      "prompt_tokens_max": 416,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 38.44182799991813,
+        "ms_first_step": 39.17215399997076,
+        "greedy_agreement": 0.984375,
+        "max_abs_logit_diff": 0.1875
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 17.643643000042175,
+        "ms_first_step": 186.54428199999984,
+        "greedy_agreement": 0.984375,
+        "max_abs_logit_diff": 0.1875
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 16.741572000000815,
+        "ms_first_step": 108.03658999998333,
+        "greedy_agreement": 0.984375,
+        "max_abs_logit_diff": 0.15625
+      },
+      "native_current": {
+        "ms_per_step_median": 29.851290999999947
+      },
+      "speedup_graph_vs_current": 1.7830638006991515
+    },
+    {
+      "batch": 4,
+      "prompt_words": 400,
+      "prompt_tokens_max": 424,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 39.58079299991368,
+        "ms_first_step": 40.45014999996965,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.21875
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 21.37893700000859,
+        "ms_first_step": 147.56234299989046,
+        "greedy_agreement": 1.0,
+        "max_abs_logit_diff": 0.21875
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 19.136810999953013,
+        "ms_first_step": 126.8028700000059,
+        "greedy_agreement": 0.99609375,
+        "max_abs_logit_diff": 0.21875
+      },
+      "native_current": {
+        "ms_per_step_median": 35.380990000021484
+      },
+      "speedup_graph_vs_current": 1.8488446168020551
+    },
+    {
+      "batch": 16,
+      "prompt_words": 400,
+      "prompt_tokens_max": 425,
+      "steps": 64,
+      "static_eager": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 40.10761300003196,
+        "ms_first_step": 40.98519900003339,
+        "greedy_agreement": 0.9970703125,
+        "max_abs_logit_diff": 0.3125
+      },
+      "static_graph_torch_gdn": {
+        "gdn_backend": "torch",
+        "ms_per_step_median": 32.11571400004232,
+        "ms_first_step": 184.0299650000361,
+        "greedy_agreement": 0.9970703125,
+        "max_abs_logit_diff": 0.3125
+      },
+      "static_graph": {
+        "gdn_backend": "triton",
+        "ms_per_step_median": 26.4082060000419,
+        "ms_first_step": 160.56529700006195,
+        "greedy_agreement": 0.994140625,
+        "max_abs_logit_diff": 0.3125
+      },
+      "native_current": {
+        "ms_per_step_median": 35.26277799994659
+      },
+      "speedup_graph_vs_current": 1.335296233295463
+    }
+  ]
+}

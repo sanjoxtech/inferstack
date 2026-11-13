@@ -19,6 +19,11 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, step 1 second GPU run)
+
+- L4 (ff92334): all 24 cells ran. native_full graph + Triton GDN: 16.4 / 18.3 / 22.2 ms per step at batch 1/4/16 (short prompts), 26.4 at batch 16 with 400-word prompts; vLLM 19.3 at batch 16. Triton GDN beats the torch-GDN graph by 17-20% at batch 16. Agreement 0.984-1.000. Record: docs/verification/STATIC_DECODE_L4_2026-11-13.md (second run section).
+- Remaining batch-16 gap grows with prompt length, so full attention over the padded bucket is the next suspect. Next: wire the static decoder into the served engine and run the full L4 scorecard.
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, step 1 first GPU numbers)
 
 - L4 (405692e): static graph decode native_unfused 18.4 ms/step vs 43.3 now at batch 1 (2.35x); 1.38-2.35x over batch 1/4/16; greedy agreement 0.996-1.000. Eager static = same speed as now, so the gain is the graph. native_full failed (fusion removes projection modules). Record: docs/verification/STATIC_DECODE_L4_2026-11-13.md.
