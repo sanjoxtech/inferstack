@@ -6,19 +6,21 @@ SGLang replay one recorded CUDA graph per step and decode ~2x faster on the same
 (docs/NATIVE_GAP_ANALYSIS_2026-11-13.md).
 
 Design
-- All decode state lives in fixed buffers sized (batch bucket, max_len bucket):
-  full-attention layers get a static K/V buffer, Gated DeltaNet layers keep their
-  fixed-size conv and recurrent states. Every step updates them in place, so the step
-  has static shapes and addresses and can be captured once and replayed.
+- Decode state lives in one pool of fixed slots (rows). Full-attention layers get a
+  static K/V buffer [slots, Hkv, max_len, D]; Gated DeltaNet layers keep their
+  fixed-size conv and recurrent states. Every step updates them in place.
+- Row layout: token t of a request sits at column t (its position). Each row writes its
+  new token at its own position, so requests of different lengths share one batch
+  without left padding; a per-row mask marks which columns are real.
+- Live rows are kept packed in slots 0..n-1 (see move_row). A step runs on the first
+  b rows (b = smallest batch bucket >= n) and attends over the first L columns
+  (L = smallest length bucket > longest position). One CUDA graph is captured per
+  (b, L) pair up front, while the pool is empty, and replayed afterwards, so attention
+  cost follows the live context length rather than the pool capacity.
 - The step reuses the model's own modules and weights (norms, MLP, projections, rotary)
   and the modeling file's helpers, and mirrors the Transformers decode math, so the
   Transformers path is the numerical oracle. When forward fusion has replaced the
   projections with concatenated weights, the step uses those weights instead.
-- Layout matches the engine's left-padded batches: every row writes its new token to
-  the same physical column; a per-row mask marks which columns are real tokens.
-
-Inputs per step (copied into static tensors before replay): next token ids [B],
-positions [B], write column [1]. Output: last-token logits [B, vocab].
 """
 from __future__ import annotations
 
@@ -53,20 +55,37 @@ def supports_static_decode(model) -> tuple[bool, str]:
     return True, 'ok'
 
 
+def default_buckets(limit: int, start: int) -> list[int]:
+    """Powers of two from `start` below `limit`, then `limit` itself."""
+    out, x = [], start
+    while x < limit:
+        out.append(x)
+        x *= 2
+    out.append(limit)
+    return out
+
+
+def pick_bucket(buckets, need: int) -> int:
+    for b in buckets:
+        if need <= b:
+            return b
+    raise ValueError(f'{need} exceeds the largest bucket {buckets[-1]}')
+
+
 @dataclass
 class StaticDecodeState:
-    """Fixed buffers for one (batch, max_len) bucket."""
+    """Fixed buffers for a pool of `batch` slots, each holding up to `max_len` tokens."""
     batch: int
     max_len: int
-    ids: Any
-    pos: Any
-    col: Any
-    mask: Any
-    logits: Any
-    kv: dict = field(default_factory=dict)        # layer -> (k, v)  [B, Hkv, L, D]
-    conv: dict = field(default_factory=dict)      # layer -> [B, conv_dim, K]
-    rec: dict = field(default_factory=dict)       # layer -> [B, Hv, dk, dv]
-    rows: int = 0                                 # live rows loaded
+    batch_buckets: list
+    len_buckets: list
+    ids: Any                                      # [slots] next input token
+    pos: Any                                      # [slots] its position (= write column)
+    mask: Any                                     # [slots, max_len] visible columns
+    logits: Any                                   # [slots, vocab]
+    kv: dict = field(default_factory=dict)        # layer -> (k, v)  [slots, Hkv, max_len, D]
+    conv: dict = field(default_factory=dict)      # layer -> [slots, conv_dim, K]
+    rec: dict = field(default_factory=dict)       # layer -> [slots, Hv, dk, dv] fp32
 
 
 class QwenStaticDecoder:
@@ -86,9 +105,15 @@ class QwenStaticDecoder:
         self.layer_types = list(self.cfg.layer_types)
         self.mod = _modeling(self.text.layers[0])
         self.graphs: dict = {}
-        self.stats = {'captures': 0, 'replays': 0, 'eager_steps': 0, 'loads': 0}
+        self._pool = None
+        self.stats = {'captures': 0, 'replays': 0, 'eager_steps': 0, 'loads': 0, 'rows_loaded': 0, 'row_moves': 0}
         self.gdn_backend = self._resolve_gdn_backend(gdn_backend)
         self.stats['gdn_backend'] = self.gdn_backend
+        try:
+            import inspect
+            self._sdpa_gqa = 'enable_gqa' in inspect.signature(torch.nn.functional.scaled_dot_product_attention).parameters
+        except (TypeError, ValueError):
+            self._sdpa_gqa = False
 
     def _resolve_gdn_backend(self, wanted):
         if wanted == 'torch':
@@ -103,14 +128,15 @@ class QwenStaticDecoder:
         return 'triton' if ok else 'torch'
 
     # ---- buffers -----------------------------------------------------------------
-    def new_state(self, batch: int, max_len: int) -> StaticDecodeState:
+    def new_state(self, batch: int, max_len: int, batch_buckets=None, len_buckets=None) -> StaticDecodeState:
         import torch
         cfg, dev, dt = self.cfg, self.device, self.dtype
+        bb = sorted({int(x) for x in (batch_buckets or default_buckets(batch, 1)) if 0 < int(x) <= batch} | {batch})
+        lb = sorted({int(x) for x in (len_buckets or default_buckets(max_len, 256)) if 0 < int(x) <= max_len} | {max_len})
         st = StaticDecodeState(
-            batch, max_len,
+            batch, max_len, bb, lb,
             ids=torch.zeros(batch, dtype=torch.long, device=dev),
             pos=torch.zeros(batch, dtype=torch.long, device=dev),
-            col=torch.zeros(1, dtype=torch.long, device=dev),
             mask=torch.zeros(batch, max_len, dtype=torch.bool, device=dev),
             logits=torch.zeros(batch, cfg.vocab_size, dtype=dt, device=dev))
         for i, kind in enumerate(self.layer_types):
@@ -126,33 +152,69 @@ class QwenStaticDecoder:
                                         dtype=torch.float32, device=dev)
         return st
 
-    def load(self, st: StaticDecodeState, cache, attention_mask, width: int):
-        """Copy a Transformers cache produced by prefill into the static buffers.
+    def reset(self, st: StaticDecodeState):
+        """Zero every buffer (used after graph capture, whose warm-up steps write garbage)."""
+        st.ids.zero_(); st.pos.zero_(); st.mask.zero_(); st.logits.zero_()
+        for k, v in st.kv.values():
+            k.zero_(); v.zero_()
+        for t in list(st.conv.values()) + list(st.rec.values()):
+            t.zero_()
 
-        `cache` rows map to state rows 0..b-1; its full-attention keys occupy physical
-        columns 0..width-1 (left padded) and `attention_mask[:, :width]` marks real tokens.
-        Rows b..batch-1 become inert (one dummy visible column, outputs ignored).
+    def load_rows(self, st: StaticDecodeState, cache, attention_mask, width: int, src_rows, dst_slots) -> list[int]:
+        """Copy rows of a Transformers cache produced by prefill into pool slots.
+
+        `cache` keys span physical columns 0..width-1 and `attention_mask[:, :width]`
+        marks real tokens (left padding and prefix-cache layouts both work). Row r's
+        real tokens are packed into columns 0..n-1 of its slot. Returns each row's n,
+        which is also the position of its next token.
         """
         import torch
-        b = int(attention_mask.shape[0])
-        if b > st.batch or width > st.max_len:
-            raise ValueError(f'cache ({b} rows, width {width}) exceeds state ({st.batch}, {st.max_len})')
-        st.mask.zero_()
-        st.mask[:b, :width].copy_(attention_mask[:, :width].bool())
-        st.mask[b:, 0] = True
-        for i, kind in enumerate(self.layer_types):
-            src = cache.layers[i]
-            if kind == 'full_attention':
-                k, v = st.kv[i]
-                k.zero_(); v.zero_()
-                k[:b, :, :width].copy_(src.keys[:, :, :width])
-                v[:b, :, :width].copy_(src.values[:, :, :width])
-            else:
-                st.conv[i].zero_(); st.rec[i].zero_()
-                st.conv[i][:b].copy_(src.conv_states[0])
-                st.rec[i][:b].copy_(src.recurrent_states[0])
-        st.rows = b
+        if width > st.max_len:
+            raise ValueError(f'cache width {width} exceeds pool max_len {st.max_len}')
+        lengths = []
+        m = attention_mask[:, :width].bool()
+        for src, dst in zip(src_rows, dst_slots):
+            if not 0 <= dst < st.batch:
+                raise ValueError(f'slot {dst} outside pool of {st.batch}')
+            cols = m[src].nonzero().squeeze(-1)
+            n = int(cols.numel())
+            if n >= st.max_len:
+                raise ValueError(f'row of {n} tokens leaves no room in pool max_len {st.max_len}')
+            st.mask[dst].zero_()
+            st.mask[dst, :n] = True
+            for i, kind in enumerate(self.layer_types):
+                layer = cache.layers[i]
+                if kind == 'full_attention':
+                    k, v = st.kv[i]
+                    k[dst, :, :n].copy_(layer.keys[src].index_select(1, cols))
+                    v[dst, :, :n].copy_(layer.values[src].index_select(1, cols))
+                else:
+                    st.conv[i][dst].copy_(layer.conv_states[0][src])
+                    st.rec[i][dst].copy_(layer.recurrent_states[0][src])
+            lengths.append(n)
         self.stats['loads'] += 1
+        self.stats['rows_loaded'] += len(lengths)
+        return lengths
+
+    def load(self, st: StaticDecodeState, cache, attention_mask, width: int) -> list[int]:
+        """Load every cache row b into slot b."""
+        b = int(attention_mask.shape[0])
+        if b > st.batch:
+            raise ValueError(f'cache has {b} rows, pool has {st.batch} slots')
+        return self.load_rows(st, cache, attention_mask, width, range(b), range(b))
+
+    def move_row(self, st: StaticDecodeState, src: int, dst: int, length: int):
+        """Copy slot src into slot dst (to keep live rows packed). `length` = columns in use."""
+        n = min(int(length), st.max_len)
+        st.mask[dst].copy_(st.mask[src])
+        st.ids[dst] = st.ids[src]
+        st.pos[dst] = st.pos[src]
+        for k, v in st.kv.values():
+            k[dst, :, :n].copy_(k[src, :, :n])
+            v[dst, :, :n].copy_(v[src, :, :n])
+        for t in list(st.conv.values()) + list(st.rec.values()):
+            t[dst].copy_(t[src])
+        self.stats['row_moves'] += 1
 
     # ---- one decode step (static shapes; graph-capturable) --------------------------
     def _gdn(self, i, g, x, st):
@@ -170,7 +232,8 @@ class QwenStaticDecoder:
             b, a = g.in_proj_b(x), g.in_proj_a(x)
         mixed = qkv.transpose(1, 2)                                     # [B, C, 1]
         z = z.reshape(B, 1, -1, g.head_v_dim)
-        conv = st.conv[i]
+        conv = st.conv[i][:B]
+        rec = st.rec[i][:B]
         w = g.conv1d.weight
         full = torch.cat([conv, mixed], dim=-1).to(w.dtype)          # [B, C, K+1]
         conv.copy_(full[:, :, -conv.shape[-1]:])
@@ -183,10 +246,10 @@ class QwenStaticDecoder:
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
         if self.gdn_backend == 'triton':
-            # Grouped kernel: Q/K L2 norm and head grouping fused; st.rec[i] (fp32,
-            # contiguous) is updated in place, so nothing is allocated for the state.
+            # Grouped kernel: Q/K L2 norm and head grouping fused; the recurrent state
+            # (fp32, contiguous leading-rows view) is updated in place.
             from inferstack.kernels.gdn_triton import inferstack_grouped_gdn_decode
-            o, _ = inferstack_grouped_gdn_decode(q, k, v, gate, beta, initial_state=st.rec[i],
+            o, _ = inferstack_grouped_gdn_decode(q, k, v, gate, beta, initial_state=rec,
                                                  output_final_state=False, use_qk_l2norm_in_kernel=True)
             o = o.reshape(-1, g.head_v_dim)
             o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, 1, -1)
@@ -200,17 +263,17 @@ class QwenStaticDecoder:
         beta, gate = beta[:, 0].float(), gate[:, 0]                    # [B, H]
         q = mod.l2norm(q, dim=-1, eps=1e-6) / (q.shape[-1] ** 0.5)
         k = mod.l2norm(k, dim=-1, eps=1e-6)
-        S = st.rec[i] * gate.exp()[..., None, None]
+        S = rec * gate.exp()[..., None, None]
         kv_mem = (S * k.unsqueeze(-1)).sum(dim=-2)
         delta = (v - kv_mem) * beta.unsqueeze(-1)
         S = S + k.unsqueeze(-1) * delta.unsqueeze(-2)
-        st.rec[i].copy_(S)
+        rec.copy_(S)
         o = (S * q.unsqueeze(-1)).sum(dim=-2)                          # [B, H, dv]
         o = o.to(x.dtype).reshape(-1, g.head_v_dim)
         o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, 1, -1)
         return g.out_proj(o)
 
-    def _attn(self, i, a, x, cos, sin, st):
+    def _attn(self, i, a, x, cos, sin, st, L, write_idx, mask):
         import torch
         import torch.nn.functional as F
         mod = self.mod
@@ -228,20 +291,26 @@ class QwenStaticDecoder:
         v = vraw.view(B, 1, -1, a.head_dim).transpose(1, 2)
         q, k = mod.apply_rotary_pos_emb(q, k, cos, sin)
         kc, vc = st.kv[i]
-        kc.index_copy_(2, st.col, k)
-        vc.index_copy_(2, st.col, v)
-        keys = mod.repeat_kv(kc, a.num_key_value_groups)
-        vals = mod.repeat_kv(vc, a.num_key_value_groups)
-        o = F.scaled_dot_product_attention(q, keys, vals, attn_mask=st.mask[:, None, None, :], scale=a.scaling)
+        kc[:B].scatter_(2, write_idx, k)                              # each row at its own position
+        vc[:B].scatter_(2, write_idx, v)
+        keys, vals = kc[:B, :, :L], vc[:B, :, :L]
+        if self._sdpa_gqa:
+            o = F.scaled_dot_product_attention(q, keys, vals, attn_mask=mask, scale=a.scaling,
+                                               enable_gqa=a.num_key_value_groups > 1)
+        else:
+            keys = mod.repeat_kv(keys, a.num_key_value_groups)
+            vals = mod.repeat_kv(vals, a.num_key_value_groups)
+            o = F.scaled_dot_product_attention(q, keys, vals, attn_mask=mask, scale=a.scaling)
         o = o.transpose(1, 2).reshape(B, 1, -1) * torch.sigmoid(gate)
         return a.o_proj(o)
 
-    def _step(self, st: StaticDecodeState):
-        import torch
-        st.mask.index_fill_(1, st.col, True)
-        h = self.text.embed_tokens(st.ids[:, None])
-        B = h.shape[0]
-        cos, sin = self.text.rotary_emb(h, st.pos.view(1, B, 1).expand(3, B, 1))
+    def _step(self, st: StaticDecodeState, B: int, L: int):
+        ids, pos = st.ids[:B], st.pos[:B]
+        st.mask[:B].scatter_(1, pos.view(B, 1), True)
+        mask = st.mask[:B, None, None, :L]
+        h = self.text.embed_tokens(ids[:, None])
+        cos, sin = self.text.rotary_emb(h, pos.view(1, B, 1).expand(3, B, 1))
+        write_idx = None
         for i, kind in enumerate(self.layer_types):
             layer = self.text.layers[i]
             r = h
@@ -249,63 +318,75 @@ class QwenStaticDecoder:
             if kind == 'linear_attention':
                 h = self._gdn(i, layer.linear_attn, h, st)
             else:
-                h = self._attn(i, layer.self_attn, h, cos, sin, st)
+                if write_idx is None:
+                    a = layer.self_attn
+                    write_idx = pos.view(B, 1, 1, 1).expand(B, self.cfg.num_key_value_heads, 1, a.head_dim)
+                h = self._attn(i, layer.self_attn, h, cos, sin, st, L, write_idx, mask)
             h = r + h
             r = h
             h = r + layer.mlp(layer.post_attention_layernorm(h))
         h = self.text.norm(h)
-        st.logits.copy_(self.lm_head(h[:, -1]))
+        st.logits[:B].copy_(self.lm_head(h[:, -1]))
 
-    # ---- public step: eager on CPU, captured CUDA graph on GPU ---------------------
-    def step(self, st: StaticDecodeState, ids, pos, col: int, *, use_graph: bool = True):
+    # ---- public API ----------------------------------------------------------------
+    def capture(self, st: StaticDecodeState, batches=None, lengths=None) -> int:
+        """Record one CUDA graph per (batch bucket, length bucket). Warm-up steps write
+        into the buffers, so call this while the pool holds no live rows; buffers are
+        zeroed afterwards. Returns the number of graphs captured (0 off CUDA)."""
         import torch
-        st.ids.copy_(ids)
-        st.pos.copy_(pos)
-        st.col.fill_(int(col))
-        if not (use_graph and self.device.type == 'cuda'):
-            with torch.inference_mode():
-                self._step(st)
-            self.stats['eager_steps'] += 1
-            return st.logits
-        key = id(st)
-        graph = self.graphs.get(key)
+        if self.device.type != 'cuda':
+            return 0
+        if self._pool is None:
+            self._pool = torch.cuda.graph_pool_handle()
+        n = 0
+        for B in (batches or st.batch_buckets):
+            for L in (lengths or st.len_buckets):
+                key = (id(st), int(B), int(L))
+                if key in self.graphs:
+                    continue
+                stream = torch.cuda.Stream()
+                stream.wait_stream(torch.cuda.current_stream())
+                with torch.inference_mode(), torch.cuda.stream(stream):
+                    self._step(st, B, L)
+                torch.cuda.current_stream().wait_stream(stream)
+                graph = torch.cuda.CUDAGraph()
+                with torch.inference_mode(), torch.cuda.graph(graph, pool=self._pool):
+                    self._step(st, B, L)
+                self.graphs[key] = graph
+                n += 1
+        torch.cuda.synchronize()
+        self.reset(st)
+        self.stats['captures'] += n
+        return n
+
+    def step(self, st: StaticDecodeState, ids, pos, rows: int | None = None, *, length: int | None = None,
+             use_graph: bool = True):
+        """One decode step for live slots 0..rows-1. ids/pos: [rows] next token and its
+        position. length: 1 + the largest position (pass it when known to avoid a sync).
+        Returns logits [rows, vocab] (a view of the pool's buffer; consume before the next step)."""
+        import torch
+        rows = int(ids.shape[0]) if rows is None else int(rows)
+        if length is None:
+            length = int(pos[:rows].max().item()) + 1
+        if length > st.max_len:
+            raise ValueError(f'position {length - 1} beyond pool max_len {st.max_len}')
+        B = pick_bucket(st.batch_buckets, rows)
+        L = pick_bucket(st.len_buckets, int(length))
+        st.ids[:rows].copy_(ids[:rows])
+        st.pos[:rows].copy_(pos[:rows])
+        if B > rows:
+            st.ids[rows:B].zero_()
+            st.pos[rows:B].zero_()
+        graph = self.graphs.get((id(st), B, L)) if use_graph else None
         if graph is None:
-            graph = self._capture(st)
-            self.graphs[key] = graph
-        graph.replay()
-        self.stats['replays'] += 1
-        return st.logits
-
-    def _capture(self, st: StaticDecodeState):
-        """Record one step for this state's buffers. Warm-up runs mutate state, so the
-        caller's state is snapshotted and restored around capture."""
-        import torch
-        snap = self._snapshot(st)
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.inference_mode(), torch.cuda.stream(stream):
-            for _ in range(2):
-                self._step(st)
-        torch.cuda.current_stream().wait_stream(stream)
-        graph = torch.cuda.CUDAGraph()
-        with torch.inference_mode(), torch.cuda.graph(graph):
-            self._step(st)
-        self._restore(st, snap)
-        self.stats['captures'] += 1
-        return graph
-
-    def _snapshot(self, st):
-        return {'mask': st.mask.clone(), 'kv': {i: (k.clone(), v.clone()) for i, (k, v) in st.kv.items()},
-                'conv': {i: t.clone() for i, t in st.conv.items()}, 'rec': {i: t.clone() for i, t in st.rec.items()}}
-
-    def _restore(self, st, snap):
-        st.mask.copy_(snap['mask'])
-        for i, (k, v) in snap['kv'].items():
-            st.kv[i][0].copy_(k); st.kv[i][1].copy_(v)
-        for i, t in snap['conv'].items():
-            st.conv[i].copy_(t)
-        for i, t in snap['rec'].items():
-            st.rec[i].copy_(t)
+            with torch.inference_mode():
+                self._step(st, B, L)
+            self.stats['eager_steps'] += 1
+        else:
+            graph.replay()
+            self.stats['replays'] += 1
+        return st.logits[:rows]
 
     def release(self, st: StaticDecodeState):
-        self.graphs.pop(id(st), None)
+        for key in [k for k in self.graphs if k[0] == id(st)]:
+            self.graphs.pop(key)

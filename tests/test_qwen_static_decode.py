@@ -42,7 +42,7 @@ def left_padded(prompts, pad=0):
     return ids, mask, pos, w
 
 
-def run_both(model, prompts, steps, batch_bucket=None, max_len=64):
+def run_both(model, prompts, steps, batch_bucket=None, max_len=64, len_buckets=None):
     ids, mask, pos, w = left_padded(prompts)
     B = len(prompts)
     with torch.inference_mode():
@@ -50,28 +50,41 @@ def run_both(model, prompts, steps, batch_bucket=None, max_len=64):
     cache = out.past_key_values
     nxt = out.logits[:, -1].argmax(-1)
     dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
-    st = dec.new_state(batch_bucket or B, max_len)
-    dec.load(st, cache, mask, w)
+    st = dec.new_state(batch_bucket or B, max_len, len_buckets=len_buckets)
+    lengths = dec.load(st, cache, mask, w)
+    assert lengths == [len(p) for p in prompts]
     positions = torch.tensor([len(p) for p in prompts])
     hf_mask = mask
     ref_logits, got_logits = [], []
     for s in range(steps):
-        col = w + s
         hf_mask = torch.cat([hf_mask, torch.ones((B, 1), dtype=torch.long)], dim=1)
         with torch.inference_mode():
             ref = model(input_ids=nxt[:, None], attention_mask=hf_mask, position_ids=positions[:, None],
                         past_key_values=cache, use_cache=True)
         cache = ref.past_key_values
-        ids_in = torch.zeros(st.batch, dtype=torch.long)
-        ids_in[:B] = nxt
-        pos_in = torch.zeros(st.batch, dtype=torch.long)
-        pos_in[:B] = positions
-        got = dec.step(st, ids_in, pos_in, col)[:B].clone()
+        got = dec.step(st, nxt, positions).clone()
         ref_logits.append(ref.logits[:, -1].float())
         got_logits.append(got.float())
         nxt = ref.logits[:, -1].argmax(-1)
         positions = positions + 1
     return torch.stack(ref_logits), torch.stack(got_logits), dec
+
+
+def hf_greedy(model, prompt, steps):
+    """Reference continuation for one prompt (unbatched Transformers decode)."""
+    ids = torch.tensor([prompt])
+    with torch.inference_mode():
+        out = model(input_ids=ids, use_cache=True)
+    cache, tok, toks, logits = out.past_key_values, out.logits[:, -1].argmax(-1), [], []
+    for s in range(steps):
+        toks.append(int(tok))
+        with torch.inference_mode():
+            out = model(input_ids=tok[:, None], position_ids=torch.tensor([[len(prompt) + s]]),
+                        past_key_values=cache, use_cache=True)
+        cache = out.past_key_values
+        logits.append(out.logits[0, -1].float())
+        tok = out.logits[:, -1].argmax(-1)
+    return toks, logits
 
 
 def test_supports_qwen35_text_model():
@@ -140,3 +153,60 @@ def test_load_rejects_oversized_cache():
         dec.load(dec.new_state(2, 64), cache, mask, w)
     with pytest.raises(ValueError):
         dec.load(dec.new_state(4, 3), cache, mask, w)
+
+
+def test_length_buckets_slice_attention():
+    """Attention runs over the smallest length bucket covering the live rows."""
+    prompts = [[5, 7, 11, 13, 2, 9], [3, 1, 8]]
+    ref, got, dec = run_both(tiny_model(seed=5), prompts, steps=8, max_len=64, len_buckets=[8, 16, 64])
+    torch.testing.assert_close(got, ref, rtol=1e-4, atol=1e-4)
+
+
+def test_rows_of_different_lengths_and_move_row():
+    """Two requests decode together; row 0 finishes, row 1 moves to slot 0 and continues.
+    Every logit must match each request decoded alone by Transformers."""
+    model = tiny_model(seed=6)
+    pa, pb = [5, 7, 11, 13, 2, 9, 4], [3, 1]
+    ta, la = hf_greedy(model, pa, 3)
+    tb, lb = hf_greedy(model, pb, 7)
+    ids, mask, pos, w = left_padded([pa, pb])
+    with torch.inference_mode():
+        cache = model(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=True).past_key_values
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    st = dec.new_state(4, 32, len_buckets=[8, 32])
+    assert dec.load(st, cache, mask, w) == [len(pa), len(pb)]
+    for s in range(3):
+        got = dec.step(st, torch.tensor([ta[s], tb[s]]), torch.tensor([len(pa) + s, len(pb) + s]))
+        torch.testing.assert_close(got[0].float(), la[s], rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(got[1].float(), lb[s], rtol=1e-4, atol=1e-4)
+    dec.move_row(st, 1, 0, len(pb) + 3)
+    for s in range(3, 7):
+        got = dec.step(st, torch.tensor([tb[s]]), torch.tensor([len(pb) + s]))
+        torch.testing.assert_close(got[0].float(), lb[s], rtol=1e-4, atol=1e-4)
+    assert dec.stats['row_moves'] == 1
+
+
+def test_load_rows_into_chosen_slots_with_holes_in_mask():
+    """Prefix-cache layouts leave holes in the attention mask; load_rows packs the real
+    columns. Oracle: Transformers decoding from the same cache with the same mask."""
+    model = tiny_model(seed=7)
+    ids = torch.tensor([[4, 9, 0, 0, 2, 6, 1]])
+    mask = torch.tensor([[1, 1, 0, 0, 1, 1, 1]])
+    pos = torch.tensor([[0, 1, 0, 0, 2, 3, 4]])
+    with torch.inference_mode():
+        out = model(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=True)
+    cache, tok = out.past_key_values, out.logits[:, -1].argmax(-1)
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    st = dec.new_state(4, 16)
+    assert dec.load_rows(st, cache, mask, 7, [0], [2]) == [5]
+    dec.move_row(st, 2, 0, 5)          # live rows are packed from slot 0
+    m = mask
+    for s in range(3):
+        m = torch.cat([m, torch.ones((1, 1), dtype=torch.long)], dim=1)
+        with torch.inference_mode():
+            ref = model(input_ids=tok[:, None], attention_mask=m, position_ids=torch.tensor([[5 + s]]),
+                        past_key_values=cache, use_cache=True)
+        cache = ref.past_key_values
+        got = dec.step(st, tok, torch.tensor([5 + s]))
+        torch.testing.assert_close(got[0].float(), ref.logits[0, -1].float(), rtol=1e-4, atol=1e-4)
+        tok = ref.logits[:, -1].argmax(-1)

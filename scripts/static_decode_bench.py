@@ -70,21 +70,24 @@ def bench_case(model, tok, decoders, batch, words, steps, bucket_len):
     results = {}
     for mode in ('static_eager', 'static_graph_torch_gdn', 'static_graph'):
         dec = decoders[mode]
+        st = dec.new_state(batch, bucket_len, batch_buckets=[batch])
+        if mode != 'static_eager':
+            dec.capture(st)  # one graph per length bucket, before any live rows are loaded
         cache, first = prefill()
-        st = dec.new_state(batch, bucket_len)
         dec.load(st, cache, mask, w)
         p = lengths.clone(); ms = []; agree = 0; max_diff = 0.0
+        longest = int(lengths.max())
         for s in range(steps):
             feed = ref_tokens[s]  # teacher-forced on the reference so step s compares like with like
             torch.cuda.synchronize(); t0 = time.perf_counter()
-            lg = dec.step(st, feed, p, w + s, use_graph=(mode != 'static_eager'))
+            lg = dec.step(st, feed, p, batch, length=longest + s + 1, use_graph=(mode != 'static_eager'))
             torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1000)
             lg = lg.float()
             agree += int((lg.argmax(-1) == ref_logits[s].argmax(-1)).sum())
             max_diff = max(max_diff, float((lg - ref_logits[s]).abs().max()))
             p = p + 1
         dec.release(st)
-        warm = ms[3:] if len(ms) > 6 else ms  # first graph step includes capture
+        warm = ms[3:] if len(ms) > 6 else ms
         results[mode] = {'gdn_backend': dec.gdn_backend, 'ms_per_step_median': statistics.median(warm), 'ms_first_step': ms[0],
                          'greedy_agreement': agree / (steps * batch), 'max_abs_logit_diff': max_diff}
     warm_ref = ref_ms[3:] if len(ref_ms) > 6 else ref_ms

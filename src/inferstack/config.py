@@ -57,6 +57,18 @@ class NativeConfig:
     graph_generation_cloning:bool=True
     profile_decode:bool=False
 
+    # v1.7 static decode lane: decode by CUDA-graph replay over a fixed slot pool
+    # (runtime/qwen_static_decode.py, runtime/qwen_static_lane.py). Rows that do not
+    # fit the pool fall back to the Transformers decode path.
+    static_decode:bool=False
+    static_decode_slots:int=0                      # 0 = max_requests_per_batch
+    static_decode_max_tokens:int=4096              # prompt + max_new_tokens per pooled row
+    static_decode_batch_buckets:tuple[int,...]=(1,2,4,8,16)
+    static_decode_len_buckets:tuple[int,...]=(256,512,1024,2048,4096)
+    static_decode_gdn_backend:str="auto"
+    static_decode_cuda_graph:bool=True
+    static_decode_strict:bool=False
+
     # v1.6 Qwen forward-fusion engine. These are inference-only structural
     # optimizations installed after weights load; every path has a safe fallback.
     forward_fusion:bool=False
