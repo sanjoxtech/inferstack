@@ -19,6 +19,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-13 UTC — Claude Code (implementation agent, native step 1: static decode + CUDA graph)
+
+- Owner decision (replaces the handoff rule "no new native kernels or another optimization version yet"): native optimization is now in scope; goal is a world-class native engine; a change is kept only if it improves the whole scorecard, no single-knob hacks.
+- Plan: docs/NATIVE_GAP_ANALYSIS_2026-11-13.md (1 decode CUDA graphs, 2 token-budget prefill scheduling, 3 fused GDN prefill kernel, 4 packed/paged batches).
+- Step 1 component done (405692e): src/inferstack/runtime/qwen_static_decode.py; tests/test_qwen_static_decode.py 6 passed in Docker (python:3.12 + torch CPU + transformers 5.22.2), skip locally/CI (no transformers); two injected faults caught.
+- GPU check prepared: docs/notebooks/colab_static_decode_bench.ipynb (pins 405692e). Not yet wired into the serving engine; that follows the GPU numbers.
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, N2 prefill diagnosis recorded)
 
 - Owner ran colab_n2_prefill_diagnosis.ipynb on L4 (pin 476bf3f); CI for 286d0fa green. Report: docs/verification/N2_PREFILL_DIAGNOSIS_L4_2026-11-13.md, JSON under docs/verification/evidence/n2-l4-20261113/.
