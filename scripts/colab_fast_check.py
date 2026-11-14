@@ -36,9 +36,13 @@ JOB_LOG = '/content/job.log'
 ARCHIVE = '/content/job-evidence.zip'
 
 
-def sh(*argv, check=True, capture=False):
+def sh(*argv, check=True, capture=False, timeout=None):
     print('+', ' '.join(map(str, argv)), flush=True)
-    return subprocess.run(list(map(str, argv)), check=check, text=True, capture_output=capture)
+    try:
+        return subprocess.run(list(map(str, argv)), check=check, text=True, capture_output=capture, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f'timed out after {timeout}s', flush=True)
+        return subprocess.CompletedProcess(argv, 124, '', '')
 
 
 def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False):
@@ -102,10 +106,10 @@ print('POLL ' + json.dumps({{'alive': alive, 'archive': os.path.exists({ARCHIVE!
 '''
 
 
-def retry(*argv, tries=5, wait=20):
-    """colab CLI steps are idempotent here; retry them through network drops."""
+def retry(*argv, tries=5, wait=20, timeout=900):
+    """colab CLI steps are idempotent here; retry them through network drops and hangs."""
     for i in range(tries):
-        if sh(*argv, check=False).returncode == 0:
+        if sh(*argv, check=False, timeout=timeout).returncode == 0:
             return
         print(f'retry {i + 1}/{tries} after failure', flush=True)
         time.sleep(wait)
@@ -113,8 +117,11 @@ def retry(*argv, tries=5, wait=20):
 
 
 def poll(colab, session, script):
-    r = subprocess.run([colab, 'exec', '-s', session, '-f', str(script), '--timeout', '120'],
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run([colab, 'exec', '-s', session, '-f', str(script), '--timeout', '120'],
+                           capture_output=True, text=True, timeout=240)
+    except subprocess.TimeoutExpired:
+        return None
     line = next((x for x in r.stdout.splitlines() if x.startswith('POLL ')), None)
     return json.loads(line[5:]) if line else None
 
@@ -154,7 +161,7 @@ def main():
     launch.write_text(LAUNCH)
     pollf.write_text(POLL)
     (out / 'job.py').write_text(job.read_text())
-    have = sh(colab, 'sessions', capture=True, check=False).stdout
+    have = sh(colab, 'sessions', capture=True, check=False, timeout=120).stdout
     if f'[{args.session}]' not in have:
         retry(colab, 'new', '--gpu', args.gpu, '-s', args.session)
     retry(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
@@ -179,11 +186,12 @@ def main():
     fetched = False
     if state and state['archive']:
         for attempt in range(5):
-            if sh(colab, 'download', '-s', args.session, ARCHIVE, out / 'evidence.zip', check=False).returncode == 0:
+            if sh(colab, 'download', '-s', args.session, ARCHIVE, out / 'evidence.zip', check=False,
+                  timeout=900).returncode == 0:
                 fetched = True
                 break
             time.sleep(30)
-    sh(colab, 'download', '-s', args.session, JOB_LOG, out / 'job.log', check=False)
+    sh(colab, 'download', '-s', args.session, JOB_LOG, out / 'job.log', check=False, timeout=300)
     if fetched:
         shutil.unpack_archive(out / 'evidence.zip', out)
         for md in sorted(out.glob('*/scorecard/*/scorecard.md')):
