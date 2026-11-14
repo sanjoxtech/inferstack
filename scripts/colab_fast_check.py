@@ -82,6 +82,10 @@ print('Evidence archive:', {ARCHIVE!r}, flush=True)
 
 LAUNCH = f'''
 import subprocess, sys, os
+if os.path.exists('/content/job.pid'):
+    pid = int(open('/content/job.pid').read())
+    if os.path.exists(f'/proc/{{pid}}'):
+        print('job already running, pid', pid); raise SystemExit(0)
 for f in ({ARCHIVE!r}, {JOB_LOG!r}):
     if os.path.exists(f): os.remove(f)
 p = subprocess.Popen([sys.executable, '-u', '/content/job.py'], stdout=open({JOB_LOG!r}, 'w'),
@@ -96,6 +100,16 @@ alive = os.path.exists(f'/proc/{{pid}}') and open(f'/proc/{{pid}}/stat').read().
 tail = open({JOB_LOG!r}).read()[-1500:] if os.path.exists({JOB_LOG!r}) else ''
 print('POLL ' + json.dumps({{'alive': alive, 'archive': os.path.exists({ARCHIVE!r}), 'tail': tail}}))
 '''
+
+
+def retry(*argv, tries=5, wait=20):
+    """colab CLI steps are idempotent here; retry them through network drops."""
+    for i in range(tries):
+        if sh(*argv, check=False).returncode == 0:
+            return
+        print(f'retry {i + 1}/{tries} after failure', flush=True)
+        time.sleep(wait)
+    raise SystemExit(f'failed after {tries} tries: {argv}')
 
 
 def poll(colab, session, script):
@@ -126,7 +140,7 @@ def main():
     branch = sh('git', 'rev-parse', '--abbrev-ref', 'HEAD', capture=True).stdout.strip()
     workload = None if args.workload == 'default' else json.loads(Path(args.workload).read_text())
     out = Path(args.out) / f'{args.session}-{commit[:7]}'
-    out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix='colab-run-'))
     bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
                                                           'poll.py'))
@@ -140,11 +154,13 @@ def main():
     launch.write_text(LAUNCH)
     pollf.write_text(POLL)
     (out / 'job.py').write_text(job.read_text())
-    sh(colab, 'new', '--gpu', args.gpu, '-s', args.session)
-    sh(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
-    sh(colab, 'upload', '-s', args.session, job, '/content/job.py')
-    sh(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300')
-    sh(colab, 'exec', '-s', args.session, '-f', launch, '--timeout', '120')
+    have = sh(colab, 'sessions', capture=True, check=False).stdout
+    if f'[{args.session}]' not in have:
+        retry(colab, 'new', '--gpu', args.gpu, '-s', args.session)
+    retry(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
+    retry(colab, 'upload', '-s', args.session, job, '/content/job.py')
+    retry(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300')
+    retry(colab, 'exec', '-s', args.session, '-f', launch, '--timeout', '120')
     state, misses = None, 0
     while True:
         time.sleep(args.poll_s)
