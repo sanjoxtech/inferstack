@@ -37,17 +37,37 @@ def _repeat_heads(query, key, value):
     return query.repeat_interleave(rep, dim=2), key.repeat_interleave(rep, dim=2)
 
 
+def _torch_function(fn):
+    """Strip every wrapper transformers puts around a GDN rule down to the torch function:
+    functools.wraps layers (__wrapped__) and the `kernels` package's Func module, whose
+    forward closes over the wrapped function as `func`."""
+    seen = set()
+    while id(fn) not in seen:
+        seen.add(id(fn))
+        inner = getattr(fn, '__wrapped__', None)
+        if inner is not None and inner is not fn:
+            fn = inner
+            continue
+        forward = getattr(getattr(fn, 'forward', None), '__func__', None)
+        cells = dict(zip(forward.__code__.co_freevars, (c.cell_contents for c in forward.__closure__ or ()))) \
+            if forward is not None and forward.__closure__ else {}
+        if callable(cells.get('func')):
+            fn = cells['func']
+            continue
+        break
+    return fn
+
+
 def _upstream_chunk():
     """transformers' torch chunked algebra, with its hub/package dispatch stripped.
 
-    transformers decorates torch_chunk_gated_delta_rule so that, once flash-linear-attention
-    is importable, it silently runs FLA instead. `chunk_reference` must stay the PyTorch
-    algorithm whatever is installed, so A/B runs (reference vs fla_chunk) are real."""
+    On the GPU image transformers wraps torch_chunk_gated_delta_rule in a `kernels` Func
+    module around a dispatcher that runs FLA whenever flash-linear-attention is importable.
+    `chunk_reference` must stay the PyTorch algorithm whatever is installed, so A/B runs
+    (reference vs fla_chunk) are real."""
     from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
     from inferstack.kernels import gdn_triton
-    import inspect
-    fn = gdn_triton._ORIGINAL_CHUNK or mod.torch_chunk_gated_delta_rule
-    return inspect.unwrap(fn)   # follow every functools.wraps layer down to the torch function
+    return _torch_function(gdn_triton._ORIGINAL_CHUNK or mod.torch_chunk_gated_delta_rule)
 
 
 def _run_recurrent_triton(query, key, value, g, beta, state, output_state, qk_l2norm):
@@ -152,4 +172,5 @@ def gdn(query, key, value, g, beta, state=None, *, output_state=True, qk_l2norm=
 def diagnostics():
     ref = _upstream_chunk()
     return {'backends': list(BACKENDS[1:]), 'calls': dict(STATS), 'fla_available': fla_available(),
-            'fla_pin': FLA_PIN, 'chunk_reference_impl': f'{ref.__module__}.{ref.__qualname__}'}
+            'fla_pin': FLA_PIN,
+            'chunk_reference_impl': f"{getattr(ref, '__module__', '?')}.{getattr(ref, '__qualname__', type(ref).__name__)}"}

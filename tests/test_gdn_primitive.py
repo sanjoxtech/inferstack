@@ -116,10 +116,15 @@ def test_chunk_reference_bypasses_transformers_package_dispatch(monkeypatch):
         raise AssertionError('package/hub implementation must not run for chunk_reference')
     hub_dispatch.__wrapped__ = torch_fn
 
-    def outer_layer(*a, **k):          # transformers stacks two decorators
-        return hub_dispatch(*a, **k)
-    outer_layer.__wrapped__ = hub_dispatch
-    monkeypatch.setattr(mod, 'torch_chunk_gated_delta_rule', outer_layer)
+    class Func(torch.nn.Module):       # shape of the `kernels` package wrapper seen on the GPU image
+        pass
+
+    def make(func):
+        def forward(self, *a, **k):
+            return func(*a, **k)
+        return forward
+    Func.forward = make(hub_dispatch)
+    monkeypatch.setattr(mod, 'torch_chunk_gated_delta_rule', Func())
     monkeypatch.setattr(gdn_triton, '_ORIGINAL_CHUNK', None)
     o, s = G.gdn(*inputs(T=9), backend='chunk_reference')
     o_ref, s_ref = G.gdn(*inputs(T=9), backend='recurrent_reference')

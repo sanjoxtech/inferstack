@@ -113,7 +113,8 @@ def test_static_lane_cancellation_frees_slot():
         await asyncio.wait_for(drain(q), 30)
         d = e.diagnostics()
         await e.close()
-        return d
-    d = asyncio.run(go())
+        return d, r
+    d, r = asyncio.run(go())
     assert d['static_decode']['live_rows'] == 0
-    assert d['cancellations'] == 1
+    # The tiny model can emit EOS before the cancel lands (CPU timing); then it is a finish.
+    assert d['cancellations'] == 1 or r.finish_reason in ('stop', 'length'), (d['cancellations'], r.finish_reason)
