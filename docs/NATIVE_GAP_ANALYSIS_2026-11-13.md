@@ -69,3 +69,20 @@ interleaving), prefix-cache snapshot changes (1.3% of prefill).
 
 Constraint: items 1–4 change native runtime or kernels. The owner's standing rule says no
 new native kernels or optimization version yet, so each needs an explicit go-ahead.
+
+
+## External reference before N3: llama.cpp v1.0 fused GDN
+
+Before implementing the planned fused GDN chunked-prefill kernel, perform the bounded code study in [LLAMA_CPP_INTEGRATION_PLAN.md](LLAMA_CPP_INTEGRATION_PLAN.md). llama.cpp v1.0.0 removed its old non-fused GDN paths because fused GDN is now the standard path, and its Qwen3.5 implementation is directly relevant to the measured native prefill bottleneck.
+
+This does **not** replace the measured ordering above. The sequence is:
+
+1. finish the full served scorecard for `production-v1.7.0` / `native_static`;
+2. keep/reject static decode based on the whole scorecard;
+3. study llama.cpp's Qwen3.5 GDN state/layout/fusion choices and scheduler/graph reuse;
+4. compare those choices with Transformers reference, InferStack decode GDN and other provenance-bearing optimized implementations;
+5. write the N3 design note;
+6. implement a bounded InferStack candidate with the reference path as numerical oracle;
+7. judge it using the full scorecard and quality gates.
+
+External implementation evidence may change the design hypothesis, but it does not count as an InferStack speedup or compatibility proof.
