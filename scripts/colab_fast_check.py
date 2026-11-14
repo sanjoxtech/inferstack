@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Fast native-only L4 check through the Google Colab CLI (one command, no browser).
+"""L4 scorecard runs through the Google Colab CLI, robust to a lost local connection.
 
-Pipeline stage for native treatments: install + smoke + a reduced scorecard for the chosen
-native profiles only, then download the evidence and stop the runtime. vLLM/SGLang are not
-re-measured; compare against the rivals' rows of the last full run (same GPU class, pinned
-versions) with `engine_scorecard.py aggregate`. A fast check screens a treatment. Only a
-full 3-round scorecard (docs/notebooks/colab_a100_engine_scorecard.ipynb) promotes one.
+The job runs on the Colab VM as a detached process (setup cells of
+docs/notebooks/colab_a100_engine_scorecard.ipynb + stages + scorecard), so a dropped
+network on this machine does not stop it. This driver polls the VM, downloads the evidence
+archive when the job is done, and stops the runtime only after the archive is safely
+downloaded. If the download fails, the runtime is left running and the command to fetch
+it is printed.
 
-  python scripts/colab_fast_check.py --profiles native_static native_budget \
-      --workload configs/scorecard/workload-fast.json --rounds 2
+Fast check (screening, native profiles, rivals compared from the last full run):
+  python scripts/colab_fast_check.py --profiles native_static native_budget --rounds 2
+Full scorecard (release decision; rivals re-measured):
+  python scripts/colab_fast_check.py --profiles native_unfused native_full native_static \\
+      native_budget vllm sglang --rounds 3 --workload default
 
 The repository is shipped as a git bundle of the current branch, so no credential reaches
-the runtime. The pinned commit is HEAD (it must be committed). Requires `colab` (google-colab-cli)
-signed in.
+the runtime. The pinned commit is HEAD (commit first).
 """
 from __future__ import annotations
 
@@ -28,62 +31,90 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / 'docs/notebooks/colab_a100_engine_scorecard.ipynb'
 SETUP_CELLS = 7          # GPU check + clone, native env, stage helpers (markdown included)
+RIVALS = ('vllm', 'sglang')
+JOB_LOG = '/content/job.log'
+ARCHIVE = '/content/job-evidence.zip'
 
 
 def sh(*argv, check=True, capture=False):
     print('+', ' '.join(map(str, argv)), flush=True)
-    return subprocess.run(list(map(str, argv)), check=check, text=True,
-                          capture_output=capture)
+    return subprocess.run(list(map(str, argv)), check=check, text=True, capture_output=capture)
 
 
-def build_notebook(commit, profiles, workload, rounds, out_path, install_fla=False, gdn_check=False):
+def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False):
+    """One Python script: the notebook's setup cells, optional pre-steps, stages, scorecard."""
     nb = json.loads(NOTEBOOK.read_text())
-    cells = nb['cells'][:SETUP_CELLS]
-    setup = ''.join(cells[2]['source'])
+    cells = [''.join(c['source']) for c in nb['cells'][:SETUP_CELLS] if c['cell_type'] == 'code']
     marker = "COMMIT = '"
-    start = setup.index(marker) + len(marker)
-    cells[2]['source'] = setup[:start] + commit + setup[setup.index("'", start):]
+    start = cells[0].index(marker) + len(marker)
+    cells[0] = cells[0][:start] + commit + cells[0][cells[0].index("'", start):]
     pre = ''
     if install_fla:
         pre += ("assert logged([PY,'-m','pip','install','--no-deps','fla-core==0.6.0','flash-linear-attention==0.6.0',"
                 "'einops'],'install-fla.log',env=ENV,timeout=1800)==0\n")
     if gdn_check:
         pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
-                "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600))\n"
-                "print((OUT/'gdn-backend-check.log').read_text()[-4000:])\n")
-    code = pre + f'''
-ONLY = {profiles!r}
+                "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600), flush=True)\n")
+    workload_arg = '' if workload is None else (
+        f"(OUT/'workload.json').write_text({json.dumps(json.dumps(workload))})\n")
+    wl = "[] if not (OUT/'workload.json').exists() else ['--workload',str(OUT/'workload.json')]"
+    tail = f'''
+ONLY = {list(profiles)!r}
 for p in ONLY:
-    stage(p)
+    stage(p, engine=p) if p in {RIVALS!r} else stage(p)
 only = [p for p in ONLY if STAGE.get(p) == 'passed']
-print('fast check profiles:', only, '| stages:', STAGE)
-assert only, 'no native profile passed its smoke test'
-(OUT/'workload-fast.json').write_text({json.dumps(json.dumps(workload))})
-require_empty_gpu()
-code = logged([PY,'-u','scripts/engine_scorecard.py','run','--profiles',PROFILES,
-               '--workload',str(OUT/'workload-fast.json'),
+print('profiles:', only, '| stages:', STAGE, flush=True)
+assert only, 'no profile passed its smoke test'
+{workload_arg}require_empty_gpu()
+code = logged([PY,'-u','scripts/engine_scorecard.py','run','--profiles',PROFILES,*({wl}),
                '--out',str((OUT/'scorecard').relative_to(REPO)),'--rounds','{rounds}',
-               '--run-id',f'{{GPU_LABEL}}-fast-{{int(time.time())}}','--only',*only,
-               '--ready-timeout',str(READY_TIMEOUT)], 'scorecard-runner.log', env=SCORE_ENV, timeout=4*60*60)
-print('scorecard exit:', code)
+               '--run-id',f'{{GPU_LABEL}}-{{int(time.time())}}','--only',*only,
+               '--ready-timeout',str(READY_TIMEOUT)], 'scorecard-runner.log', env=SCORE_ENV, timeout=12*60*60)
+print('scorecard exit:', code, flush=True)
 (OUT/'stages.json').write_text(json.dumps(STAGE, indent=2))
 import shutil as _sh
-print('Evidence archive:', _sh.make_archive(str(BASE/'fast-check'), 'zip', root_dir=OUT.parent, base_dir=OUT.name))
+tmp = _sh.make_archive('/content/job-evidence-tmp', 'zip', root_dir=OUT.parent, base_dir=OUT.name)
+os.replace(tmp, {ARCHIVE!r})   # atomic: the archive only appears when complete
+print('Evidence archive:', {ARCHIVE!r}, flush=True)
 '''
-    cells.append({'cell_type': 'code', 'execution_count': None, 'metadata': {}, 'outputs': [],
-                  'source': code})
-    nb['cells'] = cells
-    out_path.write_text(json.dumps(nb, indent=1))
+    return '\n\n'.join(cells + [pre, tail])
+
+
+LAUNCH = f'''
+import subprocess, sys, os
+for f in ({ARCHIVE!r}, {JOB_LOG!r}):
+    if os.path.exists(f): os.remove(f)
+p = subprocess.Popen([sys.executable, '-u', '/content/job.py'], stdout=open({JOB_LOG!r}, 'w'),
+                     stderr=subprocess.STDOUT, cwd='/content', start_new_session=True)
+open('/content/job.pid', 'w').write(str(p.pid)); print('job pid', p.pid)
+'''
+
+POLL = f'''
+import os, json
+pid = int(open('/content/job.pid').read())
+alive = os.path.exists(f'/proc/{{pid}}') and open(f'/proc/{{pid}}/stat').read().split()[2] != 'Z'
+tail = open({JOB_LOG!r}).read()[-1500:] if os.path.exists({JOB_LOG!r}) else ''
+print('POLL ' + json.dumps({{'alive': alive, 'archive': os.path.exists({ARCHIVE!r}), 'tail': tail}}))
+'''
+
+
+def poll(colab, session, script):
+    r = subprocess.run([colab, 'exec', '-s', session, '-f', str(script), '--timeout', '120'],
+                       capture_output=True, text=True)
+    line = next((x for x in r.stdout.splitlines() if x.startswith('POLL ')), None)
+    return json.loads(line[5:]) if line else None
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--profiles', nargs='+', required=True, help='native profile names from the scorecard JSON')
-    ap.add_argument('--workload', default=str(ROOT / 'configs/scorecard/workload-fast.json'))
+    ap.add_argument('--profiles', nargs='+', required=True, help='profile names from the scorecard JSON')
+    ap.add_argument('--workload', default=str(ROOT / 'configs/scorecard/workload-fast.json'),
+                    help="workload JSON, or 'default' for the full scorecard workload")
     ap.add_argument('--rounds', type=int, default=2)
     ap.add_argument('--gpu', default='L4')
-    ap.add_argument('--session', default=f'fast-{int(time.time())}')
+    ap.add_argument('--session', default=f'run-{int(time.time())}')
     ap.add_argument('--out', default=str(ROOT / 'results/fast-check'))
+    ap.add_argument('--poll-s', type=float, default=120)
     ap.add_argument('--keep', action='store_true', help='leave the runtime running afterwards')
     ap.add_argument('--install-fla', action='store_true', help='pip install pinned flash-linear-attention (--no-deps)')
     ap.add_argument('--gdn-check', action='store_true', help='run scripts/gdn_backend_check.py before the profiles')
@@ -93,39 +124,62 @@ def main():
         sys.exit('commit tracked changes first: the runtime gets HEAD, not the working tree')
     commit = sh('git', 'rev-parse', 'HEAD', capture=True).stdout.strip()
     branch = sh('git', 'rev-parse', '--abbrev-ref', 'HEAD', capture=True).stdout.strip()
-    workload = json.loads(Path(args.workload).read_text())
+    workload = None if args.workload == 'default' else json.loads(Path(args.workload).read_text())
     out = Path(args.out) / f'{args.session}-{commit[:7]}'
     out.mkdir(parents=True, exist_ok=False)
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        bundle, nb, prep = tmp / 'inferstack.bundle', tmp / 'fast_check.ipynb', tmp / 'prep.py'
-        sh('git', 'bundle', 'create', bundle, branch)
-        build_notebook(commit, args.profiles, workload, args.rounds, nb, args.install_fla, args.gdn_check)
-        prep.write_text(
-            'import subprocess as sp\n'
-            f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '
-            f'&& git -C inferstack cat-file -t {commit}", shell=True, capture_output=True, text=True)\n'
-            'print(r.stdout, r.stderr); assert r.returncode == 0\n')
-        sh(colab, 'new', '--gpu', args.gpu, '-s', args.session)
-        try:
-            sh(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
-            sh(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300')
-            with (out / 'run.log').open('w') as log:
-                proc = subprocess.run([colab, 'exec', '-s', args.session, '-f', str(nb), '--timeout', '0'],
-                                      stdout=log, stderr=subprocess.STDOUT, text=True)
-            print('notebook exit:', proc.returncode, '| log:', out / 'run.log')
-            got = sh(colab, 'download', '-s', args.session, '/content/fast-check.zip', out / 'evidence.zip', check=False)
-            if got.returncode == 0:
-                shutil.unpack_archive(out / 'evidence.zip', out)
-                for md in sorted(out.glob('*/scorecard/*/scorecard.md')):
-                    print(md.read_text())
-        finally:
-            if not args.keep:
-                sh(colab, 'stop', '-s', args.session, check=False)
-            stray = ROOT / 'docs/notebooks' / f'{nb.stem}_output.ipynb'
-            if stray.exists():
-                stray.replace(out / stray.name)
+    tmp = Path(tempfile.mkdtemp(prefix='colab-run-'))
+    bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
+                                                          'poll.py'))
+    sh('git', 'bundle', 'create', bundle, branch)
+    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check))
+    prep.write_text(
+        'import subprocess as sp\n'
+        f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '
+        f'&& git -C inferstack cat-file -t {commit}", shell=True, capture_output=True, text=True)\n'
+        'print(r.stdout, r.stderr); assert r.returncode == 0\n')
+    launch.write_text(LAUNCH)
+    pollf.write_text(POLL)
+    (out / 'job.py').write_text(job.read_text())
+    sh(colab, 'new', '--gpu', args.gpu, '-s', args.session)
+    sh(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
+    sh(colab, 'upload', '-s', args.session, job, '/content/job.py')
+    sh(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300')
+    sh(colab, 'exec', '-s', args.session, '-f', launch, '--timeout', '120')
+    state, misses = None, 0
+    while True:
+        time.sleep(args.poll_s)
+        state = poll(colab, args.session, pollf)
+        if state is None:          # network or CLI hiccup: the job keeps running on the VM
+            misses += 1
+            print(f'poll failed ({misses}); retrying', flush=True)
+            continue
+        misses = 0
+        (out / 'job.log.tail').write_text(state['tail'])
+        last = [x for x in state['tail'].splitlines() if x.strip()][-1:] or ['']
+        print(time.strftime('%H:%M:%S'), 'alive' if state['alive'] else 'exited',
+              '| archive' if state['archive'] else '', '|', last[0][:160], flush=True)
+        if state['archive'] or not state['alive']:
+            break
+    fetched = False
+    if state and state['archive']:
+        for attempt in range(5):
+            if sh(colab, 'download', '-s', args.session, ARCHIVE, out / 'evidence.zip', check=False).returncode == 0:
+                fetched = True
+                break
+            time.sleep(30)
+    sh(colab, 'download', '-s', args.session, JOB_LOG, out / 'job.log', check=False)
+    if fetched:
+        shutil.unpack_archive(out / 'evidence.zip', out)
+        for md in sorted(out.glob('*/scorecard/*/scorecard.md')):
+            print(md.read_text())
+        if not args.keep:
+            sh(colab, 'stop', '-s', args.session, check=False)
+    else:
+        print(f'NO EVIDENCE DOWNLOADED: runtime {args.session!r} left running. Fetch with\n'
+              f'  colab download -s {args.session} {ARCHIVE} {out / "evidence.zip"}\n'
+              f'then: colab stop -s {args.session}', flush=True)
     print('evidence:', out)
+    sys.exit(0 if fetched else 2)
 
 
 if __name__ == '__main__':
