@@ -19,6 +19,15 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-14 UTC — ChatGPT (llama.cpp v1.0 roadmap integration)
+
+- Reviewed ggml-org/llama.cpp v1.0.0 (13 Nov 2026) and current repo. Added `docs/LLAMA_CPP_INTEGRATION_PLAN.md` as the authoritative track for llama.cpp as (a) an external technique/reference source and (b) a future fourth engine backend for portable/local/edge/quantized inference.
+- Immediate native dependency: finish the full `native_static` scorecard first; before N3 fused GDN prefill implementation, study llama.cpp's Qwen3.5 fused-GDN path (PR #32078), scheduler/graph reuse (#32009), and relevant tensor/layout choices. External code is evidence, not InferStack proof.
+- Technique candidates recorded in the plan: fused GDN, graph/scheduler reuse, FP8 KV, MoE CPU/GPU expert cache, NextN/speculative API, multi-GPU placement, and GGUF/serving-pack representation.
+- Updated `INFERENCE_HARNESS_PLAN.md`, `PORTABLE_EXPERIMENT_EXECUTION_PLAN.md`, and `NATIVE_GAP_ANALYSIS_2026-11-13.md`. llama.cpp is an engine, not a provider; E1.3 RunPod/other provider work remains orthogonal.
+- Future adapter: `LlamaCppAdapter` via pinned `llama-server` first, with exact GGUF/build/config identity and fair-comparison rules. No adapter code or performance claim was added in this docs-only change.
+
+
 ### 2026-11-13 UTC — Claude Code (implementation agent, step 1 wired into the server)
 
 - a96cfd6: static decode lane in QwenHybridContinuousEngine (runtime/qwen_static_lane.py). After prefill, rows move into a 16-slot pool (per-row positions, packed live rows, graphs per batch x length bucket captured at start, attention over the live length bucket). Rows that do not fit (prompt + max_new > 4096 or pool full) stay on the Transformers path. Profile production-v1.7.0 (= v1.6.0 + static_decode, strict); scorecard lane native_static.
