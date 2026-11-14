@@ -10,7 +10,7 @@ InferStack is an inference improvement harness with deployment built into its fe
 
 The objective is the best demonstrated inference configuration for a particular model, hardware and workload, within latency, quality, reliability, memory and cost limits. There is no promise of finding a global optimum or discovering a breakthrough on every run. A valid result can be that no tested change improves the current deployment.
 
-Native InferStack, vLLM and SGLang are execution backends. Engine selection is part of an optimization campaign, subject to compatibility and evidence. New engines are added when they offer a needed, testable capability. InferStack's native runtime remains a focused research/execution backend for the model families it implements; it does not need to reproduce every other engine's features.
+Native InferStack, vLLM and SGLang are current execution backends. **llama.cpp is now an approved planned backend/reference architecture**, with its own qualification track for portable/local/edge, CPU+GPU hybrid and quantized GGUF workloads. Engine selection is part of an optimization campaign, subject to compatibility and evidence. New engines are added when they offer a needed, testable capability. InferStack's native runtime remains a focused research/execution backend for the model families it implements; it does not need to reproduce every other engine's features. See [LLAMA_CPP_INTEGRATION_PLAN.md](LLAMA_CPP_INTEGRATION_PLAN.md).
 
 The optimizer model is independent of the serving engine and serving model. Existing provider contracts remain interchangeable. A faster optimizer-provider endpoint and a faster target-serving configuration are different experiments.
 
@@ -53,7 +53,7 @@ Example: a KV-cache paper suggests reducing memory use. The planner retrieves th
 |---|---|
 | Evidence intake, provenance, applicability and experiment memory | Papers, public repositories and submitted external material |
 | Deployment/workload context retrieval and bottleneck diagnosis | Engine metrics, profiling tools and hardware inventory |
-| Hypotheses, bounded experiment campaigns and safe implementation | Native runtime, vLLM, SGLang and qualified plugins/forks |
+| Hypotheses, bounded experiment campaigns and safe implementation | Native runtime, vLLM, SGLang, planned llama.cpp, and qualified plugins/forks |
 | Trusted verification, comparison, learned outcomes and release eligibility | Established evaluation datasets and task-specific test fixtures |
 | Immutable releases, deployment coordination and recovery obligations | Container/Kubernetes lifecycle, model storage, GAIE-compatible routing and KEDA |
 | Inference-harness improvements and their independent qualification | FactoryOS as the first operational consumer and feedback producer |
@@ -479,3 +479,15 @@ Immediate execution order:
 6. Qualify the same manifest on a real GPU Kubernetes node pool when cluster placement/scaling/rollout behavior is the question.
 
 Another agent should begin from [PORTABLE_EXECUTION_AGENT_HANDOFF.md](PORTABLE_EXECUTION_AGENT_HANDOFF.md), which defines file targets, negative cases, tests, non-goals and a reviewable commit sequence.
+
+
+## llama.cpp v1.0 roadmap addition
+
+The 13 November 2026 llama.cpp/ggml v1.0.0 release is tracked as a new external inference evidence source and a future fourth engine backend. The detailed plan is [LLAMA_CPP_INTEGRATION_PLAN.md](LLAMA_CPP_INTEGRATION_PLAN.md).
+
+Two roles are deliberately separated:
+
+1. **Technique/reference source:** study fused GDN, graph/scheduler reuse, FP8 KV, MoE expert caching, NextN/speculative support, multi-GPU placement and GGUF serving representation. External evidence remains a hypothesis until InferStack runs an applicable experiment.
+2. **Future engine backend:** qualify `llama-server` behind the same engine, ExecutionManifest, CompatibilityResolver, ResultBundle and verifier contracts. The initial use case is portable/local/edge and memory-constrained inference, not replacing vLLM/SGLang in GPU-cluster serving.
+
+Current priority is unchanged: finish the full `native_static` serving scorecard first. Before N3 fused GDN prefill implementation, perform the bounded llama.cpp Qwen3.5 fused-GDN study described in the integration plan. This is the first concrete use of external-engine evolution evidence against a measured InferStack bottleneck.
