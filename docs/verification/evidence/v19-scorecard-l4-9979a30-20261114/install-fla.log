@@ -1,0 +1,11 @@
+Collecting fla-core==0.6.0
+  Downloading fla_core-0.6.0-py3-none-any.whl.metadata (44 kB)
+Collecting flash-linear-attention==0.6.0
+  Downloading flash_linear_attention-0.6.0-py3-none-any.whl.metadata (44 kB)
+Requirement already satisfied: einops in /usr/local/lib/python3.13/dist-packages (0.8.2)
+Downloading fla_core-0.6.0-py3-none-any.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 11.3 MB/s  0:00:00
+Downloading flash_linear_attention-0.6.0-py3-none-any.whl (403 kB)
+Installing collected packages: flash-linear-attention, fla-core
+
+Successfully installed fla-core-0.6.0 flash-linear-attention-0.6.0

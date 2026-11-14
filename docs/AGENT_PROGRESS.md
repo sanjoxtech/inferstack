@@ -223,3 +223,13 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   ms/token, E2E p50/p95. TTFT 1 cell behind (prefill_heavy c16, +3%). Peak memory +0.6–1.7 GB.
 - Single-stream decode 16.9 ms/token (vLLM 15.8). Remaining gap is prefill: TTFT 4–8× vLLM.
 - Decision: keep v1.7. Next: N3 prefill. Writeup: docs/verification/V17_SCORECARD_L4_2026-11-14.md.
+
+### 2026-11-14 — N3 (v1.8 token budget, v1.9 FLA prefill) full L4 scorecard: keep v1.9
+
+- Run `l4-1794662024` at `9979a30`; native_static/native_budget/native_fla/vLLM/SGLang, 3 rounds,
+  all stages passed. Caveat: static/budget lanes used FLA through the Transformers wrapper
+  (fixed in `65eb66c`), so fla vs budget measures direct vs dispatched FLA.
+- v1.9 vs v1.8: prefill_heavy c1 TTFT 344 → 187 ms, c16 tok/s ×1.11; no regression beyond noise.
+  v1.8 vs v1.7: TTFT down in all prefill-bound cells; shared_prefix c16 E2E p95 +18% (busy budget).
+- vs vLLM: tok/s ×0.79–0.93 interactive, ×0.41 prefill_heavy c16. Gaps: batched prefill, batched decode.
+- Decision: keep v1.9. Next: N4 packed/varlen prefill. Writeup: docs/verification/V19_SCORECARD_L4_2026-11-14.md.
