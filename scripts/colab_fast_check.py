@@ -36,14 +36,22 @@ def sh(*argv, check=True, capture=False):
                           capture_output=capture)
 
 
-def build_notebook(commit, profiles, workload, rounds, out_path):
+def build_notebook(commit, profiles, workload, rounds, out_path, install_fla=False, gdn_check=False):
     nb = json.loads(NOTEBOOK.read_text())
     cells = nb['cells'][:SETUP_CELLS]
     setup = ''.join(cells[2]['source'])
     marker = "COMMIT = '"
     start = setup.index(marker) + len(marker)
     cells[2]['source'] = setup[:start] + commit + setup[setup.index("'", start):]
-    code = f'''
+    pre = ''
+    if install_fla:
+        pre += ("assert logged([PY,'-m','pip','install','--no-deps','fla-core==0.6.0','flash-linear-attention==0.6.0',"
+                "'einops'],'install-fla.log',env=ENV,timeout=1800)==0\n")
+    if gdn_check:
+        pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
+                "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600))\n"
+                "print((OUT/'gdn-backend-check.log').read_text()[-4000:])\n")
+    code = pre + f'''
 ONLY = {profiles!r}
 for p in ONLY:
     stage(p)
@@ -77,6 +85,8 @@ def main():
     ap.add_argument('--session', default=f'fast-{int(time.time())}')
     ap.add_argument('--out', default=str(ROOT / 'results/fast-check'))
     ap.add_argument('--keep', action='store_true', help='leave the runtime running afterwards')
+    ap.add_argument('--install-fla', action='store_true', help='pip install pinned flash-linear-attention (--no-deps)')
+    ap.add_argument('--gdn-check', action='store_true', help='run scripts/gdn_backend_check.py before the profiles')
     args = ap.parse_args()
     colab = shutil.which('colab') or str(Path.home() / '.local/bin/colab')
     if sh('git', 'status', '--porcelain', '--untracked-files=no', capture=True).stdout.strip():
@@ -90,7 +100,7 @@ def main():
         tmp = Path(tmp)
         bundle, nb, prep = tmp / 'inferstack.bundle', tmp / 'fast_check.ipynb', tmp / 'prep.py'
         sh('git', 'bundle', 'create', bundle, branch)
-        build_notebook(commit, args.profiles, workload, args.rounds, nb)
+        build_notebook(commit, args.profiles, workload, args.rounds, nb, args.install_fla, args.gdn_check)
         prep.write_text(
             'import subprocess as sp\n'
             f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '

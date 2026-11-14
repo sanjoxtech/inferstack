@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from collections import Counter
 
-BACKENDS = ('auto', 'recurrent_triton', 'recurrent_upstream', 'chunk_reference', 'recurrent_reference')
+BACKENDS = ('auto', 'recurrent_triton', 'recurrent_upstream', 'chunk_reference', 'fla_chunk', 'recurrent_reference')
+PREFILL_CHOICES = ('reference', 'fla', 'auto')
+FLA_PIN = 'flash-linear-attention==0.6.0 / fla-core==0.6.0 (MIT)'
 STATS: Counter = Counter()
 
 
@@ -62,29 +64,58 @@ def _run_chunk_reference(query, key, value, g, beta, state, output_state, qk_l2n
                              use_qk_l2norm_in_kernel=qk_l2norm, **kwargs)
 
 
+def fla_available():
+    try:
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _run_fla_chunk(query, key, value, g, beta, state, output_state, qk_l2norm):
+    """N3.3 high-token path: FLA's fused chunked kernel (Triton). Native GVA (no head
+    repeat), [B, T, H, ...] layout, Q/K L2 norm in the kernel, scale K**-0.5."""
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+    if not query.is_cuda:
+        raise RuntimeError('fla_chunk needs CUDA')
+    out, final = chunk_gated_delta_rule(
+        query, key, value, g=g.float(), beta=beta, scale=key.shape[-1] ** -0.5,
+        initial_state=None if state is None else state.float().contiguous(),
+        output_final_state=output_state, use_qk_l2norm_in_kernel=qk_l2norm)
+    return out.to(query.dtype), (None if final is None else final.float())
+
+
 def _run_recurrent_reference(query, key, value, g, beta, state, output_state, qk_l2norm):
     from inferstack.kernels.gdn_triton import torch_gdn_chunk_reference
     q, k = _repeat_heads(query, key, value)
     return torch_gdn_chunk_reference(q, k, value, g, beta, state, output_state, qk_l2norm)
 
 
-def select_backend(query, *, prefer_triton_decode=True):
-    """Backend for this call shape when the caller asks for 'auto'."""
+def select_backend(query, *, prefer_triton_decode=True, prefill='reference'):
+    """Backend for this call shape when the caller asks for 'auto'.
+
+    prefill: 'reference' (upstream chunked algebra), 'fla' (fused kernel, required), or
+    'auto' (fla when it is importable and the tensors are on CUDA)."""
     # One token: try the Triton recurrent kernel; without CUDA/Triton it falls back to the
     # upstream recurrent rule inside gdn(), exactly as the pre-N3.2 layer code did.
     if query.shape[1] == 1 and prefer_triton_decode:
         return 'recurrent_triton'
+    if prefill not in PREFILL_CHOICES:
+        raise ValueError(f'unknown prefill backend {prefill!r}; expected one of {PREFILL_CHOICES}')
+    if prefill == 'fla' or (prefill == 'auto' and query.is_cuda and fla_available()):
+        return 'fla_chunk'
     return 'chunk_reference'
 
 
 def gdn(query, key, value, g, beta, state=None, *, output_state=True, qk_l2norm=True, backend='auto',
-        prefer_triton_decode=True, **kwargs):
+        prefer_triton_decode=True, prefill='reference', **kwargs):
     """Gated DeltaNet over T tokens. See the module docstring for the contract."""
     if backend not in BACKENDS:
         raise ValueError(f'unknown GDN backend {backend!r}; expected one of {BACKENDS}')
     if key.shape[:2] != query.shape[:2] or value.shape[:2] != query.shape[:2]:
         raise ValueError('query/key/value must share [B, T]')
-    chosen = select_backend(query, prefer_triton_decode=prefer_triton_decode) if backend == 'auto' else backend
+    chosen = select_backend(query, prefer_triton_decode=prefer_triton_decode, prefill=prefill) \
+        if backend == 'auto' else backend
     if chosen == 'recurrent_triton':
         try:
             out = _run_recurrent_triton(query, key, value, g, beta, state, output_state, qk_l2norm)
@@ -98,6 +129,9 @@ def gdn(query, key, value, g, beta, state=None, *, output_state=True, qk_l2norm=
     if chosen == 'recurrent_upstream':
         STATS['recurrent_upstream'] += 1
         return _run_recurrent_upstream(query, key, value, g, beta, state, output_state, qk_l2norm, **kwargs)
+    if chosen == 'fla_chunk':
+        STATS['fla_chunk'] += 1
+        return _run_fla_chunk(query, key, value, g, beta, state, output_state, qk_l2norm)
     if chosen == 'chunk_reference':
         STATS['chunk_reference'] += 1
         return _run_chunk_reference(query, key, value, g, beta, state, output_state, qk_l2norm, **kwargs)
@@ -106,4 +140,5 @@ def gdn(query, key, value, g, beta, state=None, *, output_state=True, qk_l2norm=
 
 
 def diagnostics():
-    return {'backends': list(BACKENDS[1:]), 'calls': dict(STATS)}
+    return {'backends': list(BACKENDS[1:]), 'calls': dict(STATS), 'fla_available': fla_available(),
+            'fla_pin': FLA_PIN}

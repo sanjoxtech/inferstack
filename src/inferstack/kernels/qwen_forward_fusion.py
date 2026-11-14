@@ -313,6 +313,11 @@ def _install_gdn(module, mod, cfg):
     module.in_proj_qkv = module.in_proj_z = module.in_proj_b = module.in_proj_a = None
     use_beta_g = bool(cfg.native.fuse_gdn_beta_g)
     grouped_decode = bool(cfg.native.grouped_gdn_decode)
+    prefill = str(getattr(cfg.native, 'gdn_prefill_backend', 'reference') or 'reference')
+    if prefill == 'fla':
+        from inferstack.kernels.gdn import fla_available
+        if not fla_available():  # strict: never measure the reference path under an fla label
+            raise RuntimeError('gdn_prefill_backend="fla" but flash-linear-attention is not importable')
 
     def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
         hidden_states = mod.apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -355,7 +360,8 @@ def _install_gdn(module, mod, cfg):
         before = GDN_STATS['recurrent_triton']
         core_attn_out, last_recurrent_state = gdn(
             query, key, value, g, beta, recurrent_state, output_state=cache_params is not None, qk_l2norm=True,
-            backend='auto' if decode else 'chunk_reference', cu_seqlens=cu, **kwargs,
+            backend='auto', prefer_triton_decode=decode, prefill=prefill if seq_len > 1 else 'reference',
+            cu_seqlens=cu, **kwargs,
         )
         if decode:
             if GDN_STATS['recurrent_triton'] > before:

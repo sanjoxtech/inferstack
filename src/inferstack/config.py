@@ -40,6 +40,9 @@ class NativeConfig:
     # "busy" when decode work shares the GPU. Spans are multiples of prefill_chunk_tokens.
     prefill_token_budget_idle:int=0
     prefill_token_budget_busy:int=0
+    # N3.3: GDN prefill (T>1) backend: reference (upstream chunked algebra), fla (fused
+    # FLA kernel; startup fails if it is not installed), auto (fla when available on CUDA).
+    gdn_prefill_backend:str="reference"
     prefix_state_cache:bool=True
     prefix_state_cache_max_entries:int=64
     prefix_state_cache_max_mb:int=1024

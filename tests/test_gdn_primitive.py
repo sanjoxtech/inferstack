@@ -79,3 +79,26 @@ def test_rejects_bad_head_grouping_and_shapes():
 def test_output_dtype_follows_query_and_state_is_fp32():
     o, s = G.gdn(*inputs(T=6, dtype=torch.bfloat16), backend='chunk_reference')
     assert o.dtype == torch.bfloat16 and s.dtype == torch.float32
+
+
+def test_prefill_backend_selection():
+    q = torch.zeros(1, 8, 1, 1)
+    assert G.select_backend(q, prefill='reference') == 'chunk_reference'
+    assert G.select_backend(q, prefill='fla') == 'fla_chunk'
+    assert G.select_backend(q, prefill='auto') == 'chunk_reference'  # CPU tensors never pick fla
+    with pytest.raises(ValueError):
+        G.select_backend(q, prefill='nope')
+
+
+def test_fla_backend_requires_cuda_and_package():
+    with pytest.raises((RuntimeError, ImportError, ModuleNotFoundError)):
+        G.gdn(*inputs(T=8), backend='fla_chunk')
+
+
+@pytest.mark.skipif(not (torch.cuda.is_available() and G.fla_available()), reason='needs CUDA + flash-linear-attention')
+def test_fla_chunk_matches_oracle_on_gpu():
+    args = [x.cuda() if x is not None else None for x in inputs(T=130, K=64, V=64)]
+    o_ref, s_ref = G.gdn(*args, backend='recurrent_reference')
+    o, s = G.gdn(*args, backend='fla_chunk')
+    torch.testing.assert_close(o, o_ref, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(s, s_ref, atol=2e-3, rtol=2e-3)
