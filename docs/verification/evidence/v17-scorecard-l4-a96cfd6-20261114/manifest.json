@@ -1,0 +1,181 @@
+{
+  "run_id": "l4-1794639267",
+  "created_at": 1794639267.5826662,
+  "host": {
+    "python": "3.13.18",
+    "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "gpus": [
+      {
+        "name": "NVIDIA L4",
+        "memory_total": "23034 MiB",
+        "driver": "580.82.07",
+        "uuid": "GPU-d8e0bedf-e38c-fe31-11c6-96d04ae6905e"
+      }
+    ],
+    "commit": "a96cfd65c7eb9e8d63cd7659f08a9b5533594f51",
+    "dirty": false
+  },
+  "rounds": 3,
+  "workload": {
+    "version": 1,
+    "cases": [
+      {
+        "name": "interactive",
+        "prompt_words": 48,
+        "max_tokens": 128
+      },
+      {
+        "name": "moderate",
+        "prompt_words": 400,
+        "max_tokens": 256
+      },
+      {
+        "name": "prefill_heavy",
+        "prompt_words": 1500,
+        "max_tokens": 32
+      },
+      {
+        "name": "shared_prefix",
+        "prompt_words": 1200,
+        "max_tokens": 64,
+        "shared_prefix": true
+      }
+    ],
+    "concurrency": [
+      1,
+      4,
+      8,
+      16
+    ],
+    "requests_per_cell": {
+      "min": 8,
+      "per_concurrency": 4
+    },
+    "warmup_requests": 2,
+    "temperature": 0.0,
+    "seed": 20261109
+  },
+  "workload_sha256": "9621fc725874e07c1523db30ce1500138278bc5a99ff98d1999c69ead68503ad",
+  "profiles": [
+    {
+      "name": "native_unfused",
+      "engine": "inferstack_native",
+      "model": "factorylm-2b",
+      "argv": [
+        "inferstack",
+        "serve",
+        "--profile",
+        "configs/profiles/production-v1.6.0-baseline.toml",
+        "--foundry-root",
+        "examples/model_foundry",
+        "--model",
+        "foundry://factorylm-2b@candidate",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}"
+      ],
+      "notes": "foundry candidate manifest pins the same Hugging Face revision"
+    },
+    {
+      "name": "native_full",
+      "engine": "inferstack_native",
+      "model": "factorylm-2b",
+      "argv": [
+        "inferstack",
+        "serve",
+        "--profile",
+        "configs/profiles/production-v1.6.0.toml",
+        "--foundry-root",
+        "examples/model_foundry",
+        "--model",
+        "foundry://factorylm-2b@candidate",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}"
+      ],
+      "notes": "all qualified fusions; MLP/full greedy-output divergence is under investigation, so this lane is a performance measurement only"
+    },
+    {
+      "name": "native_static",
+      "engine": "inferstack_native",
+      "model": "factorylm-2b",
+      "argv": [
+        "inferstack",
+        "serve",
+        "--profile",
+        "configs/profiles/production-v1.7.0.toml",
+        "--foundry-root",
+        "examples/model_foundry",
+        "--model",
+        "foundry://factorylm-2b@candidate",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}"
+      ],
+      "notes": "native_full plus the v1.7 static decode lane (CUDA-graph replay over a fixed slot pool, strict: setup failure stops the server); kept only if the whole scorecard improves"
+    },
+    {
+      "name": "vllm",
+      "engine": "vllm",
+      "model": "Qwen/Qwen3.5-2B-Base",
+      "argv": [
+        "/content/venv-vllm/bin/vllm",
+        "serve",
+        "Qwen/Qwen3.5-2B-Base",
+        "--revision",
+        "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+        "--tokenizer-revision",
+        "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}",
+        "--dtype",
+        "bfloat16",
+        "--max-model-len",
+        "8192"
+      ],
+      "notes": "engine defaults otherwise (prefix caching and CUDA graphs as shipped); version recorded from /version"
+    },
+    {
+      "name": "sglang",
+      "engine": "sglang",
+      "model": "Qwen/Qwen3.5-2B-Base",
+      "argv": [
+        "/content/venv-sglang/bin/python",
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        "Qwen/Qwen3.5-2B-Base",
+        "--revision",
+        "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}",
+        "--dtype",
+        "bfloat16",
+        "--context-length",
+        "8192",
+        "--enable-metrics"
+      ],
+      "notes": "engine defaults otherwise (radix cache as shipped); version recorded from /get_server_info"
+    }
+  ],
+  "profiles_sha256": "ec844518e7a7312126783f4d2d0294f8b87e256a48aba9357291c6dcd5b111ea",
+  "model": {
+    "uri": "Qwen/Qwen3.5-2B-Base",
+    "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "dtype": "bfloat16"
+  },
+  "metric_definitions": " (all client-side, identical for every engine):\n  ttft_ms            request start -> first non-empty streamed content\n  e2e_ms             request start -> terminal stream event\n  client_decode_ms   (e2e_ms - ttft_ms) / (output_tokens - 1), only with engine usage counts\n  output_tps         sum(output_tokens) / cell wall time, only when every request reported usage\nEngine-internal timings (e.g. native TPOT) are never compared with client timings."
+}

@@ -1,0 +1,7 @@
+{
+  "native_unfused": "passed",
+  "native_full": "passed",
+  "native_static": "passed",
+  "vllm": "passed",
+  "sglang": "passed"
+}

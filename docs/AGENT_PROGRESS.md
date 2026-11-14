@@ -214,3 +214,12 @@ independently.
 No runtime code was changed. The next owner action remains the complete
 native_static serving scorecard; only then should the N3 implementation treatment start.
 
+
+### 2026-11-14 — production-v1.7.0 full L4 scorecard: keep static decode
+
+- Run `l4-1794639267` at `a96cfd6`, driven with the Google Colab CLI (no browser, no token
+  on the runtime: repo shipped as a git bundle). All 5 profiles passed; 3 rotated rounds.
+- native_static vs native_full: ahead in 16/16 cells on output tok/s (×1.03–×1.85), decode
+  ms/token, E2E p50/p95. TTFT 1 cell behind (prefill_heavy c16, +3%). Peak memory +0.6–1.7 GB.
+- Single-stream decode 16.9 ms/token (vLLM 15.8). Remaining gap is prefill: TTFT 4–8× vLLM.
+- Decision: keep v1.7. Next: N3 prefill. Writeup: docs/verification/V17_SCORECARD_L4_2026-11-14.md.
