@@ -34,7 +34,7 @@ class QwenHybridContinuousEngine:
         self._loop_ref=None;self._gpu_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='inferstack-gpu')
         self._sampler=FastSampler(device, bool(cfg.native.fused_sampler));self._prefix_cache=HybridPrefixStateCache(cfg.native.prefix_state_cache_max_entries if cfg.native.prefix_state_cache else 0,cfg.native.prefix_cache_min_tokens,cfg.native.prefix_cache_block_tokens,cfg.native.prefix_state_cache_max_mb*1024*1024)
         self._supports_logits_to_keep=self._detect_logits_to_keep(model);self._compiled=False;self._compiled_model=None;self._compile_error=None;self._graph_shapes=set();self._graph_first=0;self._graph_reuse=0;self._graph_bucket_rows=0;self._graph_static_cache_uses=0;self._graph_mark_steps=0
-        self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots')}
+        self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots','prefill_tokens')}
         self._lane=None;self._static_diag={'enabled':bool(getattr(cfg.native,'static_decode',False)),'active':False};self._gdn_diag={};self._forward_fusion_diag={};self._profile={'enabled':bool(getattr(cfg.native,'profile_decode',False)),'decode_calls':0,'decode_wall_ms':0.0,'model_gpu_ms':0.0,'sampler_gpu_ms':0.0,'accept_wall_ms':0.0,'compact_wall_ms':0.0,'syncs':0}
     @staticmethod
     def _detect_logits_to_keep(model):
@@ -254,12 +254,35 @@ class QwenHybridContinuousEngine:
         if logical>=self._prefix_cache.min_tokens and logical%block==0 and logical<=len(job.requests[0].prompt_token_ids):
             toks=tuple(job.requests[0].prompt_token_ids[:logical])
             if self._prefix_cache.put(toks,job.past,logical,job.terminal_logits.detach()):self._stats['prefix_block_snapshots']+=1
-    def _advance_prefill(self,job,chunks=1):
+    def _prefill_budget(self):
+        """Token budget for the next prefill forward (0 = fixed-chunk policy)."""
+        n=self.cfg.native;idle=int(getattr(n,'prefill_token_budget_idle',0) or 0);busy=int(getattr(n,'prefill_token_budget_busy',0) or 0)
+        if idle<=0 and busy<=0:return 0
+        return (busy or idle) if self._decode_work() else (idle or busy)
+    def _prefill_end(self,job,budget=0):
+        """End column of the next prefill forward.
+
+        Fixed policy: one prefill_chunk_tokens chunk. Budget policy: as many columns as
+        budget/rows allows (a multiple of the chunk). For a single-row job with the prefix
+        cache on, forwards end on prefix-cache block boundaries and the last full block
+        before the prompt end is always a boundary, so the reusable snapshot is kept."""
+        chunk=max(1,int(self.cfg.native.prefill_chunk_tokens));s=job.cursor;W=job.input_width
+        if budget<=0:return min(W,s+chunk)
+        rows=max(1,len(job.requests));span=max(chunk,(budget//rows)//chunk*chunk);e=min(W,s+span)
+        if rows==1 and self._prefix_cache.enabled:
+            blk=self._prefix_cache.block_tokens;p=job.prefix_len
+            last=(p+W)//blk*blk-p
+            if s<last<e:e=last
+            elif e<W:
+                al=(p+e)//blk*blk-p
+                if al>s:e=al
+        return e
+    def _advance_prefill(self,job,chunks=1,budget=0):
         import torch
-        chunk=max(1,int(self.cfg.native.prefill_chunk_tokens))
         for _ in range(max(1,int(chunks))):
             if job.done:break
-            s=job.cursor;e=min(job.input_width,s+chunk)
+            s=job.cursor;e=self._prefill_end(job,budget)
+            self._stats['prefill_tokens']+=int(e-s)*len(job.requests)
             with torch.inference_mode():out=self._model_call(input_ids=job.input_ids[:,s:e],attention_mask=job.attention_mask[:,:job.prefix_len+e],position_ids=job.position_ids[:,s:e],past_key_values=job.past,use_cache=True)
             self._stats['prefill_forward_calls']+=1;self._stats['prefill_chunks']+=1;job.past=out.past_key_values;job.terminal_logits=out.logits[:,-1,:];job.cursor=e;self._maybe_store_prefix(job)
         if not job.done:return None
@@ -372,7 +395,7 @@ class QwenHybridContinuousEngine:
         self._stats['decode_priority_turns']+=1;return True
     async def _advance_one_prefill(self):
         if not self._prefill_jobs:return False
-        job=self._prefill_jobs.pop(0);state=await self._gpu(self._advance_prefill,job,self.cfg.native.prefill_chunks_per_turn)
+        job=self._prefill_jobs.pop(0);state=await self._gpu(self._advance_prefill,job,self.cfg.native.prefill_chunks_per_turn,self._prefill_budget())
         if state is None and not job.done:self._prefill_jobs.append(job)
         elif state is not None:self._active.append(state);await self._gpu(self._rebatch)
         return True

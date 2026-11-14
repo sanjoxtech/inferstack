@@ -35,6 +35,11 @@ class NativeConfig:
     decode_quantum:int=1
     prefill_chunk_tokens:int=128
     prefill_chunks_per_turn:int=1
+    # N3.1 token-budget prefill: tokens (rows x span) per prefill forward. 0 keeps the
+    # fixed prefill_chunk_tokens policy. "idle" applies when no request is decoding,
+    # "busy" when decode work shares the GPU. Spans are multiples of prefill_chunk_tokens.
+    prefill_token_budget_idle:int=0
+    prefill_token_budget_busy:int=0
     prefix_state_cache:bool=True
     prefix_state_cache_max_entries:int=64
     prefix_state_cache_max_mb:int=1024
