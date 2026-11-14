@@ -1,0 +1,140 @@
+{
+  "gpu": "NVIDIA L4",
+  "torch": "2.14.1+cu130",
+  "geometry": {
+    "Hk": 16,
+    "Hv": 16,
+    "K": 128,
+    "V": 128,
+    "gdn_layers": 18
+  },
+  "chunk_reference_impl": "transformers.models.qwen3_5.modeling_qwen3_5.torch_chunk_gated_delta_rule",
+  "fla_available": false,
+  "fla_pin": "flash-linear-attention==0.6.0 / fla-core==0.6.0 (MIT)",
+  "rows": [
+    {
+      "B": 1,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 6.103515625e-05,
+        "max_rel": 0.000939849647693336
+      },
+      "chunk_reference_state": {
+        "max_abs": 4.76837158203125e-07,
+        "max_rel": 5.692026547876594e-07
+      },
+      "chunk_reference_ms": 1.5585280060768127
+    },
+    {
+      "B": 1,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.000244140625,
+        "max_rel": 0.0029069767333567142
+      },
+      "chunk_reference_state": {
+        "max_abs": 5.662441253662109e-07,
+        "max_rel": 6.007755359860312e-07
+      },
+      "chunk_reference_ms": 1.9353600144386292
+    },
+    {
+      "B": 1,
+      "T": 512,
+      "chunk_reference_out": {
+        "max_abs": 0.000244140625,
+        "max_rel": 0.0027777778450399637
+      },
+      "chunk_reference_state": {
+        "max_abs": 8.344650268554688e-07,
+        "max_rel": 9.74220370153489e-07
+      },
+      "chunk_reference_ms": 3.980768084526062
+    },
+    {
+      "B": 1,
+      "T": 2048,
+      "chunk_reference_ms": 12.199423789978027
+    },
+    {
+      "B": 4,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 0.0001220703125,
+        "max_rel": 0.0014124293811619282
+      },
+      "chunk_reference_state": {
+        "max_abs": 5.960464477539062e-07,
+        "max_rel": 5.893610932616866e-07
+      },
+      "chunk_reference_ms": 1.568239986896515
+    },
+    {
+      "B": 4,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.000244140625,
+        "max_rel": 0.0028248587623238564
+      },
+      "chunk_reference_state": {
+        "max_abs": 5.364418029785156e-07,
+        "max_rel": 5.42250461421645e-07
+      },
+      "chunk_reference_ms": 1.9240959882736206
+    },
+    {
+      "B": 4,
+      "T": 512,
+      "chunk_reference_out": {
+        "max_abs": 0.0001220703125,
+        "max_rel": 0.0013227512827143073
+      },
+      "chunk_reference_state": {
+        "max_abs": 5.662441253662109e-07,
+        "max_rel": 5.968682899037958e-07
+      },
+      "chunk_reference_ms": 4.962815999984741
+    },
+    {
+      "B": 4,
+      "T": 2048,
+      "chunk_reference_ms": 23.87662410736084
+    },
+    {
+      "B": 16,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 0.0001220703125,
+        "max_rel": 0.0013297871919348836
+      },
+      "chunk_reference_state": {
+        "max_abs": 7.748603820800781e-07,
+        "max_rel": 7.377220185844635e-07
+      },
+      "chunk_reference_ms": 2.512384057044983
+    },
+    {
+      "B": 16,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.000244140625,
+        "max_rel": 0.002577319508418441
+      },
+      "chunk_reference_state": {
+        "max_abs": 7.152557373046875e-07,
+        "max_rel": 6.658139568571642e-07
+      },
+      "chunk_reference_ms": 5.313536167144775
+    },
+    {
+      "B": 16,
+      "T": 512,
+      "chunk_reference_ms": 24.944128036499023
+    },
+    {
+      "B": 16,
+      "T": 2048,
+      "chunk_reference_ms": 100.61260604858398
+    }
+  ]
+}
