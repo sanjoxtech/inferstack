@@ -563,3 +563,12 @@ Do not:
 E1 is complete when one pinned experiment can be exported from InferStack, preflighted against the actual hardware, executed on at least the assisted notebook path and one paid provider, imported into the existing trial/evidence/memory system, judged by the existing verifier, and replayed as a verified deployment candidate without changing its experiment identity.
 
 A failure is also a valid E1 result if the system records the exact environment, reason and evidence and does not falsely promote the configuration.
+
+
+## llama.cpp engine compatibility extension
+
+llama.cpp is an **engine**, not an execution provider. It must therefore enter E1 through the same manifest/compatibility/runner boundary as Native, vLLM and SGLang. Provider choices such as local Docker, Colab/Kaggle, RunPod, Modal or Kubernetes remain orthogonal.
+
+A future `LlamaCppAdapter` must pin the exact llama.cpp build/release and GGUF artifact identity. Compatibility must include model architecture, GGUF quantization, context, logical batch/ubatch, parallel slots, KV K/V types, GPU layer count, device list, split mode/tensor split, flash-attention mode and backend build (CUDA/Metal/HIP/etc.). Quantized GGUF evidence is a different treatment from BF16/F16 engine evidence unless the comparison contract explicitly says otherwise.
+
+The implementation sequence is defined in [LLAMA_CPP_INTEGRATION_PLAN.md](LLAMA_CPP_INTEGRATION_PLAN.md). E1.3 paid-provider work does not wait for llama.cpp; engine-adapter work and provider-adapter work stay independent.
