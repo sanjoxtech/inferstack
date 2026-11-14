@@ -115,9 +115,14 @@ def test_chunk_reference_bypasses_transformers_package_dispatch(monkeypatch):
         calls.append(1)
         raise AssertionError('package/hub implementation must not run for chunk_reference')
     hub_dispatch.__wrapped__ = torch_fn
-    monkeypatch.setattr(mod, 'torch_chunk_gated_delta_rule', hub_dispatch)
+
+    def outer_layer(*a, **k):          # transformers stacks two decorators
+        return hub_dispatch(*a, **k)
+    outer_layer.__wrapped__ = hub_dispatch
+    monkeypatch.setattr(mod, 'torch_chunk_gated_delta_rule', outer_layer)
     monkeypatch.setattr(gdn_triton, '_ORIGINAL_CHUNK', None)
     o, s = G.gdn(*inputs(T=9), backend='chunk_reference')
     o_ref, s_ref = G.gdn(*inputs(T=9), backend='recurrent_reference')
     assert not calls
     torch.testing.assert_close(o, o_ref, atol=2e-4, rtol=2e-4)
+    assert G.diagnostics()['chunk_reference_impl'].endswith('torch_chunk_gated_delta_rule')

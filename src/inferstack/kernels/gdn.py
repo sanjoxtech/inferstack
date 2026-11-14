@@ -45,8 +45,9 @@ def _upstream_chunk():
     algorithm whatever is installed, so A/B runs (reference vs fla_chunk) are real."""
     from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
     from inferstack.kernels import gdn_triton
+    import inspect
     fn = gdn_triton._ORIGINAL_CHUNK or mod.torch_chunk_gated_delta_rule
-    return getattr(fn, '__wrapped__', fn)
+    return inspect.unwrap(fn)   # follow every functools.wraps layer down to the torch function
 
 
 def _run_recurrent_triton(query, key, value, g, beta, state, output_state, qk_l2norm):
@@ -149,5 +150,6 @@ def gdn(query, key, value, g, beta, state=None, *, output_state=True, qk_l2norm=
 
 
 def diagnostics():
+    ref = _upstream_chunk()
     return {'backends': list(BACKENDS[1:]), 'calls': dict(STATS), 'fla_available': fla_available(),
-            'fla_pin': FLA_PIN}
+            'fla_pin': FLA_PIN, 'chunk_reference_impl': f'{ref.__module__}.{ref.__qualname__}'}

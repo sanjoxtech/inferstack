@@ -81,8 +81,9 @@ def main():
     geo = geometry(args.model, args.revision)
     backends = ['chunk_reference'] + (['fla_chunk'] if G.fla_available() else [])
     report = {'gpu': torch.cuda.get_device_name(0), 'torch': torch.__version__, 'geometry': geo,
+              'chunk_reference_impl': G.diagnostics()['chunk_reference_impl'],
               'fla_available': G.fla_available(), 'fla_pin': G.FLA_PIN, 'rows': []}
-    print(json.dumps({k: report[k] for k in ('gpu', 'geometry', 'fla_available')}), flush=True)
+    print(json.dumps({k: report[k] for k in ('gpu', 'geometry', 'fla_available', 'chunk_reference_impl')}), flush=True)
     for B in args.batches:
         for T in args.tokens:
             q, k, v, g, beta, s0 = make(B, T, geo, torch.bfloat16, seed=B * 10007 + T)

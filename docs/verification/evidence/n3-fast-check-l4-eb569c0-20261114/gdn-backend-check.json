@@ -1,0 +1,227 @@
+{
+  "gpu": "NVIDIA L4",
+  "torch": "2.14.1+cu130",
+  "geometry": {
+    "Hk": 16,
+    "Hv": 16,
+    "K": 128,
+    "V": 128,
+    "gdn_layers": 18
+  },
+  "fla_available": true,
+  "fla_pin": "flash-linear-attention==0.6.0 / fla-core==0.6.0 (MIT)",
+  "rows": [
+    {
+      "B": 1,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.007518797181546688
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.004152178764343262,
+        "max_rel": 0.004956474527716637
+      },
+      "chunk_reference_ms": 1.2533760070800781,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.007518797181546688
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.004152178764343262,
+        "max_rel": 0.004956474527716637
+      },
+      "fla_chunk_ms": 1.1156319975852966,
+      "speedup_fla": 1.1234672452860068
+    },
+    {
+      "B": 1,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.0058139534667134285
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.004940211772918701,
+        "max_rel": 0.005241482052952051
+      },
+      "chunk_reference_ms": 1.1498720049858093,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.0058139534667134285
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.004940211772918701,
+        "max_rel": 0.005241482052952051
+      },
+      "fla_chunk_ms": 1.1130719780921936,
+      "speedup_fla": 1.0330616776074903
+    },
+    {
+      "B": 1,
+      "T": 512,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.0055555556900799274
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.0035772323608398438,
+        "max_rel": 0.0041763437911868095
+      },
+      "chunk_reference_ms": 1.1668480038642883,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.0055555556900799274
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.0035772323608398438,
+        "max_rel": 0.0041763437911868095
+      },
+      "fla_chunk_ms": 1.1356160044670105,
+      "speedup_fla": 1.0275022536442115
+    },
+    {
+      "B": 1,
+      "T": 2048,
+      "chunk_reference_ms": 1.2108800411224365,
+      "fla_chunk_ms": 1.1883519887924194,
+      "speedup_fla": 1.018957390186143
+    },
+    {
+      "B": 4,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005649717524647713
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.004908561706542969,
+        "max_rel": 0.004853506572544575
+      },
+      "chunk_reference_ms": 1.1678719520568848,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005649717524647713
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.004908561706542969,
+        "max_rel": 0.004853506572544575
+      },
+      "fla_chunk_ms": 1.137168049812317,
+      "speedup_fla": 1.0270003208845302
+    },
+    {
+      "B": 4,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005649717524647713
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.005061417818069458,
+        "max_rel": 0.005116223357617855
+      },
+      "chunk_reference_ms": 1.169920027256012,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005649717524647713
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.005061417818069458,
+        "max_rel": 0.005116223357617855
+      },
+      "fla_chunk_ms": 1.1427839994430542,
+      "speedup_fla": 1.0237455440627299
+    },
+    {
+      "B": 4,
+      "T": 512,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005291005130857229
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.006444334983825684,
+        "max_rel": 0.006792863365262747
+      },
+      "chunk_reference_ms": 1.2892160415649414,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005291005130857229
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.006444334983825684,
+        "max_rel": 0.006792863365262747
+      },
+      "fla_chunk_ms": 1.3224959969520569,
+      "speedup_fla": 0.9748354963161965
+    },
+    {
+      "B": 4,
+      "T": 2048,
+      "chunk_reference_ms": 3.4933758974075317,
+      "fla_chunk_ms": 3.481600046157837,
+      "speedup_fla": 1.003382310171638
+    },
+    {
+      "B": 16,
+      "T": 64,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005319148767739534
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.008151352405548096,
+        "max_rel": 0.007760665379464626
+      },
+      "chunk_reference_ms": 1.151487946510315,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005319148767739534
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.008151352405548096,
+        "max_rel": 0.007760665379464626
+      },
+      "fla_chunk_ms": 1.1299840211868286,
+      "speedup_fla": 1.0190302915088132
+    },
+    {
+      "B": 16,
+      "T": 128,
+      "chunk_reference_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005154639016836882
+      },
+      "chunk_reference_state": {
+        "max_abs": 0.0056993961334228516,
+        "max_rel": 0.0053054275922477245
+      },
+      "chunk_reference_ms": 1.4561280012130737,
+      "fla_chunk_out": {
+        "max_abs": 0.00048828125,
+        "max_rel": 0.005154639016836882
+      },
+      "fla_chunk_state": {
+        "max_abs": 0.0056993961334228516,
+        "max_rel": 0.0053054275922477245
+      },
+      "fla_chunk_ms": 1.4254080057144165,
+      "speedup_fla": 1.021551720893598
+    },
+    {
+      "B": 16,
+      "T": 512,
+      "chunk_reference_ms": 3.6136640310287476,
+      "fla_chunk_ms": 3.5998560190200806,
+      "speedup_fla": 1.003835712299523
+    },
+    {
+      "B": 16,
+      "T": 2048,
+      "chunk_reference_ms": 13.563904285430908,
+      "fla_chunk_ms": 13.516287803649902,
+      "speedup_fla": 1.003522896410074
+    }
+  ]
+}
