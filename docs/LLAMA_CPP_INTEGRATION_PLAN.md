@@ -367,3 +367,33 @@ This roadmap addition succeeds when InferStack can use llama.cpp in two discipli
 2. **Run it:** llama.cpp becomes a qualified engine adapter for workloads where its portability, quantization and CPU/GPU flexibility are advantageous.
 
 The first concrete value should come from the fused-GDN study feeding the measured Qwen3.5 prefill bottleneck, before any broad adapter expansion.
+
+## 13. L0 code-study result — 14 November 2026
+
+The bounded implementation study is now complete and recorded in:
+
+- docs/research/LLAMA_CPP_V1_CODE_STUDY_2026-11-14.md
+
+This moves LCPP-T1/T2/T7 from broad research questions to concrete design inputs. The main findings are:
+
+1. llama.cpp models Qwen3.5 recurrence as one logical GATED_DELTA_NET backend op rather than token-dependent graph algebra.
+2. its CUDA backend uses a specialized high-token MMA path only for qualified shape/hardware combinations, with a recurrent fallback;
+3. recurrent-state copy can be fused so the GDN kernel writes directly into cache storage;
+4. scheduler and graph-result arenas are reused when capacity/behavior remain compatible;
+5. Qwen3.5 conversion can merge shared-input projections (QKV+gate, beta+alpha) into serving-time packed tensors.
+
+### Refined N3 ordering
+
+The mandatory gate remains unchanged: first run the complete native_static serving scorecard.
+
+After that, split N3 into independent treatments:
+
+- N3.1 token-budget prefill scheduling;
+- N3.2 one native GDN primitive contract + numerical harness;
+- N3.3 recurrent fallback plus separately qualified high-token GPU path;
+- N3.4 direct state-cache write/copy elimination;
+- N3.5 immutable serving-pack projection merges;
+- N3.6 full serving acceptance.
+
+Do not assume one kernel crossover applies to both L4 and A100. Kernel selection must be qualified per hardware/shape identity.
+

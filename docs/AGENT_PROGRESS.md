@@ -196,3 +196,21 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 - State: verifying CI for 44c9ac9.
 - Files: src/inferstack/diagnosis/*, contracts/records.py (Problem), control/api.py, tests/test_harness_h2.py.
 - Next: confirm CI green, then start H3 design (implementer handoff contract first).
+
+### 2026-11-14 — llama.cpp L0 implementation study completed
+
+Upstream study pins:
+
+- v1.0.0 release target: 2d8a32502909ca065c41c4cf5f2fb1c427c047fc
+- inspected master snapshot: 61dbf49228c8a96b72e40c89d93cb7c003411f8c
+
+Added docs/research/LLAMA_CPP_V1_CODE_STUDY_2026-11-14.md.
+
+Key handoff: N3 is now defined as token-budget scheduling + a single GDN primitive with
+separate recurrent/high-token paths, optional direct state-cache writes, then a separate
+serving-pack projection-merge treatment. L4/A100 kernel selection must be qualified
+independently.
+
+No runtime code was changed. The next owner action remains the complete
+native_static serving scorecard; only then should the N3 implementation treatment start.
+

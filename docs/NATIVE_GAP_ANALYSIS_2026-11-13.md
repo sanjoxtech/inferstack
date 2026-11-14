@@ -86,3 +86,35 @@ This does **not** replace the measured ordering above. The sequence is:
 7. judge it using the full scorecard and quality gates.
 
 External implementation evidence may change the design hypothesis, but it does not count as an InferStack speedup or compatibility proof.
+
+## 14 November addendum — llama.cpp code study sharpens the prefill plan
+
+The code-level llama.cpp v1.0/Qwen3.5 study is now recorded in
+docs/research/LLAMA_CPP_V1_CODE_STUDY_2026-11-14.md.
+
+The important design correction is that N3 should not translate the existing reference
+GDN chunk algebra into many custom launches. llama.cpp demonstrates a stronger boundary:
+one logical GDN backend primitive, a recurrent fallback, an optional hardware/shape-qualified
+high-token MMA path, and direct recurrent-state writes when the graph pattern permits it.
+
+This changes the native prefill implementation target to:
+
+~~~
+token-budget scheduler
+        |
+        v
+one GDN primitive
+   |          |
+   |          +--> high-token GPU path when qualified
+   |
+   +-------------> recurrent fallback
+        |
+        v
+direct/compatible state-cache write
+~~~
+
+Conversion-time Qwen3.5 projection merging (QKV+gate and beta+alpha) is a separate
+serving-pack treatment, not part of the first GDN kernel experiment.
+
+The full native_static scorecard remains the gate before N3 implementation.
+
