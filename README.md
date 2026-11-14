@@ -1,15 +1,23 @@
 # InferStack — serving platform and inference optimization harness
 
-InferStack serves supported models through native and third-party engines and is
-being extended with its own planner-executor-verifier harness for inference
-optimization across hardware and cloud infrastructure. The current code is the
-v1.6.0 Qwen forward-fusion candidate; the broader control plane is planned.
+InferStack serves supported models through native and third-party engines and includes
+a planner-executor-verifier harness for bounded inference optimization experiments
+across hardware and deployment substrates. The repository is currently
+`2.0.0rc1`: H0-H3 foundations and E1 portable-experiment execution are substantially
+implemented, while final production qualification, H4/H5 evolution work and paid/GPU
+deployment adapters remain incomplete.
 
-Start with the [target architecture](docs/ARCHITECTURE.md), the evidence-based
-[current-state audit](docs/CURRENT_STATE_AUDIT.md), and the release-sized
-[implementation plan](docs/IMPLEMENTATION_PLAN.md). They distinguish functioning
-code from proposed capabilities, including the current engine-adapter and
-measurement gaps.
+The current native runtime has progressed beyond the original v1.6 forward-fusion
+candidate. L4 evidence identified prefill as the largest remaining gap, and the
+`production-v1.7.0` candidate adds a served static-decode/CUDA-graph lane that still
+requires a full scorecard acceptance run.
+
+Start with the [target architecture](docs/ARCHITECTURE.md), the
+[inference harness plan](docs/INFERENCE_HARNESS_PLAN.md), the
+[portable experiment plan](docs/PORTABLE_EXPERIMENT_EXECUTION_PLAN.md), and the
+[llama.cpp v1 integration plan](docs/LLAMA_CPP_INTEGRATION_PLAN.md). Historical
+audits and implementation plans remain useful for provenance but may describe older
+checkpoints.
 
 ## GitHub and Colab workflow
 
