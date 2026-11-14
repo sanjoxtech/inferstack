@@ -297,6 +297,7 @@ def _install_mlp(module, cfg):
 
 
 def _install_gdn(module, mod, cfg):
+    from inferstack.kernels.gdn import STATS as GDN_STATS
     import torch
     import torch.nn.functional as F
     if not cfg.native.fuse_gdn_projections or getattr(module, '_inferstack_gdn_fused', False):
@@ -346,35 +347,21 @@ def _install_gdn(module, mod, cfg):
         beta, g = fused_beta_g(b, a, self.A_log, self.dt_bias) if use_beta_g else beta_g_reference(b, a, self.A_log, self.dt_bias)
         recurrent_state = cache_params.layers[self.layer_idx].recurrent_states[0] if use_precomputed_states else None
 
-        # Decode can avoid materializing repeat_interleave(q/k): our grouped kernel maps
-        # each value head to its key/query head directly. Prefill keeps the proven upstream path.
-        if use_precomputed_states and seq_len == 1 and grouped_decode:
-            try:
-                from inferstack.kernels.gdn_triton import inferstack_grouped_gdn_decode
-                core_attn_out, last_recurrent_state = inferstack_grouped_gdn_decode(
-                    query, key, value, g, beta, recurrent_state,
-                    output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True,
-                )
+        # N3.2: one GDN primitive. Decode tries the grouped Triton recurrent kernel (no
+        # repeat_interleave of q/k); everything else runs the upstream chunked algebra.
+        from inferstack.kernels.gdn import gdn
+        decode = use_precomputed_states and seq_len == 1 and grouped_decode
+        cu = kwargs.pop('cu_seq_lens_q', None)
+        before = GDN_STATS['recurrent_triton']
+        core_attn_out, last_recurrent_state = gdn(
+            query, key, value, g, beta, recurrent_state, output_state=cache_params is not None, qk_l2norm=True,
+            backend='auto' if decode else 'chunk_reference', cu_seqlens=cu, **kwargs,
+        )
+        if decode:
+            if GDN_STATS['recurrent_triton'] > before:
                 STATS.grouped_gdn_decode_calls += 1
-            except Exception:
+            else:
                 STATS.fallbacks += 1
-                rep = self.num_v_heads // self.num_k_heads
-                q2 = query.repeat_interleave(rep, dim=2) if rep > 1 else query
-                k2 = key.repeat_interleave(rep, dim=2) if rep > 1 else key
-                core_attn_out, last_recurrent_state = mod.torch_recurrent_gated_delta_rule(
-                    q2, k2, value, g=g, beta=beta, initial_state=recurrent_state,
-                    output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True,
-                    cu_seqlens=kwargs.pop('cu_seq_lens_q', None), **kwargs,
-                )
-        else:
-            rep = self.num_v_heads // self.num_k_heads
-            if rep > 1:
-                query = query.repeat_interleave(rep, dim=2); key = key.repeat_interleave(rep, dim=2)
-            core_attn_out, last_recurrent_state = mod.torch_chunk_gated_delta_rule(
-                query, key, value, g=g, beta=beta, initial_state=recurrent_state,
-                output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True,
-                cu_seqlens=kwargs.pop('cu_seq_lens_q', None), **kwargs,
-            )
         if cache_params is not None:
             cache_params.update_recurrent_state(last_recurrent_state, self.layer_idx)
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
