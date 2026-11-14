@@ -102,3 +102,22 @@ def test_fla_chunk_matches_oracle_on_gpu():
     o, s = G.gdn(*args, backend='fla_chunk')
     torch.testing.assert_close(o, o_ref, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(s, s_ref, atol=2e-3, rtol=2e-3)
+
+
+def test_chunk_reference_bypasses_transformers_package_dispatch(monkeypatch):
+    """transformers swaps in FLA when it is installed; chunk_reference must not follow it."""
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
+    from inferstack.kernels import gdn_triton
+    torch_fn = getattr(mod.torch_chunk_gated_delta_rule, '__wrapped__', mod.torch_chunk_gated_delta_rule)
+    calls = []
+
+    def hub_dispatch(*a, **k):
+        calls.append(1)
+        raise AssertionError('package/hub implementation must not run for chunk_reference')
+    hub_dispatch.__wrapped__ = torch_fn
+    monkeypatch.setattr(mod, 'torch_chunk_gated_delta_rule', hub_dispatch)
+    monkeypatch.setattr(gdn_triton, '_ORIGINAL_CHUNK', None)
+    o, s = G.gdn(*inputs(T=9), backend='chunk_reference')
+    o_ref, s_ref = G.gdn(*inputs(T=9), backend='recurrent_reference')
+    assert not calls
+    torch.testing.assert_close(o, o_ref, atol=2e-4, rtol=2e-4)

@@ -38,10 +38,15 @@ def _repeat_heads(query, key, value):
 
 
 def _upstream_chunk():
-    """transformers' chunk rule as currently installed (the proven prefill algebra; it may be
-    the gdn_triton wrapper, which keeps its own short-chunk handling)."""
+    """transformers' torch chunked algebra, with its hub/package dispatch stripped.
+
+    transformers decorates torch_chunk_gated_delta_rule so that, once flash-linear-attention
+    is importable, it silently runs FLA instead. `chunk_reference` must stay the PyTorch
+    algorithm whatever is installed, so A/B runs (reference vs fla_chunk) are real."""
     from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
-    return mod.torch_chunk_gated_delta_rule
+    from inferstack.kernels import gdn_triton
+    fn = gdn_triton._ORIGINAL_CHUNK or mod.torch_chunk_gated_delta_rule
+    return getattr(fn, '__wrapped__', fn)
 
 
 def _run_recurrent_triton(query, key, value, g, beta, state, output_state, qk_l2norm):
@@ -59,7 +64,11 @@ def _run_recurrent_upstream(query, key, value, g, beta, state, output_state, qk_
 
 
 def _run_chunk_reference(query, key, value, g, beta, state, output_state, qk_l2norm, **kwargs):
+    from inferstack.kernels import gdn_triton
     q, k = _repeat_heads(query, key, value)
+    if gdn_triton._STATS.get('patched') and query.is_cuda and 1 < query.shape[1] <= 32:
+        # Same short-chunk rule as the installed gdn_triton chunk wrapper.
+        return gdn_triton.torch_gdn_chunk_reference(q, k, value, g, beta, state, output_state, qk_l2norm)
     return _upstream_chunk()(q, k, value, g=g, beta=beta, initial_state=state, output_final_state=output_state,
                              use_qk_l2norm_in_kernel=qk_l2norm, **kwargs)
 
