@@ -504,3 +504,25 @@ It enters InferStack in three deliberately separate roles:
 3. **No source port into Native.** The upstream repository is Elastic License 2.0 and highly model/hardware-specific. Do not vendor or mechanically translate it into InferStack Native. Preserve provenance and independently implement only techniques that match a measured InferStack bottleneck.
 
 This does **not** change the immediate native ordering. The repository has already kept v1.9 FLA prefill; N4 packed/varlen prefill remains next. DeepSeek Ultrafast primarily informs the later distributed-cache/routing, speculative-decode metric, TP-communication and possible compiled Native-v2 tracks.
+
+
+### Model-specific optimization sandbox
+
+DeepSeek Ultrafast adds a useful H5 pattern beyond being an external engine: an isolated **model-specific optimization sandbox**.
+
+The sandbox lets an optimizer agent inspect pinned external reference implementations, profile one exact model/hardware/workload, build narrow kernel/runtime candidates and hill-climb quickly. Promotion remains controller-owned.
+
+~~~text
+Problem / profile
+      -> pinned references
+      -> isolated specialized candidate
+      -> numerical + quality gates
+      -> benchmark / profiler
+      -> KEEP / REJECT
+      -> either retain as a specialized backend
+         or port the proven idea into a maintained InferStack backend
+~~~
+
+The sandbox is deliberately separate from production serving. It must retain source/license provenance, exact environment identity, compiler/profiler artifacts, spend/time budgets and all verifier gates.
+
+DeepSeek Ultrafast specifically contributes future technique evidence for PDL, whole-speculative-step CUDA graphs, model-topology residual fusion, fused router/expert execution, TP/NVLS communication and RDMA KV mobility. These do not change the immediate Qwen3.5 ordering: v1.9 is kept and N4 packed/varlen prefill remains next.
