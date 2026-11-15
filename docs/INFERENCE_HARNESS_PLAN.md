@@ -491,3 +491,16 @@ Two roles are deliberately separated:
 2. **Future engine backend:** qualify `llama-server` behind the same engine, ExecutionManifest, CompatibilityResolver, ResultBundle and verifier contracts. The initial use case is portable/local/edge and memory-constrained inference, not replacing vLLM/SGLang in GPU-cluster serving.
 
 Current priority is unchanged: finish the full `native_static` serving scorecard first. Before N3 fused GDN prefill implementation, perform the bounded llama.cpp Qwen3.5 fused-GDN study described in the integration plan. This is the first concrete use of external-engine evolution evidence against a measured InferStack bottleneck.
+
+
+## DeepSeek Ultrafast external architecture track
+
+The 15 November 2026 Baseten `deepseek-ultrafast` release is tracked as a specialized external reference architecture. Detailed code study: [research/DEEPSEEK_ULTRAFAST_CODE_STUDY_2026-11-15.md](research/DEEPSEEK_ULTRAFAST_CODE_STUDY_2026-11-15.md).
+
+It enters InferStack in three deliberately separate roles:
+
+1. **External technique evidence now.** Study captured speculative decode, model-specific CUDA kernels, TP/NVLS communication, compressed transferable KV snapshots, RDMA cache mobility, cache-ownership revision fencing, bounded-replay long-context prefill and agent-driven optimization. These remain hypotheses until InferStack runs applicable experiments.
+2. **External endpoint later.** The current engine is DeepSeek-V4.1-Flash-specific and targets B200/B300/GB300-class `sm_100a/sm_103a` systems. An operator-controlled endpoint can already be exercised through `generic_openai`; a specialized adapter is justified only when we need its iteration/acceptance/KV-transfer telemetry.
+3. **No source port into Native.** The upstream repository is Elastic License 2.0 and highly model/hardware-specific. Do not vendor or mechanically translate it into InferStack Native. Preserve provenance and independently implement only techniques that match a measured InferStack bottleneck.
+
+This does **not** change the immediate native ordering. The repository has already kept v1.9 FLA prefill; N4 packed/varlen prefill remains next. DeepSeek Ultrafast primarily informs the later distributed-cache/routing, speculative-decode metric, TP-communication and possible compiled Native-v2 tracks.
