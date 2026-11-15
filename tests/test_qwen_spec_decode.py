@@ -185,8 +185,9 @@ def test_batched_spec_load_equals_per_row_load(windows):
         cache, hidden, first = prefill_with_hidden(model, ids)
         pre.append((ids, cache, hidden, first))
 
+    dec = QwenSpecDecoder(model, 'cpu', dtype=torch.float32, mtp_seed=1)   # one head for both paths
+
     def build(batched):
-        dec = QwenSpecDecoder(model, 'cpu', dtype=torch.float32, mtp_seed=1)
         st = dec.new_state(len(prompts) + 1, 64)
         sp = dec.new_spec_state(st)
         hs = []
@@ -198,10 +199,10 @@ def test_batched_spec_load_equals_per_row_load(windows):
                 dec.load_spec_row(st, sp, slot, ids[0], h, first)
         if batched:
             dec.load_spec_rows(st, sp, 0, prompts, hs, torch.tensor([f for *_, f in pre]), [len(p) for p in prompts])
-        return dec, st, sp
+        return st, sp
 
-    _, _, a = build(False)
-    dec, st, b = build(True)
+    _, a = build(False)
+    _, b = build(True)
     k = len(prompts)
     for name in ('tok', 'pos', 'sel', 'mtp_mask'):
         assert torch.equal(getattr(a, name)[:k], getattr(b, name)[:k]), name
