@@ -21,8 +21,23 @@ covers both the forward itself and the hand-off into the decode pool.
 
 ## Plan (each step must be greedy-equal to Transformers, then one L4 fast check under $1)
 
-**P0: TTFT split (running).** Queue, wait and prefill per request, v1.13 against v1.14. If "wait"
-dominates, P3 moves ahead of P1.
+**Status (15 Nov 2026):** P0 is done and the order below is confirmed. N6.3 (batched spec
+admission) is in; it is lossless but gave no TTFT change, because the first token is emitted
+before admission. Next: P1.
+
+**P0: TTFT split. Done.** Evidence: L4 @77880b5,
+`docs/verification/evidence/ttft-split-l4-77880b5-20261115/`. Means per request, v1.14:
+
+| case | queue | wait | prefill | total |
+|---|---|---|---|---|
+| interactive c1 | 4 | 1 | 59 | 63 |
+| moderate c1 | 4 | 1 | 117 | 122 |
+| moderate c8 | 47 | 111 | 168 | 326 |
+| prefill_heavy c16 | 204 | 275 | 416 | 895 |
+
+The prefill stage dominates. At c1 it is per-forward overhead: the rivals' whole TTFT is
+41–48 ms. Queue and wait grow under load, with 1.5–2.6 decode steps between prepare and the first
+token. So P1 comes first and P3 second.
 
 **P1: packed prefill straight into the static pool.** This is the core change.
 
