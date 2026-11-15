@@ -58,6 +58,17 @@ def load_mtp_tensors(repo_id: str, revision: str) -> dict:
     return out
 
 
+def resolve_mtp(source: str):
+    """Profile value -> (tensors, seed). "repo@revision" loads the checkpoint's mtp.* tensors;
+    "random:SEED" builds a random head (tests: drafts mostly wrong, output still greedy)."""
+    if source.startswith('random:'):
+        return None, int(source.split(':', 1)[1] or 0)
+    repo, _, rev = source.partition('@')
+    if not repo or not rev:
+        raise ValueError(f'static_decode_spec_mtp must be "repo@revision" or "random:SEED", got {source!r}')
+    return load_mtp_tensors(repo, rev), None
+
+
 class MTPHead:
     """The MTP layer as plain modules. embed_tokens, rotary and lm_head stay shared with the model."""
 
@@ -141,6 +152,18 @@ class QwenSpecDecoder(QwenStaticDecoder):
             sp.banks[i] = bank
             st.rec[i] = bank[0]
         return sp
+
+    def move_spec_row(self, st: StaticDecodeState, sp: SpecState, src: int, dst: int, length: int):
+        """move_row for the spec lane: also the second recurrent bank, its selector and the MTP cache.
+        `length` = columns in use (largest position + 2 covers the draft column)."""
+        n = min(int(length), st.max_len)
+        self.move_row(st, src, dst, n)                 # mask, KV, conv and bank 0 (= st.rec)
+        for bank in sp.banks.values():
+            bank[1, dst].copy_(bank[1, src])
+        for t in (sp.tok, sp.pos, sp.sel, sp.mtp_mask):
+            t[dst].copy_(t[src])
+        for c in sp.mtp_kv:
+            c[dst, :, :n].copy_(c[src, :, :n])
 
     def reset_spec(self, st: StaticDecodeState, sp: SpecState):
         self.reset(st)

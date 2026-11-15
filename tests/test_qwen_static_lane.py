@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False):
+def cfg(static, prefix=False, spec=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -38,6 +38,8 @@ def cfg(static, prefix=False):
     n.static_decode_max_tokens = 48
     n.static_decode_len_buckets = (16, 32, 48)
     n.static_decode_strict = True
+    n.static_decode_spec = spec
+    n.static_decode_spec_mtp = 'random:3'
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -54,16 +56,17 @@ async def drain(q, timeout=60):
         out.append(x)
 
 
-def run(static, plan, prefix=False):
+def run(static, plan, prefix=False, spec=False, temps=None):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
             await asyncio.sleep(delay)
-            q = await e.submit(Request(rid, tuple(prompt), SamplingParams(max_new_tokens=max_new, temperature=0.0)))
+            t = (temps or {}).get(rid, 0.0)
+            q = await e.submit(Request(rid, tuple(prompt), SamplingParams(max_new_tokens=max_new, temperature=t)))
             return rid, await drain(q)
 
         res = dict(await asyncio.gather(*(one(*p) for p in plan)))
@@ -118,3 +121,32 @@ def test_static_lane_cancellation_frees_slot():
     assert d['static_decode']['live_rows'] == 0
     # The tiny model can emit EOS before the cancel lands (CPU timing); then it is a finish.
     assert d['cancellations'] == 1 or r.finish_reason in ('stop', 'length'), (d['cancellations'], r.finish_reason)
+
+
+def test_spec_lane_matches_transformers_decode():
+    """N6.2: MTP speculative lane (random head here: mostly rejected drafts) must give the
+    Transformers greedy output, with compaction, late arrivals and the length fallback."""
+    ref, _ = run(False, PLAN)
+    got, d = run(True, PLAN, spec=True)
+    assert got == ref
+    sd = d['static_decode']
+    assert sd['active'] and sd['spec'] and sd['spec_steps'] > 0
+    assert sd['rows_admitted'] >= 4 and sd['rows_rejected_length'] >= 1 and sd['live_rows'] == 0
+    assert sd['spec_acceptance'] is not None
+
+
+def test_spec_lane_with_prefix_cache_hit():
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'p1', shared + [1, 2], 6), (0.3, 'p2', shared + [3, 3, 3], 6)]
+    ref, _ = run(False, plan, prefix=True)
+    got, d = run(True, plan, prefix=True, spec=True)
+    assert got == ref
+    assert d['static_decode']['spec_steps'] > 0
+
+
+def test_spec_lane_leaves_sampled_rows_on_the_transformers_path():
+    plan = [(0.0, 'g', [5, 7, 11, 13, 2], 6), (0.0, 's', [3, 1, 4, 1, 5], 6)]
+    got, d = run(True, plan, spec=True, temps={'s': 0.8})
+    ref, _ = run(False, plan[:1])
+    assert got['g'] == ref['g'] and len(got['s']) >= 1
+    assert d['static_decode']['rows_rejected_sampling'] >= 1

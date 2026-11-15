@@ -13,7 +13,7 @@ class NativeQwenContinuousError(RuntimeError): pass
 
 @dataclass
 class ActiveBatch:
-    requests:list[Request];queues:list[asyncio.Queue];past:Any;attention_mask:Any;previous_gpu:Any;decode_positions:Any;generated:list[int];stop_sets:list[set[int]];base_width:int;decode_step:int=0
+    requests:list[Request];queues:list[asyncio.Queue];past:Any;attention_mask:Any;previous_gpu:Any;decode_positions:Any;generated:list[int];stop_sets:list[set[int]];base_width:int;decode_step:int=0;prompt_hidden:Any=None
     @property
     def done(self):return not self.requests
     @property
@@ -21,7 +21,7 @@ class ActiveBatch:
 
 @dataclass
 class PrefillJob:
-    requests:list[Request];queues:list[asyncio.Queue];input_ids:Any;attention_mask:Any;position_ids:Any;lengths:list[int];base_width:int;max_new:int;prefix_len:int=0;cursor:int=0;past:Any=None;terminal_logits:Any=None
+    requests:list[Request];queues:list[asyncio.Queue];input_ids:Any;attention_mask:Any;position_ids:Any;lengths:list[int];base_width:int;max_new:int;prefix_len:int=0;cursor:int=0;past:Any=None;terminal_logits:Any=None;hidden_tail:Any=None
     @property
     def input_width(self):return int(self.input_ids.shape[1])
     @property
@@ -109,10 +109,16 @@ class QwenHybridContinuousEngine:
             from inferstack.runtime.qwen_static_decode import QwenStaticDecoder
             from inferstack.runtime.qwen_static_lane import StaticDecodeLane
             slots=int(getattr(n,'static_decode_slots',0) or n.max_requests_per_batch);max_len=int(n.static_decode_max_tokens)
-            dec=QwenStaticDecoder(self.model,self.device,gdn_backend=str(n.static_decode_gdn_backend),attn_backend=str(getattr(n,'static_decode_attention','sdpa') or 'sdpa'))
+            gb=str(n.static_decode_gdn_backend);ab=str(getattr(n,'static_decode_attention','sdpa') or 'sdpa');sp=None
+            if bool(getattr(n,'static_decode_spec',False)):
+                from inferstack.runtime.qwen_spec_decode import QwenSpecDecoder,resolve_mtp
+                tensors,seed=resolve_mtp(str(getattr(n,'static_decode_spec_mtp','') or ''))
+                dec=QwenSpecDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab,mtp_tensors=tensors,mtp_seed=seed,draft_vocab=int(getattr(n,'static_decode_spec_draft_vocab',0) or 0) or None)
+            else:dec=QwenStaticDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab)
             st=dec.new_state(slots,max_len,list(n.static_decode_batch_buckets),list(n.static_decode_len_buckets))
-            t=time.perf_counter();graphs=dec.capture(st) if bool(n.static_decode_cuda_graph) else 0
-            self._lane=StaticDecodeLane(self,dec,st);self._static_diag.update(active=True,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))
+            if bool(getattr(n,'static_decode_spec',False)):sp=dec.new_spec_state(st)
+            t=time.perf_counter();graphs=(dec.capture_spec(st,sp) if sp is not None else dec.capture(st)) if bool(n.static_decode_cuda_graph) else 0
+            self._lane=StaticDecodeLane(self,dec,st,spec=sp);self._static_diag.update(active=True,spec=sp is not None,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))
         except Exception as exc:
             self._lane=None;self._static_diag.update(active=False,error=f'{type(exc).__name__}: {exc}')
             if bool(getattr(n,'static_decode_strict',False)):raise
@@ -313,22 +319,39 @@ class QwenHybridContinuousEngine:
             if job.done:break
             s=job.cursor;e=self._prefill_end(job,budget)
             self._stats['prefill_tokens']+=int(e-s)*len(job.requests)
-            with torch.inference_mode():out=self._model_call(input_ids=job.input_ids[:,s:e],attention_mask=job.attention_mask[:,:job.prefix_len+e],position_ids=job.position_ids[:,s:e],past_key_values=job.past,use_cache=True)
+            hook=self._spec_hidden_hook(job)
+            try:
+                with torch.inference_mode():out=self._model_call(input_ids=job.input_ids[:,s:e],attention_mask=job.attention_mask[:,:job.prefix_len+e],position_ids=job.position_ids[:,s:e],past_key_values=job.past,use_cache=True)
+            finally:
+                if hook is not None:hook.remove()
             self._stats['prefill_forward_calls']+=1;self._stats['prefill_chunks']+=1;job.past=out.past_key_values;job.terminal_logits=out.logits[:,-1,:];job.cursor=e;self._maybe_store_prefix(job)
         if not job.done:return None
         if job.terminal_logits is None:raise NativeQwenContinuousError('prefill ended without logits')
         for r in job.requests:r.prompt_cursor=len(r.prompt_token_ids)
         nxt=self._sampler.sample(job.terminal_logits,job.requests,0)
-        state=ActiveBatch(job.requests,job.queues,job.past,job.attention_mask,nxt,torch.tensor(job.lengths,dtype=torch.long,device=self.device),[0]*len(job.requests),[self._stop_ids(r) for r in job.requests],job.base_width,0)
+        state=ActiveBatch(job.requests,job.queues,job.past,job.attention_mask,nxt,torch.tensor(job.lengths,dtype=torch.long,device=self.device),[0]*len(job.requests),[self._stop_ids(r) for r in job.requests],job.base_width,0,job.hidden_tail)
         self._accept(state,nxt);self._compact(state)
         if state.done:return None
         if self._lane is not None and self._lane.try_admit(state):return None
         return state
+    def _spec_hidden_hook(self,job):
+        """N6.2: keep the post-final-norm hidden states of the last prefill columns (the spec
+        lane's MTP history). Only when the static lane runs speculative decoding."""
+        lane=self._lane
+        if lane is None or getattr(lane,'sp',None) is None:return None
+        import torch
+        w=int(getattr(self.cfg.native,'static_decode_spec_window',256) or 256)
+        def keep(m,i,o):
+            h=o[:,-w:].detach().clone()
+            job.hidden_tail=h if job.hidden_tail is None else torch.cat([job.hidden_tail,h],1)[:,-w:]
+        return lane.dec.text.norm.register_forward_hook(keep)
     def _accept(self,state,tokens_gpu):
-        toks=tokens_gpu.detach().cpu().tolist()
+        self._accept_host(state,tokens_gpu.detach().cpu().tolist())
+    def _accept_host(self,state,toks):
+        """Emit one token per row from a host list; None skips the row (spec lane second tokens)."""
         for i,t in enumerate(toks):
             r=state.requests[i]
-            if r.state!=RequestState.RUNNING:continue
+            if t is None or r.state!=RequestState.RUNNING:continue
             t=int(t);r.token_emission_times.append(time.perf_counter());r.generated_token_ids.append(t);state.generated[i]+=1;self._emit(state.queues[i],t);self._stats['tokens_emitted']+=1
             if t in state.stop_sets[i] or state.generated[i]>=r.sampling.max_new_tokens:
                 r.finish_reason='stop' if t in state.stop_sets[i] else 'length';r.state=RequestState.FINISHED;self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
@@ -349,6 +372,7 @@ class QwenHybridContinuousEngine:
             if i not in keep and r.state==RequestState.CANCELLED:self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
         if not keep:state.requests.clear();state.queues.clear();return
         idx=torch.tensor(keep,dtype=torch.long,device=self.device);state.past=select_cache_rows(state.past,idx);state.attention_mask=state.attention_mask.index_select(0,idx);state.previous_gpu=state.previous_gpu.index_select(0,idx);state.decode_positions=state.decode_positions.index_select(0,idx);state.requests=[state.requests[i] for i in keep];state.queues=[state.queues[i] for i in keep];state.generated=[state.generated[i] for i in keep];state.stop_sets=[state.stop_sets[i] for i in keep]
+        if state.prompt_hidden is not None:state.prompt_hidden=state.prompt_hidden.index_select(0,idx)
     def _remaining(self,state):return max((r.sampling.max_new_tokens-g for r,g in zip(state.requests,state.generated) if r.state==RequestState.RUNNING),default=0)
     def _merge_states(self,states):
         import torch

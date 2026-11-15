@@ -93,6 +93,12 @@ class NativeConfig:
     static_decode_attention:str="sdpa"
     static_decode_cuda_graph:bool=True
     static_decode_strict:bool=False
+    # N6.2: lossless one-draft speculative decoding in the static lane with the checkpoint's MTP
+    # head (runtime/qwen_spec_decode.py). Greedy rows only; sampled rows stay on the Transformers path.
+    static_decode_spec:bool=False
+    static_decode_spec_mtp:str=""                  # "repo@revision" of the mtp.* tensors, or "random:SEED" (tests)
+    static_decode_spec_draft_vocab:int=0           # draft over the first N token ids (0 = full vocabulary)
+    static_decode_spec_window:int=256              # prompt positions (from the last prefill forwards) given MTP entries
 
     # v1.6 Qwen forward-fusion engine. These are inference-only structural
     # optimizations installed after weights load; every path has a safe fallback.

@@ -10,6 +10,11 @@ never rejects work.
 Live rows stay packed in slots 0..n-1: when rows finish, the survivors move down in
 order. The lane's batch object is an ActiveBatch without a cache, so the engine's own
 token acceptance (_accept) is reused unchanged.
+
+N6.2: with `spec` (a SpecState), every step is the MTP verify+draft graph
+(runtime/qwen_spec_decode.py) and emits one or two tokens per row. Only greedy rows are
+admitted, since the draft check is an argmax. The MTP history comes from the last prefill
+columns' hidden states (engine._spec_hidden_hook).
 """
 from __future__ import annotations
 
@@ -17,18 +22,20 @@ from inferstack.core.request import RequestState
 
 
 class StaticDecodeLane:
-    def __init__(self, engine, decoder, state):
+    def __init__(self, engine, decoder, state, spec=None):
         import torch
         from inferstack.runtime.qwen_continuous import ActiveBatch
         self.e = engine
         self.dec = decoder
         self.st = state
+        self.sp = spec
         self.batch = ActiveBatch([], [], None, None, None, None, [], [], 0, 0)
         self.next_ids = torch.zeros(state.batch, dtype=torch.long, device=decoder.device)
         self.pos = torch.zeros(state.batch, dtype=torch.long, device=decoder.device)
         self.positions: list[int] = []        # host copy of pos for live rows
         self.stats = {'rows_admitted': 0, 'rows_rejected_full': 0, 'rows_rejected_length': 0,
-                      'decode_steps': 0, 'max_live_rows': 0}
+                      'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
+                      'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0}
 
     @property
     def rows(self) -> int:
@@ -40,9 +47,17 @@ class StaticDecodeLane:
         Rows whose prompt + max_new_tokens fit the pool move while free slots last; the
         rest stay in `state` (Transformers path). Returns True when nothing is left."""
         import torch
+        spec = self.sp is not None
+        if spec and state.prompt_hidden is None:
+            return False
+        extra = 2 if spec else 0                   # the spec lane also writes the draft column
         fit = [i for i, r in enumerate(state.requests)
-               if len(r.prompt_token_ids) + r.sampling.max_new_tokens <= self.st.max_len]
+               if len(r.prompt_token_ids) + r.sampling.max_new_tokens + extra <= self.st.max_len]
         self.stats['rows_rejected_length'] += len(state.requests) - len(fit)
+        if spec:
+            greedy = [i for i in fit if float(state.requests[i].sampling.temperature) <= 0]
+            self.stats['rows_rejected_sampling'] += len(fit) - len(greedy)
+            fit = greedy
         free = self.st.batch - self.rows
         if len(fit) > free:
             self.stats['rows_rejected_full'] += len(fit) - free
@@ -53,6 +68,15 @@ class StaticDecodeLane:
         lengths = self.dec.load_rows(self.st, state.past, state.attention_mask, state.physical_width,
                                      fit, range(base, base + n))
         idx = torch.tensor(fit, dtype=torch.long, device=self.pos.device)
+        if spec:
+            firsts = state.previous_gpu.index_select(0, idx).tolist()
+            hid = state.prompt_hidden
+            cols = int(hid.shape[1])
+            real = state.attention_mask[:, :state.physical_width][:, -cols:].sum(-1).tolist()
+            for j, i in enumerate(fit):
+                w = max(1, min(int(real[i]), lengths[j], cols))
+                ids = torch.tensor(list(state.requests[i].prompt_token_ids)[-lengths[j]:], dtype=torch.long)
+                self.dec.load_spec_row(self.st, self.sp, base + j, ids, hid[i, -w:], int(firsts[j]))
         self.next_ids[base:base + n].copy_(state.previous_gpu.index_select(0, idx))
         self.pos[base:base + n].copy_(torch.tensor(lengths, dtype=torch.long, device=self.pos.device))
         b = self.batch
@@ -73,6 +97,8 @@ class StaticDecodeLane:
         state.attention_mask = state.attention_mask.index_select(0, keep)
         state.previous_gpu = state.previous_gpu.index_select(0, keep)
         state.decode_positions = state.decode_positions.index_select(0, keep)
+        if state.prompt_hidden is not None:
+            state.prompt_hidden = state.prompt_hidden.index_select(0, keep)
         state.requests = [state.requests[i] for i in rest]
         state.queues = [state.queues[i] for i in rest]
         state.generated = [state.generated[i] for i in rest]
@@ -94,6 +120,9 @@ class StaticDecodeLane:
         n = self.rows
         if not n:
             return
+        if self.sp is not None:
+            self._spec_decode(n)
+            return
         logits = self.dec.step(self.st, self.next_ids[:n], self.pos[:n], n, length=max(self.positions) + 1)
         nxt = self._sample(logits)
         self.next_ids[:n].copy_(nxt)
@@ -102,6 +131,21 @@ class StaticDecodeLane:
         self.stats['decode_steps'] += 1
         self.e._stats['decode_forward_calls'] += 1
         self.e._accept(self.batch, nxt)
+        self.compact()
+
+    def _spec_decode(self, n):
+        y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + 2)
+        yh, ah = y.tolist(), acc.tolist()            # the step's only host sync
+        e = self.e
+        e._accept_host(self.batch, [r[0] for r in yh])
+        e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)])
+        self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
+        k = sum(map(bool, ah))
+        self.stats['decode_steps'] += 1
+        self.stats['spec_steps'] += 1
+        self.stats['spec_row_steps'] += n
+        self.stats['spec_accepted'] += k
+        e._stats['decode_forward_calls'] += 1
         self.compact()
 
     def compact(self):
@@ -118,7 +162,10 @@ class StaticDecodeLane:
                 self.e._queues.pop(r.request_id, None)
         for j, src in enumerate(live):
             if src != j:
-                self.dec.move_row(self.st, src, j, self.positions[src] + 1)
+                if self.sp is not None:
+                    self.dec.move_spec_row(self.st, self.sp, src, j, self.positions[src] + 2)
+                else:
+                    self.dec.move_row(self.st, src, j, self.positions[src] + 1)
         if live:
             idx = torch.tensor(live, dtype=torch.long, device=self.pos.device)
             k = len(live)
@@ -141,4 +188,7 @@ class StaticDecodeLane:
         st = self.st
         return {**self.stats, 'live_rows': self.rows, 'slots': st.batch, 'max_len': st.max_len,
                 'batch_buckets': list(st.batch_buckets), 'len_buckets': list(st.len_buckets),
-                'decoder': dict(self.dec.stats), 'graphs': len(self.dec.graphs)}
+                'decoder': dict(self.dec.stats), 'graphs': len(self.dec.graphs) + len(getattr(self.dec, 'spec_graphs', {})),
+                'spec': self.sp is not None,
+                'spec_acceptance': (self.stats['spec_accepted'] / self.stats['spec_row_steps'])
+                if self.stats['spec_row_steps'] else None}
