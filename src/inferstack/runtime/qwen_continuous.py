@@ -116,10 +116,34 @@ class QwenHybridContinuousEngine:
         except Exception as exc:
             self._lane=None;self._static_diag.update(active=False,error=f'{type(exc).__name__}: {exc}')
             if bool(getattr(n,'static_decode_strict',False)):raise
+    def _maybe_prefill_warmup(self):
+        """Compile and autotune the prefill kernels (Triton/FLA) before serving. Without it the
+        first large prefill after startup paid a one-off ~15 s stall on the L4 (n43, moderate c16).
+        Shapes cover B=1 and B>1 with left padding, a length not divisible by 16, and a chunk that
+        continues from a cache (conv/recurrent initial state)."""
+        n=self.cfg.native
+        if not bool(getattr(n,'prefill_warmup',False)) or not str(self.device).startswith('cuda'):return
+        import torch
+        t=time.perf_counter();cfgs=[];vocab=int(getattr(getattr(self.model,'config',None),'vocab_size',0) or 1000)
+        try:
+            g=torch.Generator(device='cpu').manual_seed(0)
+            for B,T,pad in ((1,2048,0),(1,1999,0),(4,520,37)):
+                ids=torch.randint(0,min(vocab,30000),(B,T),generator=g).to(self.device);mask=torch.ones((B,T),dtype=torch.long,device=self.device)
+                if pad:mask[1:,:pad]=0
+                pos=(mask.cumsum(-1)-1).clamp_min(0)
+                with torch.inference_mode():
+                    out=self._model_call(input_ids=ids,attention_mask=mask,position_ids=pos,use_cache=True)
+                    more=torch.randint(0,min(vocab,30000),(B,301),generator=g).to(self.device);m2=torch.cat([mask,torch.ones((B,301),dtype=torch.long,device=self.device)],1)
+                    p2=pos[:,-1:]+1+torch.arange(301,device=self.device)
+                    self._model_call(input_ids=more,attention_mask=m2,position_ids=p2,past_key_values=out.past_key_values,use_cache=True)
+                cfgs.append([B,T,pad])
+            torch.cuda.synchronize();self._static_diag['prefill_warmup']={'shapes':cfgs,'s':round(time.perf_counter()-t,3)}
+        except Exception as exc:
+            self._static_diag['prefill_warmup']={'shapes':cfgs,'error':f'{type(exc).__name__}: {exc}'[:300]}
     def _decode_work(self):return bool(self._active or (self._lane is not None and self._lane.rows))
     async def start(self):
         if self.started:return
-        self._loop_ref=asyncio.get_running_loop();self._maybe_patch();self._maybe_compile();await self._gpu(self._maybe_static_lane);self._stop=False;self._fatal_error=None;self.started=True;self._task=asyncio.create_task(self._loop_guarded(),name='inferstack-qwen-native')
+        self._loop_ref=asyncio.get_running_loop();self._maybe_patch();self._maybe_compile();await self._gpu(self._maybe_prefill_warmup);await self._gpu(self._maybe_static_lane);self._stop=False;self._fatal_error=None;self.started=True;self._task=asyncio.create_task(self._loop_guarded(),name='inferstack-qwen-native')
     async def close(self):
         self._stop=True
         if self._task:

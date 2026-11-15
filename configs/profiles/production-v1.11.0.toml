@@ -43,6 +43,8 @@ gdn_conv_backend = "fla"
 # Only for forwards of >= 1024 tokens (batch x tokens): the n42 L4 fast check showed +4-15 ms
 # TTFT on short single prompts from the FLA wrapper's per-layer Python cost.
 gdn_conv_fla_min_tokens = 1024
+# Compile/autotune prefill kernels at startup (n43: a cold first large prefill stalled ~15 s).
+prefill_warmup = true
 prefix_state_cache = true
 prefix_state_cache_max_entries = 64
 prefix_state_cache_max_mb = 1024

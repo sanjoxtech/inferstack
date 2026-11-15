@@ -54,6 +54,9 @@ class NativeConfig:
     # fla conv only when batch x tokens of the forward reaches this (0 = always); below it the
     # per-call Python cost of the FLA wrapper (~0.5 ms x 18 layers) outweighs the kernel gain.
     gdn_conv_fla_min_tokens:int=0
+    # Run a few dummy prefill forwards at startup so Triton/FLA kernels compile and autotune
+    # before the first request (CUDA only; failures are recorded in diagnostics, not raised).
+    prefill_warmup:bool=False
     prefix_state_cache:bool=True
     prefix_state_cache_max_entries:int=64
     prefix_state_cache_max_mb:int=1024
