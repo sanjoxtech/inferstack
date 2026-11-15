@@ -310,3 +310,35 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 - Against the v1.12 full run's rivals (same L4 image), v1.13 c16 tok/s vs vLLM: shared_prefix ~0.70
   (was 0.51), moderate ~0.83 (0.67), interactive ~0.80 (0.75), prefill_heavy ~0.60 (0.51).
 - Next: N6.1 MTP speculative decode; full scorecard for v1.13 (+N6.1 if ready).
+
+### 2026-11-15 — N6.1 MTP speculative decode lane: model-step bench, x1.19-x1.42 tok/s
+
+- Code 0e334d1: runtime/qwen_spec_decode.py (verify [last, draft] in one graph; GDN state after
+  token 1 saved and restored on rejected rows; MTP layer with its own KV cache drafts from the last
+  accepted position; the graph writes the next step's inputs). L4 run: engine tests incl. 5 new
+  forced right/wrong/mixed-draft tests (equal to Transformers greedy) passed; FLA tests passed.
+- scripts/spec_decode_bench.py, v1.13 kernels (triton attention + GDN), 128 new tokens, plain static
+  lane vs spec lane, both graph replay:
+
+  | batch | words | plain ms/step | spec ms/step | tokens/step | tok/s plain -> spec | x |
+  |---|---|---|---|---|---|---|
+  | 1 | 48 | 16.3 | 22.8 | 1.97 | 61 -> 86 | 1.40 |
+  | 4 | 48 | 17.9 | 24.9 | 1.97 | 223 -> 315 | 1.42 |
+  | 16 | 48 | 20.7 | 33.8 | 1.97 | 772 -> 932 | 1.21 |
+  | 1 | 400 | 16.4 | 23.0 | 1.92 | 61 -> 83 | 1.37 |
+  | 4 | 400 | 18.1 | 25.1 | 1.92 | 221 -> 305 | 1.38 |
+  | 16 | 400 | 21.1 | 34.4 | 1.94 | 758 -> 905 | 1.19 |
+
+- Acceptance 0.92-0.97 in-lane (N6.0 offline estimate 0.86-0.96).
+- Agreement with the plain lane: 38/42 rows identical over 128 tokens. 4 rows differ from token ~6
+  (bf16 2-token vs 1-token forward; to be checked against Transformers greedy).
+- The step costs +6.5 ms at B1 and +13 ms at B16 over a plain step. Suspects:
+  - MTP lm_head read: 1 GB, ~3.4 ms;
+  - GDN state save/restore traffic: ~0.9 GB at B16;
+  - two attention calls per layer.
+- Evidence: docs/verification/evidence/n61-spec-l4-0e334d1-20261115/.
+- Next:
+  - N6.1b: cut step overhead (MTP draft vocab, bank-swapped GDN state instead of copy+where,
+    2-query attention kernel);
+  - check divergence vs Transformers;
+  - N6.2: wire into the served static lane behind a profile flag.
