@@ -249,3 +249,17 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   v1.8 vs v1.7: TTFT down in all prefill-bound cells; shared_prefix c16 E2E p95 +18% (busy budget).
 - vs vLLM: tok/s ×0.79–0.93 interactive, ×0.41 prefill_heavy c16. Gaps: batched prefill, batched decode.
 - Decision: keep v1.9. Next: N4 packed/varlen prefill. Writeup: docs/verification/V19_SCORECARD_L4_2026-11-14.md.
+
+### 2026-11-15 — N4.1 backlog-aware busy prefill budget (production-v1.10.0): fast check, promising
+
+- Cause from the v1.9 run: prefill_heavy c16 TTFT rose in ~370 ms steps of 4-5 requests; while
+  decoding, prefill was capped at 1024 tokens per forward. v1.10 lets a forward take up to
+  ceil(queued prefill tokens / 4), between the busy and idle budgets.
+- First on-runtime test run found a real bug: with FLA installed, transformers swapped FLA into
+  the recurrent reference GDN (and into CPU test tensors). Fixed in `70e9aad`; 42 CPU engine tests
+  + 2 CUDA FLA tests pass on the L4 (first time these engine tests ran anywhere: no local torch).
+- Fast check `70e9aad` (c1/c16, 2 rounds) v1.10 vs v1.9: prefill_heavy c16 TTFT 2188 → 1370 ms,
+  tok/s ×1.11, E2E p95 6155 → 5468 ms; decode 75 → 88 ms/tok there (prefill now takes the step).
+  shared_prefix c16 tok/s ×1.07; every other cell within noise. Evidence:
+  docs/verification/evidence/n41-fast-check-l4-70e9aad-20261115/.
+- Decision: candidate; full 3-round scorecard together with N4.2 (packed varlen prefill).
