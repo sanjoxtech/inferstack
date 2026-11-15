@@ -250,6 +250,33 @@ async def one(client, base, model, prompt, max_tokens, temperature, timeout):
             'content_chunks': r['content_chunks']}
 
 
+async def ttft_breakdown(base):
+    """Native engine only: cumulative TTFT split counters from /v1/native/status (None elsewhere)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(base + '/v1/native/status', timeout=10)
+        if r.status_code != 200:
+            return None
+        for diag in (r.json().get('models') or {}).values():
+            if isinstance(diag, dict) and isinstance(diag.get('ttft_breakdown'), dict):
+                return diag['ttft_breakdown']
+    except Exception:
+        return None
+    return None
+
+
+def breakdown_delta(before, after):
+    """Per-request means over one cell: queue/wait/prefill/total ms, decode steps and other
+    jobs' prefill forwards that ran between a request's prefill prepare and its first token."""
+    if not before or not after:
+        return None
+    n = after.get('requests', 0) - before.get('requests', 0)
+    if n <= 0:
+        return None
+    return {'requests': n, **{k + '_mean': round((after[k] - before.get(k, 0)) / n, 3)
+                              for k in after if k != 'requests'}}
+
+
 async def run_cell(base, model, texts, max_tokens, concurrency, temperature, timeout):
     inflight = {'now': 0, 'max': 0, 'area': 0.0, 'last': time.perf_counter()}
 
@@ -302,10 +329,14 @@ async def run_profile(profile, workload, round_dir, ready_timeout, request_timeo
                 for concurrency in workload['concurrency']:
                     n = cell_requests(workload, concurrency)
                     texts = prompts(case, n, workload['seed'])
+                    before = await ttft_breakdown(base)
                     with GpuSampler() as gpu:
                         rows, cell = await run_cell(base, profile['model'], texts, case['max_tokens'], concurrency,
                                                     workload['temperature'], request_timeout)
                     cell.update(case=case['name'], concurrency=concurrency, requests=n, gpu=gpu.summary())
+                    split = breakdown_delta(before, await ttft_breakdown(base))
+                    if split:
+                        cell['ttft_breakdown'] = split
                     cells.append(cell)
                     for row in rows:
                         out.write(json.dumps({'profile': profile['name'], 'case': case['name'],

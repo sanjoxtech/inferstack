@@ -94,6 +94,9 @@ def test_static_lane_matches_transformers_decode():
     assert sd['rows_rejected_length'] >= 1
     assert sd['live_rows'] == 0
     assert d['compactions'] >= 1
+    tb = d['ttft_breakdown']                       # every request's first token is split once
+    assert tb['requests'] == len(PLAN) and dref['ttft_breakdown']['requests'] == len(PLAN)
+    assert tb['total_ms'] >= tb['queue_ms'] + tb['wait_ms'] + tb['prefill_ms'] - 1e-6 > 0
 
 
 def test_static_lane_with_prefix_cache_hit():

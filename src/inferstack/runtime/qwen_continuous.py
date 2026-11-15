@@ -35,6 +35,7 @@ class QwenHybridContinuousEngine:
         self._sampler=FastSampler(device, bool(cfg.native.fused_sampler));self._prefix_cache=HybridPrefixStateCache(cfg.native.prefix_state_cache_max_entries if cfg.native.prefix_state_cache else 0,cfg.native.prefix_cache_min_tokens,cfg.native.prefix_cache_block_tokens,cfg.native.prefix_state_cache_max_mb*1024*1024)
         self._supports_logits_to_keep=self._detect_logits_to_keep(model);self._compiled=False;self._compiled_model=None;self._compile_error=None;self._graph_shapes=set();self._graph_first=0;self._graph_reuse=0;self._graph_bucket_rows=0;self._graph_static_cache_uses=0;self._graph_mark_steps=0
         self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots','prefill_tokens')}
+        self._ttft={k:0.0 for k in ('requests','queue_ms','wait_ms','prefill_ms','total_ms','decode_steps','other_prefill_forwards')}
         self._lane=None;self._static_diag={'enabled':bool(getattr(cfg.native,'static_decode',False)),'active':False};self._gdn_diag={};self._forward_fusion_diag={};self._profile={'enabled':bool(getattr(cfg.native,'profile_decode',False)),'decode_calls':0,'decode_wall_ms':0.0,'model_gpu_ms':0.0,'sampler_gpu_ms':0.0,'accept_wall_ms':0.0,'compact_wall_ms':0.0,'syncs':0}
     @staticmethod
     def _detect_logits_to_keep(model):
@@ -182,7 +183,7 @@ class QwenHybridContinuousEngine:
         if not r.prompt_token_ids:raise ValueError('empty prompt')
         limit=self._context_limit()
         if limit and len(r.prompt_token_ids)+r.sampling.max_new_tokens>limit:raise ValueError(f'request exceeds context {limit}')
-        q=asyncio.Queue();self._requests[r.request_id]=r;self._queues[r.request_id]=q
+        q=asyncio.Queue();self._requests[r.request_id]=r;self._queues[r.request_id]=q;r._t_submit=time.perf_counter()
         try:self._pending.put_nowait((r,q))
         except asyncio.QueueFull:
             self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None);raise RuntimeError('native admission queue full')
@@ -253,7 +254,8 @@ class QwenHybridContinuousEngine:
         import torch
         rs=[x[0] for x in cohort if x[0].state!=RequestState.CANCELLED];qs=[x[1] for x in cohort if x[0].state!=RequestState.CANCELLED]
         if not rs:return None
-        for r in rs:r.state=RequestState.RUNNING
+        now=time.perf_counter()
+        for r in rs:r.state=RequestState.RUNNING;r._t_prep=now;r._ds0=self._stats['decode_forward_calls'];r._pf0=self._stats['prefill_forward_calls']
         B=len(rs);lens=[len(r.prompt_token_ids) for r in rs];max_new=max(r.sampling.max_new_tokens for r in rs);pad=self._pad_id();common=self._common_prefix(rs);entry=self._prefix_cache.longest(common) if self._prefix_cache.enabled else None
         if entry:
             past=self._prefix_cache.fork(entry);prefix=len(entry.tokens);past=repeat_cache_rows(past,B,self.device) if B>1 else past;suffix=[r.prompt_token_ids[prefix:] for r in rs];w=max(map(len,suffix),default=0);base=prefix+w;mask=torch.zeros((B,base+max_new),dtype=torch.long,device=self.device);mask[:,:prefix]=1
@@ -319,6 +321,10 @@ class QwenHybridContinuousEngine:
             if job.done:break
             s=job.cursor;e=self._prefill_end(job,budget)
             self._stats['prefill_tokens']+=int(e-s)*len(job.requests)
+            if s==0:
+                now=time.perf_counter()
+                for r in job.requests:
+                    if getattr(r,'_t_pf',None) is None:r._t_pf=now;r._pf1=self._stats['prefill_forward_calls']
             hook=self._spec_hidden_hook(job)
             try:
                 with torch.inference_mode():out=self._model_call(input_ids=job.input_ids[:,s:e],attention_mask=job.attention_mask[:,:job.prefix_len+e],position_ids=job.position_ids[:,s:e],past_key_values=job.past,use_cache=True)
@@ -334,6 +340,15 @@ class QwenHybridContinuousEngine:
         if state.done:return None
         if self._lane is not None and self._lane.try_admit(state):return None
         return state
+    def _ttft_record(self,r):
+        """First token of r: split TTFT into queue (submit -> cohort prepared), wait (prepared ->
+        its first prefill forward), prefill (first forward -> first token). Also counts decode
+        steps and other jobs' prefill forwards that ran between prepare and the first token."""
+        ts,tp,tf=getattr(r,'_t_submit',None),getattr(r,'_t_prep',None),getattr(r,'_t_pf',None)
+        if ts is None or tp is None or tf is None:return
+        te=r.token_emission_times[-1];a=self._ttft
+        a['requests']+=1;a['queue_ms']+=(tp-ts)*1e3;a['wait_ms']+=(tf-tp)*1e3;a['prefill_ms']+=(te-tf)*1e3;a['total_ms']+=(te-ts)*1e3
+        a['decode_steps']+=self._stats['decode_forward_calls']-r._ds0;a['other_prefill_forwards']+=r._pf1-r._pf0
     def _spec_hidden_hook(self,job):
         """N6.2: keep the post-final-norm hidden states of the last prefill columns (the spec
         lane's MTP history). Only when the static lane runs speculative decoding."""
@@ -353,6 +368,7 @@ class QwenHybridContinuousEngine:
             r=state.requests[i]
             if t is None or r.state!=RequestState.RUNNING:continue
             t=int(t);r.token_emission_times.append(time.perf_counter());r.generated_token_ids.append(t);state.generated[i]+=1;self._emit(state.queues[i],t);self._stats['tokens_emitted']+=1
+            if state.generated[i]==1:self._ttft_record(r)
             if t in state.stop_sets[i] or state.generated[i]>=r.sampling.max_new_tokens:
                 r.finish_reason='stop' if t in state.stop_sets[i] else 'length';r.state=RequestState.FINISHED;self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
     def _compact(self,state):
@@ -494,5 +510,5 @@ class QwenHybridContinuousEngine:
         except Exception:
             ff=self._forward_fusion_diag
         graph={'enabled':bool(self.cfg.native.explicit_cuda_graph),'compile_activated':self._compiled,'compile_error':self._compile_error,'static_cache_enabled':bool(getattr(self.cfg.native,'graph_static_cache',False)),'static_cache_uses':self._graph_static_cache_uses,'mark_step_calls':self._graph_mark_steps,'generation_cloning':bool(getattr(self.cfg.native,'graph_generation_cloning',True)),'configured_batch_sizes':list(self.cfg.native.cuda_graph_batch_sizes),'shape_cache_entries':len(self._graph_shapes),'shape_first_seen':self._graph_first,'shape_reuse_candidates':self._graph_reuse,'bucket_padded_rows_accounted':self._graph_bucket_rows,'torch_compile_counters':self._compile_counters(),'actual_cuda_graph_replay_proven':False,'note':'Actual capture/replay is accepted only by the A100 graph probe, never inferred from configuration.'}
-        d={'engine':'qwen_hybrid_continuous','started':self.started,'healthy':self.healthy,'fatal_error':self._fatal_error,'device':self.device,'batching_mode':'live_refill_decode_first_chunked_prefill','paged_kv_active':False,'cache_backend':('transformers_hybrid_static_cache' if getattr(self.cfg.native,'graph_static_cache',False) else 'transformers_hybrid_dynamic_cache'),'hybrid_attention_model':len(set(layers))>1 if layers else None,'layer_types':layers,'quantization':str(getattr(self.model,'_inferstack_quantization','none')),'quantization_config':str(getattr(self.model,'_inferstack_quantization_config','none')),'prefix_state_cache':self._prefix_cache.diagnostics(),'sampler':self._sampler.diagnostics(),'gdn_kernel':g,'forward_fusion':ff,'cuda_graph':graph,'static_decode':({**self._static_diag,**self._lane.diagnostics()} if self._lane is not None else dict(self._static_diag)),'decode_profile':dict(self._profile),'native':asdict(self.cfg.native),'kernels':asdict(self.cfg.kernels),'context_limit':self._context_limit(),'logits_to_keep_optimized':self._supports_logits_to_keep}
+        d={'engine':'qwen_hybrid_continuous','started':self.started,'healthy':self.healthy,'fatal_error':self._fatal_error,'device':self.device,'batching_mode':'live_refill_decode_first_chunked_prefill','paged_kv_active':False,'cache_backend':('transformers_hybrid_static_cache' if getattr(self.cfg.native,'graph_static_cache',False) else 'transformers_hybrid_dynamic_cache'),'hybrid_attention_model':len(set(layers))>1 if layers else None,'layer_types':layers,'quantization':str(getattr(self.model,'_inferstack_quantization','none')),'quantization_config':str(getattr(self.model,'_inferstack_quantization_config','none')),'prefix_state_cache':self._prefix_cache.diagnostics(),'sampler':self._sampler.diagnostics(),'gdn_kernel':g,'forward_fusion':ff,'cuda_graph':graph,'static_decode':({**self._static_diag,**self._lane.diagnostics()} if self._lane is not None else dict(self._static_diag)),'decode_profile':dict(self._profile),'ttft_breakdown':dict(self._ttft),'native':asdict(self.cfg.native),'kernels':asdict(self.cfg.kernels),'context_limit':self._context_limit(),'logits_to_keep_optimized':self._supports_logits_to_keep}
         d.update(self._stats);d['average_cohort_size']=self._stats['requests_batched']/self._stats['cohorts'] if self._stats['cohorts'] else 0.;d['active_batches']=len(self._active);d['prefill_jobs']=len(self._prefill_jobs);return d
