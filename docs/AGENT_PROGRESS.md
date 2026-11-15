@@ -289,3 +289,15 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   batched decode (interactive c16 24.7 vs 19.4 ms/tok; shared_prefix c16 50.5 vs 21.3).
 - Decision: keep v1.12. Next: decode step at batch 16, then mixed prefill+decode forwards.
   Writeup: docs/verification/V112_SCORECARD_L4_2026-11-15.md.
+
+### 2026-11-15 — N5.0 decode step + N6.0 MTP acceptance (parallel L4s)
+
+- N5.0 (static decode step, v1.12): B1 16.3-17.3 ms (~bandwidth floor); B16 22.0 / 24.1 / 34.3 ms at
+  55 / 420 / 1250 tokens of context. Attention ran masked mem-efficient SDPA over the whole length
+  bucket with GQA re-reads -> N5.1 split-KV decode attention kernel (140752c), GPU tests pass.
+- N6.0 (Qwen3.5-2B's own MTP head, 15 mtp.* tensors transformers drops; teacher-forced, greedy):
+  draft-1 acceptance 0.96 interactive / 0.93 moderate / 0.92 prefill_heavy / 0.86 shared_prefix
+  with the post-final-norm hidden state (pre-norm: 0.17-0.70). Chained drafts 2-3: 0.15-0.50.
+  Expected tokens per verify step with 1 draft: 1.86-1.96. Caveat: scorecard prompts are word lists,
+  continuations may be easier than chat. Evidence: n60-mtp-acceptance-l4-7280c6a-20261115/.
+- Decision: build N6.1 (one-draft MTP speculative decode in the static lane, lossless greedy).

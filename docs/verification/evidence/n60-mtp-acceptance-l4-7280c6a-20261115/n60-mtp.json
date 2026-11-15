@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "model": "Qwen/Qwen3.5-2B-Base@b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+  "mtp_tensors": [
+    "mtp.fc.weight",
+    "mtp.layers.0.input_layernorm.weight",
+    "mtp.layers.0.mlp.down_proj.weight",
+    "mtp.layers.0.mlp.gate_proj.weight",
+    "mtp.layers.0.mlp.up_proj.weight",
+    "mtp.layers.0.post_attention_layernorm.weight",
+    "mtp.layers.0.self_attn.k_norm.weight",
+    "mtp.layers.0.self_attn.k_proj.weight",
+    "mtp.layers.0.self_attn.o_proj.weight",
+    "mtp.layers.0.self_attn.q_norm.weight",
+    "mtp.layers.0.self_attn.q_proj.weight",
+    "mtp.layers.0.self_attn.v_proj.weight",
+    "mtp.norm.weight",
+    "mtp.pre_fc_norm_embedding.weight",
+    "mtp.pre_fc_norm_hidden.weight"
+  ],
+  "gpu": "NVIDIA L4",
+  "cases": {
+    "interactive": {
+      "post": {
+        "acceptance": [
+          0.96484375,
+          0.14965986394557823,
+          0.01834862385321101
+        ],
+        "counts": [
+          [
+            741,
+            768
+          ],
+          [
+            110,
+            735
+          ],
+          [
+            2,
+            109
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.96484375,
+          2.1092421343537415,
+          2.1118916459932597
+        ]
+      },
+      "pre": {
+        "acceptance": [
+          0.16796875,
+          0.0,
+          null
+        ],
+        "counts": [
+          [
+            129,
+            768
+          ],
+          [
+            0,
+            129
+          ],
+          [
+            0,
+            0
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.16796875,
+          1.16796875
+        ]
+      }
+    },
+    "moderate": {
+      "post": {
+        "acceptance": [
+          0.92578125,
+          0.19405099150141644,
+          0.05223880597014925
+        ],
+        "counts": [
+          [
+            711,
+            768
+          ],
+          [
+            137,
+            706
+          ],
+          [
+            7,
+            134
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.92578125,
+          2.1054300194759206,
+          2.1148146566873494
+        ]
+      },
+      "pre": {
+        "acceptance": [
+          0.6979166666666666,
+          0.13559322033898305,
+          0.0
+        ],
+        "counts": [
+          [
+            536,
+            768
+          ],
+          [
+            72,
+            531
+          ],
+          [
+            0,
+            70
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.6979166666666665,
+          1.7925494350282485,
+          1.7925494350282485
+        ]
+      }
+    },
+    "prefill_heavy": {
+      "post": {
+        "acceptance": [
+          0.9166666666666666,
+          0.21203438395415472,
+          0.0
+        ],
+        "counts": [
+          [
+            704,
+            768
+          ],
+          [
+            148,
+            698
+          ],
+          [
+            0,
+            145
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.9166666666666665,
+          2.1110315186246416,
+          2.1110315186246416
+        ]
+      },
+      "pre": {
+        "acceptance": [
+          0.6354166666666666,
+          0.1012396694214876,
+          0.0
+        ],
+        "counts": [
+          [
+            488,
+            768
+          ],
+          [
+            49,
+            484
+          ],
+          [
+            0,
+            49
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.6354166666666665,
+          1.6997460399449034,
+          1.6997460399449034
+        ]
+      }
+    },
+    "shared_prefix": {
+      "post": {
+        "acceptance": [
+          0.8616504854368932,
+          0.49570200573065903,
+          0.35502958579881655
+        ],
+        "counts": [
+          [
+            355,
+            412
+          ],
+          [
+            173,
+            349
+          ],
+          [
+            60,
+            169
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.8616504854368932,
+          2.288772359306757,
+          2.440413261272389
+        ]
+      },
+      "pre": {
+        "acceptance": [
+          0.5898058252427184,
+          0.1092436974789916,
+          0.28
+        ],
+        "counts": [
+          [
+            243,
+            412
+          ],
+          [
+            26,
+            238
+          ],
+          [
+            7,
+            25
+          ]
+        ],
+        "expected_tokens_per_step": [
+          1.0,
+          1.5898058252427183,
+          1.6542383943868808,
+          1.6722795137472464
+        ]
+      }
+    }
+  }
+}
