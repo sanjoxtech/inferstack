@@ -371,3 +371,175 @@ very high specialized inference performance
 ```
 
 InferStack's job is to make those ideas **conditional, measurable techniques**, not fixed assumptions.
+
+
+## 10. Additional code-level findings from the Baseten engineering write-up
+
+These findings refine the earlier study and are especially relevant to InferStack's future H5 optimizer.
+
+### DSUF-T11 — Programmatic Dependent Launch (PDL)
+
+Baseten's engineering write-up identifies PDL as one of the three hardware-level optimization levers used for DeepSeek-V4.1-Flash. The upstream CUDA wrapper exposes PDL launch configuration, so dependent kernels can begin work with less host-side serialization when the dependency can be expressed to CUDA.
+
+InferStack implication:
+- add `programmatic_dependent_launch` as a future kernel-launch treatment;
+- only apply it when a measured producer/consumer chain leaves a launch bubble;
+- record GPU architecture, kernel pair, overlap evidence and end-to-end impact;
+- do not assume PDL helps on L4/A100 simply because the API exists.
+
+This is a launch/overlap optimization, not a model-semantic optimization.
+
+### DSUF-T12 — residual-stream fusion
+
+Phil Howes reports that the specialized engine fused DeepSeek's four residual streams into one kernel instead of many separate operations. The key transferable idea is not the exact DeepSeek kernel but **cross-operation fusion around a model-specific residual topology**.
+
+InferStack implication:
+- add a future `residual_stream_fusion` technique card;
+- use profiler evidence to identify repeated residual/norm/merge traffic;
+- treat it as architecture-specific: Qwen3.5 does not inherit DeepSeek's exact four-stream topology;
+- validate memory traffic and kernel-count reduction separately from numerical correctness.
+
+This reinforces the existing v1.6 serving-pack/fusion direction: the best fusion boundary may come from model topology rather than generic operator names.
+
+### DSUF-T13 — fused router + expert execution
+
+The upstream CUDA MoE path contains fused routing/expert machinery, and Howes explicitly describes combining expert selection and expert execution to avoid an intermediate write/read round trip.
+
+Conceptually:
+
+~~~text
+generic MoE
+
+router
+  -> write selected experts
+  -> read selected experts
+  -> launch expert GEMM
+
+
+specialized path
+
+router + expert plan + expert execution
+  -> one fused/pipelined path
+~~~
+
+InferStack implication:
+- record `router_expert_fusion` as a MoE-only technique;
+- measure saved HBM traffic, routing latency and expert GEMM utilization;
+- keep it out of the current dense Qwen3.5 N4 path;
+- make it available when InferStack later serves an MoE model.
+
+### DSUF-T14 — host-loop minimization / whole-step graphing
+
+Baseten's broader DeepSeek optimization work describes minimizing the Python/host loop by grouping kernels into a small number of breakable CUDA graphs. DeepSeek Ultrafast takes the specialized case further: its speculative draft + verify + accept path can be captured as one graph, including variable verification branches through CUDA graph conditional nodes.
+
+This is materially different from "capture one-token decode."
+
+The important evidence dimensions are:
+
+- kernels/graph replay;
+- host launches/step;
+- graph nodes;
+- accepted tokens/step;
+- step latency;
+- verification work;
+- final output tokens/s.
+
+InferStack implication:
+- extend future speculative experiments so graph scope is part of treatment identity;
+- compare one-token graph, multi-token speculative graph and breakable/piecewise graph separately;
+- never attribute speculative throughput to CUDA graphing alone.
+
+### DSUF-T15 — model-specialized optimization sandbox
+
+The strongest product lesson from this project is the development workflow.
+
+The team's first agent-driven attempt from scratch struggled. Allowing agents to inspect SGLang/FlashInfer gave them a working reference surface; they then rapidly profiled and hill-climbed a narrow engine, and successful ideas were ported back into SGLang.
+
+That suggests a new InferStack H5 execution mode:
+
+~~~text
+measured bottleneck
+      |
+      v
+Model-Specific Sandbox
+      |
+      +--> reference source checkout(s)
+      +--> exact model + hardware
+      +--> profiler
+      +--> isolated kernel/engine candidate
+      +--> numerical oracle
+      +--> benchmark
+      |
+      v
+KEEP / REJECT
+      |
+      +--> keep as specialized backend
+      |
+      +--> upstream proven technique into Native / adapter
+~~~
+
+The sandbox is not production by default. It is an **optimization laboratory** with hard verification boundaries.
+
+Required controls:
+
+- immutable reference commits and licenses;
+- no unreviewed source copying across incompatible licenses;
+- isolated workspace/container;
+- explicit experiment budget;
+- compiler/profiler output retained as evidence;
+- numerical/quality gates before performance acceptance;
+- exact hardware/model/workload identity;
+- controller-owned promotion.
+
+This is a direct refinement of H5: the optimizer agent should be allowed to read strong external implementations, but only the verifier/controller decides whether a candidate becomes part of InferStack.
+
+## 11. Recommended integration into InferStack
+
+DeepSeek Ultrafast should be represented in four layers:
+
+~~~text
+External Evidence
+   |
+   +-- DSUF technique cards
+   |     captured speculative graph
+   |     PDL
+   |     residual fusion
+   |     router+expert fusion
+   |     TP/NVLS
+   |     RDMA KV mobility
+   |
+   +-- Model-Specific Sandbox reference
+   |
+   +-- generic_openai external endpoint
+   |
+   +-- specialized adapter later, only when telemetry/hardware justify it
+~~~
+
+Do **not** add its ELv2 source tree as a vendored InferStack engine.
+
+For current Qwen3.5 work:
+
+~~~text
+NOW
+  v1.9 FLA prefill
+      |
+      v
+  N4 packed/varlen prefill
+
+LATER
+  H5 model-specific sandbox
+      |
+      +--> DeepSeek/MoE experiments on suitable hardware
+      +--> compiled Native-v2 experiments
+      +--> speculative whole-step graphs
+~~~
+
+## 12. Revised immediate decision
+
+1. **Keep N4 packed/varlen prefill as the next Native task.**
+2. **Add DSUF-T11..T15 to research memory/technique registry as external evidence.**
+3. **Add speculative-step metrics before the next MTP/speculative campaign.**
+4. **Add the Model-Specific Sandbox as an H5 design target, not as a production backend today.**
+5. **Use DeepSeek Ultrafast through `generic_openai` first if we obtain a managed endpoint.**
+6. **Only create `DeepSeekUltrafastAdapter` when we need engine-specific telemetry.**
+7. **Do not vendor or port ELv2 source into InferStack Native.**
