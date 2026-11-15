@@ -96,6 +96,40 @@ def bench_case(model, tok, decoders, batch, words, steps, bucket_len):
             'speedup_graph_vs_current': results['native_current']['ms_per_step_median'] / results['static_graph']['ms_per_step_median']}
 
 
+def profile_step(model, tok, dec, batch, words, steps=10):
+    """N5.0: kernel table of the static decode step (eager, same kernels the graph replays) at
+    one batch size, per step. Device time only; the graph removes the launch gaps, not the work."""
+    import torch
+    from torch.profiler import ProfilerActivity, profile
+    dev = dec.device
+    toks = [tok.encode(t, add_special_tokens=False) for t in prompts(batch, words)]
+    pad = tok.pad_token_id if tok.pad_token_id is not None else 0
+    ids, mask, pos, w = left_pad(toks, pad, dev)
+    lengths = torch.tensor([len(t) for t in toks], device=dev)
+    bucket = 256 * (-(-(int(w) + steps + 32) // 256))
+    st = dec.new_state(batch, bucket, batch_buckets=[batch])
+    with torch.inference_mode():
+        out = model(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=True, logits_to_keep=1)
+    dec.load(st, out.past_key_values, mask, w)
+    feed = out.logits[:, -1].argmax(-1); p = lengths.clone(); longest = int(lengths.max())
+    for s in range(3):
+        dec.step(st, feed, p, batch, length=longest + s + 1, use_graph=False); p = p + 1
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        for s in range(steps):
+            dec.step(st, feed, p, batch, length=longest + 3 + s + 1, use_graph=False); p = p + 1
+        torch.cuda.synchronize()
+    rows = []
+    for e in prof.key_averages():
+        dev_us = float(getattr(e, 'self_device_time_total', 0.0) or 0.0)
+        if dev_us > 0 and not e.key.startswith('aten::'):
+            rows.append({'kernel': e.key[:140], 'count_per_step': e.count / steps, 'us_per_step': dev_us / steps})
+    rows.sort(key=lambda r: -r['us_per_step'])
+    dec.release(st)
+    return {'batch': batch, 'prompt_words': words, 'kernel_us_per_step_total': sum(r['us_per_step'] for r in rows),
+            'kernels_per_step': sum(r['count_per_step'] for r in rows), 'top_kernels': rows[:40]}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--profile', default='configs/profiles/production-v1.6.0-baseline.toml')
@@ -106,6 +140,8 @@ def main():
     ap.add_argument('--words', type=int, nargs='+', default=[48, 400])
     ap.add_argument('--steps', type=int, default=64)
     ap.add_argument('--out', required=True)
+    ap.add_argument('--profile-batches', type=int, nargs='*', default=[], help='N5.0: kernel table at these batch sizes')
+    ap.add_argument('--profile-words', type=int, default=400)
     a = ap.parse_args()
     import torch
     from inferstack.config import load_profile
@@ -132,7 +168,14 @@ def main():
                 torch.cuda.empty_cache()
             print(json.dumps(row), flush=True)
             rows.append(row)
-    out = {'version': 1, 'profile': a.profile, 'gpu': torch.cuda.get_device_name(0),
+    kernels = []
+    for b in a.profile_batches:
+        try:
+            kernels.append(profile_step(model, tok, decoders['static_graph'], b, a.profile_words))
+        except Exception as exc:
+            kernels.append({'batch': b, 'error': f'{type(exc).__name__}: {str(exc)[:400]}'})
+        print(json.dumps({k: v for k, v in kernels[-1].items() if k != 'top_kernels'}), flush=True)
+    out = {'version': 1, 'profile': a.profile, 'step_kernels': kernels, 'gpu': torch.cuda.get_device_name(0),
            'gdn_kernel': eng.diagnostics().get('gdn_kernel'), 'decoder_stats': {k: d.stats for k, d in decoders.items()}, 'rows': rows}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2, default=str) + '\n')
