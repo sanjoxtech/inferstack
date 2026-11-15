@@ -416,3 +416,15 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   TTFT cause. Evidence: docs/verification/evidence/n63-batched-admit-l4-b1e7a36-20261115/.
 - Next: instrument the request timeline (queue wait, prefill, first emit, admission) before
   another TTFT change.
+
+## 2026-11-15 — TTFT split (queue / wait / prefill), v1.13 vs v1.14, L4 @77880b5
+
+- One round per profile. Means per request (not p50). Evidence:
+  docs/verification/evidence/ttft-split-l4-77880b5-20261115/.
+- **Prefill dominates.** At c1 the prefill stage alone is 57 ms (interactive, ~60-token
+  prompt) and 117 ms (moderate), while the rivals' whole TTFT is 41–48 ms. That is per-forward
+  overhead, not compute.
+- **Under load, queue + wait grow in v1.14**, e.g. prefill_heavy c16: queue 204, wait 275,
+  prefill 416 ms. The extra decode steps between prepare and the first token are 1.5–2.6.
+- **Decision:** P1 (packed prefill into the pool, own forward) is the main lever. It also cuts
+  launches, the c1 cost. P3 scheduling follows for queue/wait.
