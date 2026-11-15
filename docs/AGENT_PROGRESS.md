@@ -388,3 +388,19 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   - interactive c16 TTFT 110 -> 193 ms. Per-row spec admission is eager, with syncs.
   - prefill_heavy c16 is unchanged; it is prefill-bound (N5.2 mixed forwards).
 - Evidence: n62-served-l4-c891340-20261115/. Next: full 3-round scorecard with vLLM/SGLang.
+
+### 2026-11-15 — v1.14 full scorecard: native leads output tok/s in 12 of 16 cells
+
+- Run `l4-1794740111` at `08578c4`: native_dattn / native_spec / vLLM / SGLang, 3 rounds, all passed.
+- v1.14 vs the best rival tok/s:
+  - interactive x1.17-x1.48 (all c);
+  - moderate x1.08-x1.44 (all c);
+  - prefill_heavy c1 x1.14, but c4-c16 x0.55-x0.79;
+  - shared_prefix c1-c4 x1.14-x1.23, c8 x1.01 (tie), c16 x0.73.
+- v1.14 vs v1.13: tok/s up in every cell (x1.02-x1.62).
+- Regressions: TTFT at interactive c4-c16 (c16: 107 -> 193 ms), from eager per-row spec admission.
+- Decision: keep v1.14. Writeup: docs/verification/V114_SCORECARD_L4_2026-11-15.md.
+- Next:
+  - N6.3: batched spec admission (TTFT);
+  - N5.2: mixed prefill+decode (prefill_heavy / shared_prefix c16);
+  - c1 TTFT (65 vs 41 ms).
