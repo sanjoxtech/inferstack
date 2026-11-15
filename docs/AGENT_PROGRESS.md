@@ -370,3 +370,21 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   So serving can draft from the last prefill forward's hidden states alone.
 - Evidence: n61b-spec-l4-17de60a-20261115/, n61c-window-l4-11aab11-20261115/.
 - Next: N6.2 served spec lane (profile flag, draft vocab 65536, window 256), then the full scorecard.
+
+### 2026-11-15 — N6.2 served spec decode (production-v1.14.0): fast check x1.21-x1.61 tok/s
+
+- n62 (c891340, L4, 2 rounds, workload-fast) v1.14 `native_spec` vs v1.13 `native_dattn`. All 34
+  engine tests passed on the runtime, including 3 new engine-level spec-lane tests.
+
+  | case | c1 tok/s | c16 tok/s | c1 decode ms/tok |
+  |---|---|---|---|
+  | interactive | 58.2 -> 93.8 (x1.61) | 638 -> 867 (x1.36) | 16.8 -> 10.3 |
+  | moderate | 57.4 -> 92.1 (x1.61) | 591 -> 830 (x1.40) | 17.0 -> 10.4 |
+  | prefill_heavy | 45.8 -> 59.5 (x1.30) | 166 -> 162 (x0.98) | 17.1 -> 11.6 |
+  | shared_prefix | 54.1 -> 73.8 (x1.36) | 335 -> 406 (x1.21) | 17.1 -> 12.6 |
+
+- c1 decode is now 10.3 ms/token. vLLM was 15.8 in the v1.12 full run.
+- Watch:
+  - interactive c16 TTFT 110 -> 193 ms. Per-row spec admission is eager, with syncs.
+  - prefill_heavy c16 is unchanged; it is prefill-bound (N5.2 mixed forwards).
+- Evidence: n62-served-l4-c891340-20261115/. Next: full 3-round scorecard with vLLM/SGLang.

@@ -1,0 +1,110 @@
+{
+  "run_id": "l4-1794736363",
+  "created_at": 1794736363.334453,
+  "host": {
+    "python": "3.13.18",
+    "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "gpus": [
+      {
+        "name": "NVIDIA L4",
+        "memory_total": "23034 MiB",
+        "driver": "580.82.07",
+        "uuid": "GPU-f81581b9-4060-62c0-d164-e6d18365d95a"
+      }
+    ],
+    "commit": "c8913403887c2bfa79a84a2ddfa6be00751efcb4",
+    "dirty": false
+  },
+  "rounds": 2,
+  "workload": {
+    "version": 1,
+    "cases": [
+      {
+        "name": "interactive",
+        "prompt_words": 48,
+        "max_tokens": 128
+      },
+      {
+        "name": "moderate",
+        "prompt_words": 400,
+        "max_tokens": 256
+      },
+      {
+        "name": "prefill_heavy",
+        "prompt_words": 1500,
+        "max_tokens": 32
+      },
+      {
+        "name": "shared_prefix",
+        "prompt_words": 1200,
+        "max_tokens": 64,
+        "shared_prefix": true
+      }
+    ],
+    "concurrency": [
+      1,
+      16
+    ],
+    "requests_per_cell": {
+      "min": 8,
+      "per_concurrency": 4
+    },
+    "warmup_requests": 2,
+    "temperature": 0.0,
+    "seed": 20261109
+  },
+  "workload_sha256": "afb6885f0f03a1166c1944b2fb7d20cb0ff68c59ced0556b29bf22d4d05b979e",
+  "profiles": [
+    {
+      "name": "native_dattn",
+      "engine": "inferstack_native",
+      "model": "factorylm-2b",
+      "argv": [
+        "inferstack",
+        "serve",
+        "--profile",
+        "configs/profiles/production-v1.13.0.toml",
+        "--foundry-root",
+        "examples/model_foundry",
+        "--model",
+        "foundry://factorylm-2b@candidate",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}"
+      ],
+      "notes": "native_drain plus N5.1 split-KV GQA decode attention in the static lane; needs the fla install step; kept only if the whole scorecard improves"
+    },
+    {
+      "name": "native_spec",
+      "engine": "inferstack_native",
+      "model": "factorylm-2b",
+      "argv": [
+        "inferstack",
+        "serve",
+        "--profile",
+        "configs/profiles/production-v1.14.0.toml",
+        "--foundry-root",
+        "examples/model_foundry",
+        "--model",
+        "foundry://factorylm-2b@candidate",
+        "--device",
+        "cuda:0",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{port}"
+      ],
+      "notes": "native_dattn plus N6.2 MTP speculative decode (one draft, lossless greedy); needs the fla install step; kept only if the whole scorecard improves"
+    }
+  ],
+  "profiles_sha256": "22acfd3bec4f77cbc0eabef4454db9bbf3b5b0d307714548b610b385b57fadd6",
+  "model": {
+    "uri": "Qwen/Qwen3.5-2B-Base",
+    "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "dtype": "bfloat16"
+  },
+  "metric_definitions": " (all client-side, identical for every engine):\n  ttft_ms            request start -> first non-empty streamed content\n  e2e_ms             request start -> terminal stream event\n  client_decode_ms   (e2e_ms - ttft_ms) / (output_tokens - 1), only with engine usage counts\n  output_tps         sum(output_tokens) / cell wall time, only when every request reported usage\nEngine-internal timings (e.g. native TPOT) are never compared with client timings."
+}

@@ -1,0 +1,479 @@
+{
+  "profile": "native_spec",
+  "argv": [
+    "inferstack",
+    "serve",
+    "--profile",
+    "configs/profiles/production-v1.14.0.toml",
+    "--foundry-root",
+    "examples/model_foundry",
+    "--model",
+    "foundry://factorylm-2b@candidate",
+    "--device",
+    "cuda:0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "45525"
+  ],
+  "port": 45525,
+  "started_at": 1794736647.568891,
+  "ready": true,
+  "ready_s": 19.09,
+  "identity": {
+    "/v1/models": {
+      "object": "list",
+      "data": [
+        {
+          "id": "factorylm-2b",
+          "object": "model",
+          "owned_by": "inferstack"
+        }
+      ]
+    },
+    "/v1/native/status": {
+      "version": "2.0.0rc1",
+      "ready": true,
+      "models": {
+        "factorylm-2b": {
+          "engine": "qwen_hybrid_continuous",
+          "started": true,
+          "healthy": true,
+          "fatal_error": null,
+          "device": "cuda:0",
+          "batching_mode": "live_refill_decode_first_chunked_prefill",
+          "paged_kv_active": false,
+          "cache_backend": "transformers_hybrid_dynamic_cache",
+          "hybrid_attention_model": true,
+          "layer_types": [
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention"
+          ],
+          "quantization": "none",
+          "quantization_config": "none",
+          "prefix_state_cache": {
+            "enabled": true,
+            "entries": 0,
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "cow_forks": 0,
+            "current_bytes": 0,
+            "current_mb": 0.0,
+            "max_bytes": 1073741824,
+            "block_tokens": 128,
+            "min_tokens": 128
+          },
+          "sampler": {
+            "calls": 0,
+            "triton_greedy_calls": 0,
+            "greedy_fallback_calls": 0,
+            "vectorized_stochastic_calls": 0,
+            "rowwise_stochastic_calls": 0,
+            "kernel": {
+              "calls": 0,
+              "triton_calls": 0,
+              "fallback_calls": 0,
+              "triton_installed": true,
+              "algorithm": "two_stage_tiled_argmax",
+              "chunk": 1024
+            }
+          },
+          "gdn_kernel": {
+            "patched": true,
+            "calls": 0,
+            "triton_calls": 0,
+            "fallback_calls": 0,
+            "chunk_calls": 0,
+            "chunk_triton_calls": 0,
+            "chunk_fallback_calls": 0,
+            "patch_error": null,
+            "triton_installed": true,
+            "decode_kernel": "triton",
+            "chunk_kernel": "upstream/reference",
+            "conv": {
+              "patched": true,
+              "calls": 0,
+              "triton_calls": 0,
+              "fallback_calls": 0,
+              "patch_error": null,
+              "triton_installed": true
+            }
+          },
+          "forward_fusion": {
+            "installed": true,
+            "rmsnorm_modules": 61,
+            "gated_rmsnorm_modules": 18,
+            "decoder_layers": 24,
+            "mlp_modules": 24,
+            "gdn_modules": 18,
+            "attention_modules": 6,
+            "fused_weight_bytes": 1940127744,
+            "rmsnorm_calls": 2900,
+            "gated_rmsnorm_calls": 1008,
+            "add_rmsnorm_calls": 144,
+            "silu_mul_calls": 1344,
+            "gdn_fused_projection_calls": 108,
+            "attention_fused_projection_calls": 36,
+            "mlp_fused_projection_calls": 1344,
+            "grouped_gdn_decode_calls": 0,
+            "beta_g_fused_calls": 0,
+            "fallbacks": 830,
+            "install_error": null,
+            "triton_available": true
+          },
+          "cuda_graph": {
+            "enabled": false,
+            "compile_activated": false,
+            "compile_error": null,
+            "static_cache_enabled": false,
+            "static_cache_uses": 0,
+            "mark_step_calls": 0,
+            "generation_cloning": true,
+            "configured_batch_sizes": [
+              1,
+              2,
+              4,
+              8,
+              16
+            ],
+            "shape_cache_entries": 0,
+            "shape_first_seen": 0,
+            "shape_reuse_candidates": 0,
+            "bucket_padded_rows_accounted": 0,
+            "torch_compile_counters": {},
+            "actual_cuda_graph_replay_proven": false,
+            "note": "Actual capture/replay is accepted only by the A100 graph probe, never inferred from configuration."
+          },
+          "static_decode": {
+            "enabled": true,
+            "active": true,
+            "prefill_warmup": {
+              "shapes": [
+                [
+                  1,
+                  2048,
+                  0
+                ],
+                [
+                  1,
+                  1999,
+                  0
+                ],
+                [
+                  4,
+                  520,
+                  37
+                ]
+              ],
+              "s": 2.62
+            },
+            "spec": true,
+            "gdn_backend": "triton",
+            "graphs_captured": 25,
+            "capture_s": 2.083,
+            "pool_bytes": 1129463808,
+            "rows_admitted": 0,
+            "rows_rejected_full": 0,
+            "rows_rejected_length": 0,
+            "decode_steps": 0,
+            "max_live_rows": 0,
+            "rows_rejected_sampling": 0,
+            "spec_steps": 0,
+            "spec_row_steps": 0,
+            "spec_accepted": 0,
+            "live_rows": 0,
+            "slots": 16,
+            "max_len": 4096,
+            "batch_buckets": [
+              1,
+              2,
+              4,
+              8,
+              16
+            ],
+            "len_buckets": [
+              256,
+              512,
+              1024,
+              2048,
+              4096
+            ],
+            "decoder": {
+              "captures": 0,
+              "replays": 0,
+              "eager_steps": 0,
+              "loads": 0,
+              "rows_loaded": 0,
+              "row_moves": 0,
+              "gdn_backend": "triton",
+              "attn_backend": "triton",
+              "spec_captures": 25,
+              "spec_replays": 0,
+              "spec_eager_steps": 0,
+              "spec_rows_loaded": 0
+            },
+            "graphs": 25,
+            "spec_acceptance": null
+          },
+          "decode_profile": {
+            "enabled": false,
+            "decode_calls": 0,
+            "decode_wall_ms": 0.0,
+            "model_gpu_ms": 0.0,
+            "sampler_gpu_ms": 0.0,
+            "accept_wall_ms": 0.0,
+            "compact_wall_ms": 0.0,
+            "syncs": 0
+          },
+          "native": {
+            "enabled": true,
+            "max_pending_requests": 512,
+            "max_requests_per_batch": 16,
+            "max_batch_tokens": 8192,
+            "batch_wait_ms": 3.0,
+            "dynamic_admission": true,
+            "live_batch_refill": true,
+            "active_batch_compaction": true,
+            "max_active_cohorts": 4,
+            "decode_quantum": 1,
+            "prefill_chunk_tokens": 128,
+            "prefill_chunks_per_turn": 1,
+            "prefill_token_budget_idle": 16384,
+            "prefill_token_budget_busy": 1024,
+            "prefill_backlog_drain_steps": 1,
+            "gdn_prefill_backend": "fla",
+            "gdn_conv_backend": "fla",
+            "gdn_conv_fla_min_tokens": 1024,
+            "prefill_warmup": true,
+            "prefix_state_cache": true,
+            "prefix_state_cache_max_entries": 64,
+            "prefix_state_cache_max_mb": 1024,
+            "prefix_cache_min_tokens": 128,
+            "prefix_cache_block_tokens": 128,
+            "custom_gdn_triton": true,
+            "strict_custom_kernels": false,
+            "fused_sampler": true,
+            "compile_model": false,
+            "compile_dynamic": true,
+            "strict_compile": false,
+            "explicit_cuda_graph": false,
+            "cuda_graph_batch_sizes": [
+              1,
+              2,
+              4,
+              8,
+              16
+            ],
+            "kv_padding_interval_size": 8192,
+            "quantization": "none",
+            "quantization_group_size": 128,
+            "use_hf_kernels": false,
+            "graph_static_cache": false,
+            "graph_cache_max_tokens": 256,
+            "graph_generation_cloning": true,
+            "profile_decode": false,
+            "static_decode": true,
+            "static_decode_slots": 16,
+            "static_decode_max_tokens": 4096,
+            "static_decode_batch_buckets": [
+              1,
+              2,
+              4,
+              8,
+              16
+            ],
+            "static_decode_len_buckets": [
+              256,
+              512,
+              1024,
+              2048,
+              4096
+            ],
+            "static_decode_gdn_backend": "auto",
+            "static_decode_attention": "triton",
+            "static_decode_cuda_graph": true,
+            "static_decode_strict": true,
+            "static_decode_spec": true,
+            "static_decode_spec_mtp": "Qwen/Qwen3.5-2B-Base@b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+            "static_decode_spec_draft_vocab": 65536,
+            "static_decode_spec_window": 256,
+            "forward_fusion": true,
+            "fuse_rmsnorm": true,
+            "fuse_add_rmsnorm": true,
+            "fuse_gated_rmsnorm": true,
+            "fuse_mlp_gate_up": true,
+            "fuse_mlp_activation": true,
+            "fuse_gdn_projections": true,
+            "fuse_gdn_beta_g": true,
+            "grouped_gdn_decode": true,
+            "fuse_attention_qkv": true,
+            "forward_fusion_strict": false
+          },
+          "kernels": {
+            "attention": "auto",
+            "rmsnorm": "auto",
+            "rope": "auto",
+            "cuda_graphs": false,
+            "torch_compile": false,
+            "compile_mode": "reduce-overhead"
+          },
+          "context_limit": 262144,
+          "logits_to_keep_optimized": true,
+          "cohorts": 0,
+          "requests_batched": 0,
+          "max_observed_batch": 0,
+          "max_active_batches": 0,
+          "mid_generation_admissions": 0,
+          "live_rebatches": 0,
+          "rows_refilled": 0,
+          "compactions": 0,
+          "rows_compacted": 0,
+          "prefill_forward_calls": 0,
+          "prefill_chunks": 0,
+          "decode_forward_calls": 0,
+          "decode_priority_turns": 0,
+          "tokens_emitted": 0,
+          "cancellations": 0,
+          "cancelled_before_gpu": 0,
+          "threadsafe_queue_emits": 0,
+          "prefix_block_snapshots": 0,
+          "prefill_tokens": 0,
+          "average_cohort_size": 0.0,
+          "active_batches": 0,
+          "prefill_jobs": 0
+        }
+      }
+    }
+  },
+  "cells": [
+    {
+      "wall_s": 10.946269116999929,
+      "attained_max_concurrency": 1,
+      "attained_mean_concurrency": 0.9999568336942267,
+      "case": "interactive",
+      "concurrency": 1,
+      "requests": 8,
+      "gpu": {
+        "samples": 39,
+        "peak_memory_mb": 6522.0,
+        "mean_utilization_pct": 94.25641025641026
+      }
+    },
+    {
+      "wall_s": 8.826386594000041,
+      "attained_max_concurrency": 16,
+      "attained_mean_concurrency": 15.810142211520715,
+      "case": "interactive",
+      "concurrency": 16,
+      "requests": 64,
+      "gpu": {
+        "samples": 32,
+        "peak_memory_mb": 6946.0,
+        "mean_utilization_pct": 82.6875
+      }
+    },
+    {
+      "wall_s": 22.246434034000004,
+      "attained_max_concurrency": 1,
+      "attained_mean_concurrency": 0.9999817685387438,
+      "case": "moderate",
+      "concurrency": 1,
+      "requests": 8,
+      "gpu": {
+        "samples": 79,
+        "peak_memory_mb": 7178.0,
+        "mean_utilization_pct": 94.0126582278481
+      }
+    },
+    {
+      "wall_s": 19.778311667000025,
+      "attained_max_concurrency": 16,
+      "attained_mean_concurrency": 15.826943836429045,
+      "case": "moderate",
+      "concurrency": 16,
+      "requests": 64,
+      "gpu": {
+        "samples": 71,
+        "peak_memory_mb": 8182.0,
+        "mean_utilization_pct": 83.07042253521126
+      }
+    },
+    {
+      "wall_s": 4.309135450999975,
+      "attained_max_concurrency": 1,
+      "attained_mean_concurrency": 0.9998984267251246,
+      "case": "prefill_heavy",
+      "concurrency": 1,
+      "requests": 8,
+      "gpu": {
+        "samples": 16,
+        "peak_memory_mb": 8348.0,
+        "mean_utilization_pct": 88.5625
+      }
+    },
+    {
+      "wall_s": 12.57571113799986,
+      "attained_max_concurrency": 16,
+      "attained_mean_concurrency": 15.646450893853387,
+      "case": "prefill_heavy",
+      "concurrency": 16,
+      "requests": 64,
+      "gpu": {
+        "samples": 46,
+        "peak_memory_mb": 9146.0,
+        "mean_utilization_pct": 82.71739130434783
+      }
+    },
+    {
+      "wall_s": 4.787148222000042,
+      "attained_max_concurrency": 1,
+      "attained_mean_concurrency": 0.9999080038930328,
+      "case": "shared_prefix",
+      "concurrency": 1,
+      "requests": 8,
+      "gpu": {
+        "samples": 18,
+        "peak_memory_mb": 9146.0,
+        "mean_utilization_pct": 84.88888888888889
+      }
+    },
+    {
+      "wall_s": 5.97059364100005,
+      "attained_max_concurrency": 16,
+      "attained_mean_concurrency": 14.572695047862496,
+      "case": "shared_prefix",
+      "concurrency": 16,
+      "requests": 64,
+      "gpu": {
+        "samples": 22,
+        "peak_memory_mb": 9146.0,
+        "mean_utilization_pct": 69.04545454545455
+      }
+    }
+  ],
+  "exit_code": -15,
+  "stopped_at": 1794736767.7584686
+}
