@@ -278,3 +278,14 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   (n42b/n43 moderate c16 TTFT max 16 s). prefill_warmup at startup removed it (n44 worst TTFT 2.3-3.4 s,
   prefill_heavy c16 tails); ready time 17 -> 18 s.
 - Next: full 3-round scorecard v1.12 vs v1.9 vs vLLM vs SGLang.
+
+### 2026-11-15 — production-v1.12.0 full L4 scorecard: keep v1.12
+
+- Run `l4-1794715458` at `ff48390`: native_fla (clean v1.9) / native_drain (v1.12) / vLLM / SGLang,
+  3 rounds, all passed, engine tests passed on the runtime.
+- v1.12 vs v1.9: prefill_heavy c16 tok/s x1.28, TTFT 2210 -> 794 ms, E2E p95 5867 -> 4161; c8 x1.14;
+  no cell worse outside the round ranges.
+- vs vLLM: x0.92 interactive c1 down to x0.51 prefill_heavy/shared_prefix c16. Largest gap now
+  batched decode (interactive c16 24.7 vs 19.4 ms/tok; shared_prefix c16 50.5 vs 21.3).
+- Decision: keep v1.12. Next: decode step at batch 16, then mixed prefill+decode forwards.
+  Writeup: docs/verification/V112_SCORECARD_L4_2026-11-15.md.
