@@ -46,7 +46,7 @@ def hf_greedy(model, prompt, n):
     return toks
 
 
-def setup(model, prompts, pool=None, max_len=64, mtp_seed=1):
+def setup(model, prompts, pool=None, max_len=64, mtp_seed=1, window=0):
     dec = QwenSpecDecoder(model, 'cpu', dtype=torch.float32, mtp_seed=mtp_seed)
     st = dec.new_state(pool or len(prompts), max_len)
     sp = dec.new_spec_state(st)
@@ -55,15 +55,15 @@ def setup(model, prompts, pool=None, max_len=64, mtp_seed=1):
         ids = torch.tensor([p])
         cache, hidden, first = prefill_with_hidden(model, ids)
         assert dec.load_rows(st, cache, torch.ones(1, len(p), dtype=torch.long), len(p), [0], [slot]) == [len(p)]
-        dec.load_spec_row(st, sp, slot, ids[0], hidden, first)
+        dec.load_spec_row(st, sp, slot, ids[0], hidden[-window:] if window else hidden, first)
         emitted.append([first])
     return dec, st, sp, emitted
 
 
-def run(model, prompts, n, draft_rule=None, pool=None):
+def run(model, prompts, n, draft_rule=None, pool=None, window=0):
     """Spec-decode until every row has n tokens. draft_rule(step, row, oracle_next) -> forced draft or None."""
     oracle = [hf_greedy(model, p, n + 2) for p in prompts]
-    dec, st, sp, emitted = setup(model, prompts, pool)
+    dec, st, sp, emitted = setup(model, prompts, pool, window=window)
     pos = [len(p) for p in prompts]
     accepts, step = [], 0
     while min(map(len, emitted)) < n:
@@ -141,3 +141,23 @@ def test_lane_draft_equals_offline_mtp_over_the_full_sequence():
     for P1, d in lane.items():
         if P1 - 2 < N - 1:
             assert d == int(offline[P1 - 2]), (P1, d, int(offline[P1 - 2]))
+
+
+def test_short_mtp_window_and_pruned_draft_vocab_stay_lossless():
+    """Serving keeps hidden states of the last prefill chunk only; the draft may use a vocab prefix."""
+    model = tiny_model(seed=6)
+    accepts, dec = run(model, PROMPTS, 14, None, window=2)
+    assert int(dec.stats['spec_rows_loaded']) == len(PROMPTS)
+
+
+def test_mtp_mask_covers_only_the_window_then_grows_with_decode():
+    model = tiny_model(seed=7)
+    dec, st, sp, _ = setup(model, [PROMPTS[0]], pool=1, window=3)
+    n = len(PROMPTS[0])
+    assert sp.mtp_mask[0].nonzero().flatten().tolist() == list(range(n - 3, n))
+    dec.draft_vocab = 40
+    sp.tok[0, 1] = 1
+    y, acc = dec.spec_step(st, sp, 1, length=n + 2, use_graph=False)
+    expect = list(range(n - 3, n + 1 + int(acc[0])))
+    assert sp.mtp_mask[0].nonzero().flatten().tolist() == expect
+    assert int(sp.tok[0, 1]) < 40

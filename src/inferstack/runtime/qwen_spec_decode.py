@@ -99,6 +99,7 @@ class SpecState:
     accept: Any                                    # [slots] bool
     offs: Any                                      # [2] = (0, 1)
     mtp_kv: tuple = ()                             # (k, v) [slots, Hkv, max_len, D]
+    mtp_mask: Any = None                           # [slots, max_len] MTP entries that exist
     sel: Any = None                                # [slots] int32: which recurrent bank is current
     conv_alt: dict = field(default_factory=dict)   # GDN conv state after verify token 1
     banks: dict = field(default_factory=dict)      # layer -> [2, slots, Hv, dk, dv] fp32 recurrent banks
@@ -130,6 +131,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
                        accept=torch.zeros(n, dtype=torch.bool, device=dev),
                        offs=torch.arange(2, device=dev),
                        sel=torch.zeros(n, dtype=torch.int32, device=dev),
+                       mtp_mask=torch.zeros(n, st.max_len, dtype=torch.bool, device=dev),
                        mtp_kv=(torch.zeros(shape, dtype=self.dtype, device=dev),
                                torch.zeros(shape, dtype=self.dtype, device=dev)))
         for i, t in st.conv.items():
@@ -142,7 +144,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
 
     def reset_spec(self, st: StaticDecodeState, sp: SpecState):
         self.reset(st)
-        for t in (sp.tok, sp.pos, sp.y, sp.accept, sp.sel, *sp.mtp_kv, *sp.conv_alt.values(), *sp.banks.values()):
+        for t in (sp.tok, sp.pos, sp.y, sp.accept, sp.sel, sp.mtp_mask, *sp.mtp_kv, *sp.conv_alt.values(), *sp.banks.values()):
             t.zero_()
 
     # ---- multi-token pieces (T tokens per row) -----------------------------------
@@ -274,10 +276,13 @@ class QwenSpecDecoder(QwenStaticDecoder):
             st.conv[i][:B].copy_(torch.where(keep, st.conv[i][:B], sp.conv_alt[i][:B]))
         sp.sel[:B].copy_(torch.where(acc, sp.sel[:B], 1 - sp.sel[:B]))
         mask.scatter_(1, cols[:, 1:], acc[:, None])                       # rejected draft column is not real
+        mmask = sp.mtp_mask[:B]
+        mmask.scatter_(1, cols, True)
+        mmask.scatter_(1, cols[:, 1:], acc[:, None])
         # MTP: entries p and p+1 = (token after, hidden at). Draft from the last accepted one.
         first = torch.where(acc, tok[:, 1], y[:, 0])
         nxt = torch.stack([first, y[:, 1]], dim=1)
-        hm = self._mtp_layer(self._mtp_in(nxt, h), cos, sin, sp, slice(0, B), mask, p, L, self.attn_backend, skey)
+        hm = self._mtp_layer(self._mtp_in(nxt, h), cos, sin, sp, slice(0, B), mmask, p, L, self.attn_backend, skey)
         sel = torch.where(acc[:, None], hm[:, 1], hm[:, 0])
         draft = self._draft(self.mtp.norm(sel))
         sp.y[:B].copy_(y)
@@ -287,21 +292,30 @@ class QwenSpecDecoder(QwenStaticDecoder):
 
     # ---- public API ----------------------------------------------------------------
     def load_spec_row(self, st: StaticDecodeState, sp: SpecState, slot: int, prompt_ids, hidden, first_token: int):
-        """After `load_rows` put a prompt of n tokens into `slot`: fill the MTP cache for
-        positions 0..n-1 and the first draft. prompt_ids [n]; hidden [n, H] (post-final-norm
-        hidden states of the prompt, from `prefill_with_hidden`); first_token = greedy token at n."""
+        """After `load_rows` put a prompt of n tokens into `slot`: fill the MTP cache and the first draft.
+
+        prompt_ids [n]; first_token = greedy token at position n; hidden [w, H] = post-final-norm
+        hidden states of the last w prompt positions (w <= n; from `prefill_with_hidden`, or the
+        last prefill chunk when serving). MTP entries exist for positions n-w..n-1 only
+        (sp.mtp_mask), so a short window trades acceptance for not keeping prompt hidden states."""
         import torch
         n = int(prompt_ids.shape[-1])
+        hidden = hidden.reshape(-1, hidden.shape[-1])
+        w = int(hidden.shape[0])
+        if not 1 <= w <= n:
+            raise ValueError(f'hidden covers {w} positions, prompt has {n}')
         if not bool(st.mask[slot, :n].all()) or bool(st.mask[slot, n:].any()):
             raise ValueError('load_spec_row expects the packed layout written by load_rows')
         dev = self.device
         with torch.inference_mode():
-            nxt = torch.cat([prompt_ids.view(-1)[1:].to(dev), torch.tensor([int(first_token)], device=dev)])[None]
-            x = self._mtp_in(nxt, hidden.view(1, n, -1).to(device=dev, dtype=self.dtype))
-            posn = torch.arange(n, device=dev)
-            cos, sin = self.text.rotary_emb(x, posn.view(1, 1, n).expand(3, 1, n))
-            hm = self._mtp_layer(x, cos, sin, sp, slice(slot, slot + 1), st.mask[slot:slot + 1],
-                                 torch.zeros(1, dtype=torch.long, device=dev), n, 'sdpa', None)
+            nxt = torch.cat([prompt_ids.view(-1)[1:].to(dev), torch.tensor([int(first_token)], device=dev)])[None, n - w:]
+            x = self._mtp_in(nxt, hidden[None].to(device=dev, dtype=self.dtype))
+            posn = torch.arange(n - w, n, device=dev)
+            cos, sin = self.text.rotary_emb(x, posn.view(1, 1, w).expand(3, 1, w))
+            sp.mtp_mask[slot].zero_()
+            sp.mtp_mask[slot, n - w:n] = True
+            hm = self._mtp_layer(x, cos, sin, sp, slice(slot, slot + 1), sp.mtp_mask[slot:slot + 1],
+                                 torch.full((1,), n - w, dtype=torch.long, device=dev), n, 'sdpa', None)
             draft = self._draft(self.mtp.norm(hm[:, -1]))
             sp.sel[slot] = 0
             sp.tok[slot, 0] = int(first_token)

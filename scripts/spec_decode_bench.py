@@ -36,7 +36,7 @@ def prompts(n, words, seed=20261109):
     return sc.prompts({'name': f'bench{words}', 'prompt_words': words}, n, seed)
 
 
-def prefill_rows(model, dec, st, sp, toks):
+def prefill_rows(model, dec, st, sp, toks, window=0):
     import torch
     from inferstack.runtime.qwen_spec_decode import prefill_with_hidden
     firsts = []
@@ -45,7 +45,7 @@ def prefill_rows(model, dec, st, sp, toks):
         cache, hidden, first = prefill_with_hidden(model, ids)
         dec.load_rows(st, cache, torch.ones_like(ids), ids.shape[1], [0], [slot])
         if sp is not None:
-            dec.load_spec_row(st, sp, slot, ids[0], hidden, first)
+            dec.load_spec_row(st, sp, slot, ids[0], hidden[-window:] if window else hidden, first)
         firsts.append(first)
         del cache
     return firsts
@@ -76,7 +76,7 @@ def plain_lane(model, dec, toks, n, max_len):
     return out, ms
 
 
-def spec_lane(model, dec, toks, n, max_len):
+def spec_lane(model, dec, toks, n, max_len, window=0):
     import torch
     B = len(toks)
     st = dec.new_state(B, max_len, batch_buckets=[B])
@@ -84,7 +84,7 @@ def spec_lane(model, dec, toks, n, max_len):
     t0 = time.perf_counter()
     graphs = dec.capture_spec(st, sp)
     capture_s = time.perf_counter() - t0
-    firsts = prefill_rows(model, dec, st, sp, toks)
+    firsts = prefill_rows(model, dec, st, sp, toks, window)
     out = [[f] for f in firsts]
     pos = [len(t) for t in toks]
     ms, per_step, accepts = [], [], 0
@@ -136,7 +136,7 @@ def hf_greedy(model, tok, toks, n):
     return out
 
 
-def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check):
+def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check, windows=(0,)):
     import torch
     toks = [tok.encode(t, add_special_tokens=False) for t in prompts(batch, words)]
     max_len = 256 * (-(-(max(map(len, toks)) + n + 8) // 256))
@@ -150,9 +150,9 @@ def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check):
            'spec': {}}
     if hf is not None:
         row['plain']['vs_transformers'] = agreement(hf, plain, n)
-    for dv in draft_vocabs:
+    for dv, win in [(d, w) for d in draft_vocabs for w in windows]:
         dec.draft_vocab = dv or None
-        spec, sms, per_step, acceptance, graphs, capture_s = spec_lane(model, dec, toks, n, max_len)
+        spec, sms, per_step, acceptance, graphs, capture_s = spec_lane(model, dec, toks, n, max_len, win)
         torch.cuda.empty_cache()
         warm_s = sms[3:] if len(sms) > 6 else sms
         spec_tps = sum(per_step) / (sum(sms) / 1000)
@@ -162,7 +162,7 @@ def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check):
              'vs_plain': agreement(plain, spec, n)}
         if hf is not None:
             r['vs_transformers'] = agreement(hf, spec, n)
-        row['spec'][str(dv or 'full')] = r
+        row['spec'][f"vocab={dv or 'full'},window={win or 'full'}"] = r
     return row
 
 
@@ -176,6 +176,8 @@ def main():
     ap.add_argument('--words', type=int, nargs='+', default=[48, 400])
     ap.add_argument('--new-tokens', type=int, default=128)
     ap.add_argument('--draft-vocabs', type=int, nargs='+', default=[0], help='0 = full vocabulary')
+    ap.add_argument('--mtp-windows', type=int, nargs='+', default=[0],
+                    help='MTP prompt history: last W prompt positions get MTP entries (0 = all)')
     ap.add_argument('--hf-check', action='store_true', help='also compare both lanes with Transformers greedy')
     ap.add_argument('--attn', default=None, help='sdpa|triton (default: the profile static_decode_attention)')
     ap.add_argument('--out', required=True)
@@ -196,7 +198,7 @@ def main():
     for words in a.words:
         for b in a.batches:
             try:
-                row = bench_case(model, tok, dec, b, words, a.new_tokens, a.draft_vocabs, a.hf_check)
+                row = bench_case(model, tok, dec, b, words, a.new_tokens, a.draft_vocabs, a.hf_check, a.mtp_windows)
             except Exception as exc:
                 row = {'batch': b, 'prompt_words': words, 'error': f'{type(exc).__name__}: {str(exc)[:400]}',
                        'traceback': traceback.format_exc()[-2500:]}
