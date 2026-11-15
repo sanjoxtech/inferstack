@@ -161,3 +161,14 @@ def test_mtp_mask_covers_only_the_window_then_grows_with_decode():
     expect = list(range(n - 3, n + 1 + int(acc[0])))
     assert sp.mtp_mask[0].nonzero().flatten().tolist() == expect
     assert int(sp.tok[0, 1]) < 40
+
+
+def test_release_drops_attention_scratch_of_that_state():
+    """A later state can reuse id(st) with other shapes; stale scratch must not survive release."""
+    dec, st, sp, _ = setup(tiny_model(), [PROMPTS[1]], pool=1)
+    other = dec.new_state(1, 32)
+    dec._attn_scratch[(id(st), 0)] = 'stale'
+    dec._attn_scratch[(id(st), 'spec', 1)] = 'stale'
+    dec._attn_scratch[(id(other), 0)] = 'keep'
+    dec.release(st)
+    assert list(dec._attn_scratch) == [(id(other), 0)]

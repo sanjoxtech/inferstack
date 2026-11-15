@@ -342,3 +342,31 @@ native_static serving scorecard; only then should the N3 implementation treatmen
     2-query attention kernel);
   - check divergence vs Transformers;
   - N6.2: wire into the served static lane behind a profile flag.
+
+### 2026-11-15 — N6.1b/c: banked GDN state + pruned draft vocab; spec output = Transformers greedy
+
+- n61b (17de60a, L4): tests passed (banked GDN kernel vs reference, spec lane, static decode).
+  The spec lane matched Transformers greedy on **42/42 rows** over 128 tokens.
+- The earlier "drift" was a bench artifact in the *plain* lane. Attention scratch was keyed by
+  id(st) and never released, so a later state reused a stale smaller scratch (plain lane at B16
+  w400 differed from Transformers at token 1 on 11/16 rows). Fixed: release() drops that state's
+  scratch, with a regression test.
+- Step overhead vs plain (B1 / B16): full-vocab draft +6.0 / +8.0 ms; 65536-id draft +3.0 / +4.9 ms.
+  Banked GDN removed most of the B16 cost (was +13 ms in N6.1).
+- Draft vocab: 65536 keeps acceptance equal to the full vocab (0.92-0.97). 32768 / 16384 drop to
+  0.48 on the 400-word prompts.
+
+  | batch | words | plain tok/s | spec (draft vocab 65536) tok/s | x |
+  |---|---|---|---|---|
+  | 1 | 48 | 61 | 102 | 1.65 |
+  | 4 | 48 | 222 | 381 | 1.71 |
+  | 16 | 48 | 767 | 1227 | 1.60 |
+  | 1 | 400 | 61 | 98 | 1.61 |
+  | 4 | 400 | 220 | 368 | 1.67 |
+  | 16 | 400 | 756 | 1186 | 1.57 |
+
+- n61c (11aab11, second L4 in parallel): the MTP history window barely matters. With MTP entries
+  only for the last 4 prompt positions, acceptance stays within 0.00-0.07 of the full history.
+  So serving can draft from the last prefill forward's hidden states alone.
+- Evidence: n61b-spec-l4-17de60a-20261115/, n61c-window-l4-11aab11-20261115/.
+- Next: N6.2 served spec lane (profile flag, draft vocab 65536, window 256), then the full scorecard.

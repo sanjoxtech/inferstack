@@ -406,5 +406,9 @@ class QwenStaticDecoder:
         return st.logits[:rows]
 
     def release(self, st: StaticDecodeState):
+        # Scratch is keyed by id(st) too: a later state can reuse the id with other shapes
+        # (seen in the N6.1b bench: a stale smaller scratch broke the plain lane at batch 16).
         for key in [k for k in self.graphs if k[0] == id(st)]:
             self.graphs.pop(key)
+        for key in [k for k in self._attn_scratch if k[0] == id(st)]:
+            self._attn_scratch.pop(key)
