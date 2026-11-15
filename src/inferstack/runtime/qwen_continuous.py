@@ -258,7 +258,13 @@ class QwenHybridContinuousEngine:
         """Token budget for the next prefill forward (0 = fixed-chunk policy)."""
         n=self.cfg.native;idle=int(getattr(n,'prefill_token_budget_idle',0) or 0);busy=int(getattr(n,'prefill_token_budget_busy',0) or 0)
         if idle<=0 and busy<=0:return 0
-        return (busy or idle) if self._decode_work() else (idle or busy)
+        if not self._decode_work():return idle or busy
+        b=busy or idle;steps=int(getattr(n,'prefill_backlog_drain_steps',0) or 0)
+        if steps>0:b=max(b,min(idle or b,-(-self._prefill_backlog()//steps)))
+        return b
+    def _prefill_backlog(self):
+        """Prompt tokens (rows x remaining columns) still to prefill in queued jobs."""
+        return sum(len(j.requests)*max(0,j.input_width-j.cursor) for j in self._prefill_jobs)
     def _prefill_end(self,job,budget=0):
         """End column of the next prefill forward.
 
@@ -395,7 +401,7 @@ class QwenHybridContinuousEngine:
         self._stats['decode_priority_turns']+=1;return True
     async def _advance_one_prefill(self):
         if not self._prefill_jobs:return False
-        job=self._prefill_jobs.pop(0);state=await self._gpu(self._advance_prefill,job,self.cfg.native.prefill_chunks_per_turn,self._prefill_budget())
+        budget=self._prefill_budget();job=self._prefill_jobs.pop(0);state=await self._gpu(self._advance_prefill,job,self.cfg.native.prefill_chunks_per_turn,budget)
         if state is None and not job.done:self._prefill_jobs.append(job)
         elif state is not None:self._active.append(state);await self._gpu(self._rebatch)
         return True

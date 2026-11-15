@@ -45,7 +45,7 @@ def sh(*argv, check=True, capture=False, timeout=None):
         return subprocess.CompletedProcess(argv, 124, '', '')
 
 
-def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False):
+def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=()):
     """One Python script: the notebook's setup cells, optional pre-steps, stages, scorecard."""
     nb = json.loads(NOTEBOOK.read_text())
     cells = [''.join(c['source']) for c in nb['cells'][:SETUP_CELLS] if c['cell_type'] == 'code']
@@ -56,6 +56,16 @@ def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=F
     if install_fla:
         pre += ("assert logged([PY,'-m','pip','install','--no-deps','fla-core==0.6.0','flash-linear-attention==0.6.0',"
                 "'einops'],'install-fla.log',env=ENV,timeout=1800)==0\n")
+    if tests:   # engine tests need torch + transformers, which only the runtime has
+        pre += ("assert logged([PY,'-m','pip','install','-q','pytest>=8','pytest-asyncio>=0.24'],'install-pytest.log',"
+                "env=ENV,timeout=900)==0\n"
+                f"_t = logged([PY,'-m','pytest','-q','-rs','-p','no:cacheprovider',*{list(tests)!r}],'pytest.log',"
+                "env=ENV,timeout=3600)\n"
+                "print('pytest exit:', _t, flush=True)\n"
+                "if _t != 0:\n"
+                "    import shutil as _sh\n"   # archive the failure so the driver can fetch it and stop the VM
+                f"    os.replace(_sh.make_archive('/content/job-evidence-tmp','zip',root_dir=OUT.parent,base_dir=OUT.name),{ARCHIVE!r})\n"
+                "    raise SystemExit('engine tests failed: see pytest.log')\n")
     if gdn_check:
         pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
                 "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600), flush=True)\n")
@@ -139,6 +149,7 @@ def main():
     ap.add_argument('--keep', action='store_true', help='leave the runtime running afterwards')
     ap.add_argument('--install-fla', action='store_true', help='pip install pinned flash-linear-attention (--no-deps)')
     ap.add_argument('--gdn-check', action='store_true', help='run scripts/gdn_backend_check.py before the profiles')
+    ap.add_argument('--tests', nargs='*', default=(), help='pytest paths to run on the runtime first (job stops on failure)')
     args = ap.parse_args()
     colab = shutil.which('colab') or str(Path.home() / '.local/bin/colab')
     if sh('git', 'status', '--porcelain', '--untracked-files=no', capture=True).stdout.strip():
@@ -152,7 +163,7 @@ def main():
     bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
                                                           'poll.py'))
     sh('git', 'bundle', 'create', bundle, branch)
-    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check))
+    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests))
     prep.write_text(
         'import subprocess as sp\n'
         f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '

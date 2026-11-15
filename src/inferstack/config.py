@@ -40,6 +40,11 @@ class NativeConfig:
     # "busy" when decode work shares the GPU. Spans are multiples of prefill_chunk_tokens.
     prefill_token_budget_idle:int=0
     prefill_token_budget_busy:int=0
+    # N4.1 backlog-aware busy budget: while decoding, a forward may take up to
+    # ceil(queued prefill tokens / drain_steps) (between busy and idle), so a burst of long
+    # prompts is drained in about drain_steps prefill forwards instead of being throttled
+    # to the busy budget. 0 keeps the fixed busy budget.
+    prefill_backlog_drain_steps:int=0
     # N3.3: GDN prefill (T>1) backend: reference (upstream chunked algebra), fla (fused
     # FLA kernel; startup fails if it is not installed), auto (fla when available on CUDA).
     gdn_prefill_backend:str="reference"

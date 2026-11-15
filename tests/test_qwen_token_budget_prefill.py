@@ -101,3 +101,35 @@ def test_budget_prefill_keeps_prefix_cache_hits():
     assert got == ref
     assert d['prefix_state_cache']['hits'] >= 1
     assert d['prefix_state_cache']['hits'] == dref['prefix_state_cache']['hits']
+
+
+def test_backlog_raises_busy_budget_up_to_idle():
+    c = budget_cfg(512, 32)
+    c.native.prefill_backlog_drain_steps = 4
+    e = engine(c)
+    e._active.append(object())
+    assert e._prefill_budget() == 32                    # empty backlog: plain busy budget
+    e._prefill_jobs.append(job(2, 100))                 # 200 queued tokens / 4 steps = 50
+    assert e._prefill_budget() == 50
+    e._prefill_jobs.append(job(4, 200, cursor=40))      # + 4 x 160 = 840 tokens / 4 = 210
+    assert e._prefill_budget() == 210
+    e._prefill_jobs.append(job(16, 200))                # 4040 / 4 = 1010, capped at idle
+    assert e._prefill_budget() == 512
+    e._active.clear()
+    assert e._prefill_budget() == 512                   # idle GPU: idle budget as before
+
+
+def test_backlog_off_keeps_fixed_busy_budget():
+    e = engine(budget_cfg(512, 32))
+    e._active.append(object())
+    e._prefill_jobs.append(job(16, 200))
+    assert e._prefill_budget() == 32
+
+
+@pytest.mark.parametrize('static', [False, True])
+def test_backlog_budget_matches_fixed_chunks(static):
+    c = budget_cfg(64, 8, static)
+    c.native.prefill_backlog_drain_steps = 2
+    ref, _ = run(budget_cfg(0, 0, static), PLAN)
+    got, d = run(c, PLAN)
+    assert got == ref
