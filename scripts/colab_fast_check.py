@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def sh(*argv, check=True, capture=False, timeout=None):
         return subprocess.CompletedProcess(argv, 124, '', '')
 
 
-def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=()):
+def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=(), steps=()):
     """One Python script: the notebook's setup cells, optional pre-steps, stages, scorecard."""
     nb = json.loads(NOTEBOOK.read_text())
     cells = [''.join(c['source']) for c in nb['cells'][:SETUP_CELLS] if c['cell_type'] == 'code']
@@ -73,6 +74,16 @@ def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=F
     if gdn_check:
         pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
                 "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600), flush=True)\n")
+    for i, step in enumerate(steps):   # diagnosis scripts: logged, recorded, not fatal
+        argv = shlex.split(step)
+        pre += (f"print('step {i} exit:', logged([PY,'-u',*[a.replace('{{OUT}}',str(OUT)) for a in {argv!r}]],"
+                f"'step-{i}.log',env=ENV,timeout=7200), flush=True)\n")   # {OUT}: the evidence directory
+    if not profiles:   # diagnosis only: archive and stop, no scorecard
+        return '\n\n'.join(cells + [pre, f'''
+import shutil as _sh
+os.replace(_sh.make_archive('/content/job-evidence-tmp','zip',root_dir=OUT.parent,base_dir=OUT.name),{ARCHIVE!r})
+print('Evidence archive:', {ARCHIVE!r}, flush=True)
+'''])
     workload_arg = '' if workload is None else (
         f"(OUT/'workload.json').write_text({json.dumps(json.dumps(workload))})\n")
     wl = "[] if not (OUT/'workload.json').exists() else ['--workload',str(OUT/'workload.json')]"
@@ -142,7 +153,7 @@ def poll(colab, session, script):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--profiles', nargs='+', required=True, help='profile names from the scorecard JSON')
+    ap.add_argument('--profiles', nargs='*', default=[], help='profile names from the scorecard JSON (none: steps only)')
     ap.add_argument('--workload', default=str(ROOT / 'configs/scorecard/workload-fast.json'),
                     help="workload JSON, or 'default' for the full scorecard workload")
     ap.add_argument('--rounds', type=int, default=2)
@@ -153,6 +164,7 @@ def main():
     ap.add_argument('--keep', action='store_true', help='leave the runtime running afterwards')
     ap.add_argument('--install-fla', action='store_true', help='pip install pinned flash-linear-attention (--no-deps)')
     ap.add_argument('--gdn-check', action='store_true', help='run scripts/gdn_backend_check.py before the profiles')
+    ap.add_argument('--step', action='append', default=[], help="script + args run on the runtime, e.g. \"scripts/x.py --out OUT/x.json\"")
     ap.add_argument('--tests', nargs='*', default=(), help='pytest paths to run on the runtime first (job stops on failure)')
     args = ap.parse_args()
     colab = shutil.which('colab') or str(Path.home() / '.local/bin/colab')
@@ -167,7 +179,7 @@ def main():
     bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
                                                           'poll.py'))
     sh('git', 'bundle', 'create', bundle, branch)
-    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests))
+    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests, args.step))
     prep.write_text(
         'import subprocess as sp\n'
         f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '
