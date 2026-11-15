@@ -68,7 +68,7 @@ def bench_case(model, tok, decoders, batch, words, steps, bucket_len):
     ref_tokens.append(nxt.clone())
 
     results = {}
-    for mode in ('static_eager', 'static_graph_torch_gdn', 'static_graph'):
+    for mode in ('static_eager', 'static_graph_torch_gdn', 'static_graph', 'static_graph_tattn'):
         dec = decoders[mode]
         st = dec.new_state(batch, bucket_len, batch_buckets=[batch])
         if mode != 'static_eager':
@@ -93,7 +93,8 @@ def bench_case(model, tok, decoders, batch, words, steps, bucket_len):
     warm_ref = ref_ms[3:] if len(ref_ms) > 6 else ref_ms
     results['native_current'] = {'ms_per_step_median': statistics.median(warm_ref)}
     return {'batch': batch, 'prompt_words': words, 'prompt_tokens_max': w, 'steps': steps, **results,
-            'speedup_graph_vs_current': results['native_current']['ms_per_step_median'] / results['static_graph']['ms_per_step_median']}
+            'speedup_graph_vs_current': results['native_current']['ms_per_step_median'] / results['static_graph']['ms_per_step_median'],
+            'speedup_tattn_vs_graph': results['static_graph']['ms_per_step_median'] / results['static_graph_tattn']['ms_per_step_median']}
 
 
 def profile_step(model, tok, dec, batch, words, steps=10):
@@ -154,7 +155,8 @@ def main():
     eng._maybe_patch()  # same kernels the served native profile installs
     decoders = {'static_eager': QwenStaticDecoder(model, a.device, gdn_backend='torch'),
                 'static_graph_torch_gdn': QwenStaticDecoder(model, a.device, gdn_backend='torch'),
-                'static_graph': QwenStaticDecoder(model, a.device, gdn_backend='auto')}
+                'static_graph': QwenStaticDecoder(model, a.device, gdn_backend='auto'),
+                'static_graph_tattn': QwenStaticDecoder(model, a.device, gdn_backend='auto', attn_backend='triton')}
     import traceback
     rows = []
     for words in a.words:
@@ -171,7 +173,8 @@ def main():
     kernels = []
     for b in a.profile_batches:
         try:
-            kernels.append(profile_step(model, tok, decoders['static_graph'], b, a.profile_words))
+            for name in ('static_graph', 'static_graph_tattn'):
+                kernels.append({'decoder': name, **profile_step(model, tok, decoders[name], b, a.profile_words)})
         except Exception as exc:
             kernels.append({'batch': b, 'error': f'{type(exc).__name__}: {str(exc)[:400]}'})
         print(json.dumps({k: v for k, v in kernels[-1].items() if k != 'top_kernels'}), flush=True)

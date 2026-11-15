@@ -109,7 +109,7 @@ class QwenHybridContinuousEngine:
             from inferstack.runtime.qwen_static_decode import QwenStaticDecoder
             from inferstack.runtime.qwen_static_lane import StaticDecodeLane
             slots=int(getattr(n,'static_decode_slots',0) or n.max_requests_per_batch);max_len=int(n.static_decode_max_tokens)
-            dec=QwenStaticDecoder(self.model,self.device,gdn_backend=str(n.static_decode_gdn_backend))
+            dec=QwenStaticDecoder(self.model,self.device,gdn_backend=str(n.static_decode_gdn_backend),attn_backend=str(getattr(n,'static_decode_attention','sdpa') or 'sdpa'))
             st=dec.new_state(slots,max_len,list(n.static_decode_batch_buckets),list(n.static_decode_len_buckets))
             t=time.perf_counter();graphs=dec.capture(st) if bool(n.static_decode_cuda_graph) else 0
             self._lane=StaticDecodeLane(self,dec,st);self._static_diag.update(active=True,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))

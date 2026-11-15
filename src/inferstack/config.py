@@ -88,6 +88,9 @@ class NativeConfig:
     static_decode_batch_buckets:tuple[int,...]=(1,2,4,8,16)
     static_decode_len_buckets:tuple[int,...]=(256,512,1024,2048,4096)
     static_decode_gdn_backend:str="auto"
+    # N5.1: attention in the static decode lane: sdpa (masked SDPA over the length bucket) or
+    # triton (split-KV GQA decode kernel that stops at each row's position; CUDA only).
+    static_decode_attention:str="sdpa"
     static_decode_cuda_graph:bool=True
     static_decode_strict:bool=False
 

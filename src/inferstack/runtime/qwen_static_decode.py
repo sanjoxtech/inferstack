@@ -89,7 +89,7 @@ class StaticDecodeState:
 
 
 class QwenStaticDecoder:
-    def __init__(self, model, device, dtype=None, gdn_backend='auto'):
+    def __init__(self, model, device, dtype=None, gdn_backend='auto', attn_backend='sdpa'):
         """gdn_backend: 'torch' (reference math), 'triton' (the repo's grouped GDN decode
         kernel, updates the recurrent state in place), or 'auto' (triton on CUDA when available)."""
         import torch
@@ -98,6 +98,12 @@ class QwenStaticDecoder:
             raise TypeError(why)
         if gdn_backend not in ('auto', 'torch', 'triton'):
             raise ValueError(f'unknown gdn_backend {gdn_backend!r}')
+        if attn_backend not in ('sdpa', 'triton'):
+            raise ValueError(f'unknown attn_backend {attn_backend!r}')
+        if attn_backend == 'triton' and torch.device(device).type != 'cuda':
+            raise RuntimeError('attn_backend=triton needs CUDA')
+        self.attn_backend = attn_backend
+        self._attn_scratch = {}
         self.model = model
         self.text, self.lm_head, self.cfg = _text_parts(model)
         self.device = torch.device(device)
@@ -109,6 +115,7 @@ class QwenStaticDecoder:
         self.stats = {'captures': 0, 'replays': 0, 'eager_steps': 0, 'loads': 0, 'rows_loaded': 0, 'row_moves': 0}
         self.gdn_backend = self._resolve_gdn_backend(gdn_backend)
         self.stats['gdn_backend'] = self.gdn_backend
+        self.stats['attn_backend'] = attn_backend
         try:
             import inspect
             self._sdpa_gqa = 'enable_gqa' in inspect.signature(torch.nn.functional.scaled_dot_product_attention).parameters
@@ -293,6 +300,17 @@ class QwenStaticDecoder:
         kc, vc = st.kv[i]
         kc[:B].scatter_(2, write_idx, k)                              # each row at its own position
         vc[:B].scatter_(2, write_idx, v)
+        if self.attn_backend == 'triton':
+            # N5.1: split-KV decode kernel, one KV read per group, stops at each row's position.
+            from inferstack.kernels.decode_attention import decode_attention, make_scratch
+            key = (id(st), i)
+            if key not in self._attn_scratch:
+                self._attn_scratch[key] = make_scratch(st.batch, kc.shape[1], q.shape[1] // kc.shape[1], a.head_dim,
+                                                       st.max_len, x.device)
+            o = decode_attention(q[:, :, 0], kc[:B], vc[:B], st.mask[:B], st.pos[:B], L, a.scaling,
+                                 backend='triton', scratch=self._attn_scratch[key])[:, :, None]
+            o = o.transpose(1, 2).reshape(B, 1, -1) * torch.sigmoid(gate)
+            return a.o_proj(o)
         keys, vals = kc[:B, :, :L], vc[:B, :, :L]
         if self._sdpa_gqa:
             o = F.scaled_dot_product_attention(q, keys, vals, attn_mask=mask, scale=a.scaling,
