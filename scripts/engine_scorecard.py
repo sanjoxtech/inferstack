@@ -250,8 +250,11 @@ async def one(client, base, model, prompt, max_tokens, temperature, timeout):
             'content_chunks': r['content_chunks']}
 
 
+SPEC_KEYS = ('spec_steps', 'spec_row_steps', 'spec_accepted', 'spec_step_ms', 'decode_steps')
+
+
 async def ttft_breakdown(base):
-    """Native engine only: cumulative TTFT split counters from /v1/native/status (None elsewhere)."""
+    """Native engine only: cumulative TTFT split + spec lane counters from /v1/native/status."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(base + '/v1/native/status', timeout=10)
@@ -259,7 +262,8 @@ async def ttft_breakdown(base):
             return None
         for diag in (r.json().get('models') or {}).values():
             if isinstance(diag, dict) and isinstance(diag.get('ttft_breakdown'), dict):
-                return diag['ttft_breakdown']
+                sd = diag.get('static_decode') or {}
+                return {**diag['ttft_breakdown'], **{'lane_' + k: sd.get(k, 0) or 0 for k in SPEC_KEYS}}
     except Exception:
         return None
     return None
@@ -270,11 +274,18 @@ def breakdown_delta(before, after):
     jobs' prefill forwards that ran between a request's prefill prepare and its first token."""
     if not before or not after:
         return None
-    n = after.get('requests', 0) - before.get('requests', 0)
+    d = {k: after[k] - before.get(k, 0) for k in after}
+    n = d.pop('requests', 0)
     if n <= 0:
         return None
-    return {'requests': n, **{k + '_mean': round((after[k] - before.get(k, 0)) / n, 3)
-                              for k in after if k != 'requests'}}
+    out = {'requests': n, **{k + '_mean': round(v / n, 3) for k, v in d.items() if not k.startswith('lane_')}}
+    steps, rows = d.get('lane_spec_steps', 0), d.get('lane_spec_row_steps', 0)
+    out['lane'] = {'decode_steps': d.get('lane_decode_steps', 0), 'spec_steps': steps,
+                   'spec_acceptance': round(d.get('lane_spec_accepted', 0) / rows, 4) if rows else None,
+                   'tokens_per_row_step': round(1 + d.get('lane_spec_accepted', 0) / rows, 4) if rows else None,
+                   'rows_per_step': round(rows / steps, 3) if steps else None,
+                   'spec_step_ms': round(d.get('lane_spec_step_ms', 0) / steps, 3) if steps else None}
+    return out
 
 
 async def run_cell(base, model, texts, max_tokens, concurrency, temperature, timeout):

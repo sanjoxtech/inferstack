@@ -35,7 +35,7 @@ class StaticDecodeLane:
         self.positions: list[int] = []        # host copy of pos for live rows
         self.stats = {'rows_admitted': 0, 'rows_rejected_full': 0, 'rows_rejected_length': 0,
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
-                      'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0}
+                      'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0}
 
     @property
     def rows(self) -> int:
@@ -135,8 +135,11 @@ class StaticDecodeLane:
         self.compact()
 
     def _spec_decode(self, n):
+        import time
+        t0 = time.perf_counter()
         y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + 2)
         yh, ah = y.tolist(), acc.tolist()            # the step's only host sync
+        self.stats['spec_step_ms'] += (time.perf_counter() - t0) * 1000   # launch + GPU step + sync
         e = self.e
         e._accept_host(self.batch, [r[0] for r in yh])
         e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)])
