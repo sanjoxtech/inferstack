@@ -6,8 +6,9 @@ generate N greedy tokens per row (free-running, not teacher-forced). Reports per
 
 - step time (median ms), tokens emitted per row per step (1 + acceptance), output tok/s;
 - acceptance (draft accepted / steps);
-- agreement with the plain lane: rows whose first N tokens are identical, and the mean index
-  of the first difference where they differ (bf16 2-token vs 1-token forward numerics).
+- agreement with the plain lane (and with Transformers greedy under --hf-check): rows whose
+  first N tokens are identical, and the index of the first difference where they differ;
+- N6.1b: one spec run per --draft-vocabs value (0 = full vocabulary).
 
 Model-step evidence, not a scored serving number.
 
@@ -109,34 +110,60 @@ def spec_lane(model, dec, toks, n, max_len):
     return out, ms, per_step, accepts / (steps * B), graphs, capture_s
 
 
-def bench_case(model, tok, dec, batch, words, n):
+def agreement(ref, got, n):
+    same, first_diff = 0, []
+    for a, b in zip(ref, got):
+        m = min(n, len(a), len(b))
+        a, b = a[:m], b[:m]
+        if a == b:
+            same += 1
+        else:
+            first_diff.append(next(i for i, (x, y) in enumerate(zip(a, b)) if x != y))
+    return {'rows_identical': same, 'rows': len(ref), 'first_diffs': first_diff}
+
+
+def hf_greedy(model, tok, toks, n):
+    """Transformers greedy continuation per row (unbatched): the numerical oracle for both lanes."""
+    import torch
+    out = []
+    pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
+    for t in toks:
+        ids = torch.tensor([t], device=model.device)
+        with torch.inference_mode():
+            g = model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=n,
+                               do_sample=False, pad_token_id=pad)
+        out.append(g[0, len(t):].tolist())
+    return out
+
+
+def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check):
     import torch
     toks = [tok.encode(t, add_special_tokens=False) for t in prompts(batch, words)]
     max_len = 256 * (-(-(max(map(len, toks)) + n + 8) // 256))
     plain, pms = plain_lane(model, dec, toks, n, max_len)
     torch.cuda.empty_cache()
-    spec, sms, per_step, acceptance, graphs, capture_s = spec_lane(model, dec, toks, n, max_len)
-    torch.cuda.empty_cache()
-    same, first_diff = 0, []
-    for a, b in zip(plain, spec):
-        a, b = a[:n], b[:n]
-        if a == b:
-            same += 1
-        else:
-            first_diff.append(next(i for i, (x, y) in enumerate(zip(a, b)) if x != y))
+    hf = hf_greedy(model, tok, toks, n) if hf_check else None
     warm_p = pms[3:] if len(pms) > 6 else pms
-    warm_s = sms[3:] if len(sms) > 6 else sms
     plain_tps = batch * len(pms) / (sum(pms) / 1000)
-    spec_tps = sum(per_step) / (sum(sms) / 1000)
-    return {'batch': batch, 'prompt_words': words, 'prompt_tokens_max': max(map(len, toks)), 'new_tokens': n,
-            'max_len': max_len,
-            'plain': {'ms_per_step_median': statistics.median(warm_p), 'tok_s': plain_tps},
-            'spec': {'ms_per_step_median': statistics.median(warm_s), 'tok_s': spec_tps, 'steps': len(sms),
-                     'tokens_per_row_step': sum(per_step) / (len(sms) * batch), 'acceptance': acceptance,
-                     'graphs': graphs, 'capture_s': capture_s},
-            'speedup_tok_s': spec_tps / plain_tps,
-            'agreement': {'rows_identical': same, 'rows': batch,
-                          'mean_first_diff': (sum(first_diff) / len(first_diff)) if first_diff else None}}
+    row = {'batch': batch, 'prompt_words': words, 'prompt_tokens_max': max(map(len, toks)), 'new_tokens': n,
+           'max_len': max_len, 'plain': {'ms_per_step_median': statistics.median(warm_p), 'tok_s': plain_tps},
+           'spec': {}}
+    if hf is not None:
+        row['plain']['vs_transformers'] = agreement(hf, plain, n)
+    for dv in draft_vocabs:
+        dec.draft_vocab = dv or None
+        spec, sms, per_step, acceptance, graphs, capture_s = spec_lane(model, dec, toks, n, max_len)
+        torch.cuda.empty_cache()
+        warm_s = sms[3:] if len(sms) > 6 else sms
+        spec_tps = sum(per_step) / (sum(sms) / 1000)
+        r = {'ms_per_step_median': statistics.median(warm_s), 'tok_s': spec_tps, 'steps': len(sms),
+             'tokens_per_row_step': sum(per_step) / (len(sms) * batch), 'acceptance': acceptance,
+             'graphs': graphs, 'capture_s': capture_s, 'speedup_tok_s': spec_tps / plain_tps,
+             'vs_plain': agreement(plain, spec, n)}
+        if hf is not None:
+            r['vs_transformers'] = agreement(hf, spec, n)
+        row['spec'][str(dv or 'full')] = r
+    return row
 
 
 def main():
@@ -148,6 +175,8 @@ def main():
     ap.add_argument('--batches', type=int, nargs='+', default=[1, 4, 16])
     ap.add_argument('--words', type=int, nargs='+', default=[48, 400])
     ap.add_argument('--new-tokens', type=int, default=128)
+    ap.add_argument('--draft-vocabs', type=int, nargs='+', default=[0], help='0 = full vocabulary')
+    ap.add_argument('--hf-check', action='store_true', help='also compare both lanes with Transformers greedy')
     ap.add_argument('--attn', default=None, help='sdpa|triton (default: the profile static_decode_attention)')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
@@ -167,7 +196,7 @@ def main():
     for words in a.words:
         for b in a.batches:
             try:
-                row = bench_case(model, tok, dec, b, words, a.new_tokens)
+                row = bench_case(model, tok, dec, b, words, a.new_tokens, a.draft_vocabs, a.hf_check)
             except Exception as exc:
                 row = {'batch': b, 'prompt_words': words, 'error': f'{type(exc).__name__}: {str(exc)[:400]}',
                        'traceback': traceback.format_exc()[-2500:]}

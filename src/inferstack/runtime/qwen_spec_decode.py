@@ -99,22 +99,27 @@ class SpecState:
     accept: Any                                    # [slots] bool
     offs: Any                                      # [2] = (0, 1)
     mtp_kv: tuple = ()                             # (k, v) [slots, Hkv, max_len, D]
-    conv_alt: dict = field(default_factory=dict)   # GDN state after verify token 1
-    rec_alt: dict = field(default_factory=dict)
+    sel: Any = None                                # [slots] int32: which recurrent bank is current
+    conv_alt: dict = field(default_factory=dict)   # GDN conv state after verify token 1
+    banks: dict = field(default_factory=dict)      # layer -> [2, slots, Hv, dk, dv] fp32 recurrent banks
 
 
 class QwenSpecDecoder(QwenStaticDecoder):
     """Static decode lane plus the N6.1 MTP verify/draft step. Plain `step` still works."""
 
     def __init__(self, model, device, dtype=None, gdn_backend='auto', attn_backend='sdpa', *,
-                 mtp_tensors: dict | None = None, mtp_seed: int | None = None):
+                 mtp_tensors: dict | None = None, mtp_seed: int | None = None, draft_vocab: int | None = None):
         super().__init__(model, device, dtype=dtype, gdn_backend=gdn_backend, attn_backend=attn_backend)
         self.mtp = MTPHead(self, mtp_tensors, seed=mtp_seed)
+        # N6.1b: draft over the first `draft_vocab` token ids only (lossless: the verify pass
+        # still takes the full-vocab argmax). Cuts the MTP lm_head read from 1 GB on Qwen3.5-2B.
+        self.draft_vocab = draft_vocab
         self.spec_graphs: dict = {}
         self.stats.update(spec_captures=0, spec_replays=0, spec_eager_steps=0, spec_rows_loaded=0)
 
     # ---- buffers -----------------------------------------------------------------
     def new_spec_state(self, st: StaticDecodeState) -> SpecState:
+        """Call right after new_state, before capture/load: it rebinds st.rec[i] to bank 0."""
         import torch
         dev, n = self.device, st.batch
         a = self.mtp.layer.self_attn
@@ -124,16 +129,20 @@ class QwenSpecDecoder(QwenStaticDecoder):
                        y=torch.zeros(n, 2, dtype=torch.long, device=dev),
                        accept=torch.zeros(n, dtype=torch.bool, device=dev),
                        offs=torch.arange(2, device=dev),
+                       sel=torch.zeros(n, dtype=torch.int32, device=dev),
                        mtp_kv=(torch.zeros(shape, dtype=self.dtype, device=dev),
                                torch.zeros(shape, dtype=self.dtype, device=dev)))
         for i, t in st.conv.items():
             sp.conv_alt[i] = torch.zeros_like(t)
-            sp.rec_alt[i] = torch.zeros_like(st.rec[i])
+            bank = torch.zeros((2, *st.rec[i].shape), dtype=torch.float32, device=dev)
+            bank[0].copy_(st.rec[i])
+            sp.banks[i] = bank
+            st.rec[i] = bank[0]
         return sp
 
     def reset_spec(self, st: StaticDecodeState, sp: SpecState):
         self.reset(st)
-        for t in (sp.tok, sp.pos, sp.y, sp.accept, *sp.mtp_kv, *sp.conv_alt.values(), *sp.rec_alt.values()):
+        for t in (sp.tok, sp.pos, sp.y, sp.accept, sp.sel, *sp.mtp_kv, *sp.conv_alt.values(), *sp.banks.values()):
             t.zero_()
 
     # ---- multi-token pieces (T tokens per row) -----------------------------------
@@ -183,8 +192,8 @@ class QwenSpecDecoder(QwenStaticDecoder):
         return a.o_proj(o)
 
     def _gdn_t(self, i, g, x, st, sp):
-        """Gated DeltaNet over T tokens, state updated in place. Saves the state after the
-        first token into sp.*_alt so rejected rows can be restored."""
+        """Gated DeltaNet over T tokens. Conv state after token 1 goes to sp.conv_alt; the
+        recurrent state uses the two banks (kernels/gdn_banked.py), so a reject only flips sel."""
         import torch
         import torch.nn.functional as F
         mod = self.mod
@@ -195,7 +204,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
         else:
             qkv, z = g.in_proj_qkv(x), g.in_proj_z(x)
             b, a = g.in_proj_b(x), g.in_proj_a(x)
-        conv, rec = st.conv[i][:B], st.rec[i][:B]
+        conv = st.conv[i][:B]
         K = conv.shape[-1]
         w = g.conv1d.weight
         full = torch.cat([conv, qkv.transpose(1, 2).to(w.dtype)], dim=-1)            # [B, C, K+T]
@@ -209,35 +218,10 @@ class QwenSpecDecoder(QwenStaticDecoder):
         v = v.reshape(B, T, -1, g.head_v_dim)
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
-        outs = []
-        if self.gdn_backend == 'triton':
-            from inferstack.kernels.gdn_triton import inferstack_grouped_gdn_decode
-            for t in range(T):
-                o, _ = inferstack_grouped_gdn_decode(q[:, t:t + 1], k[:, t:t + 1], v[:, t:t + 1], gate[:, t:t + 1],
-                                                     beta[:, t:t + 1], initial_state=rec, output_final_state=False,
-                                                     use_qk_l2norm_in_kernel=True)
-                if t == 0:
-                    sp.rec_alt[i][:B].copy_(rec)
-                outs.append(o)
-        else:
-            rep = g.num_v_heads // g.num_k_heads
-            if rep > 1:
-                q = q.repeat_interleave(rep, dim=2)
-                k = k.repeat_interleave(rep, dim=2)
-            S = rec
-            for t in range(T):
-                qt, kt, vt = (u[:, t].to(torch.float32) for u in (q, k, v))
-                bt, gt = beta[:, t].float(), gate[:, t]
-                qt = mod.l2norm(qt, dim=-1, eps=1e-6) / (qt.shape[-1] ** 0.5)
-                kt = mod.l2norm(kt, dim=-1, eps=1e-6)
-                S = S * gt.exp()[..., None, None]
-                delta = (vt - (S * kt.unsqueeze(-1)).sum(dim=-2)) * bt.unsqueeze(-1)
-                S = S + kt.unsqueeze(-1) * delta.unsqueeze(-2)
-                if t == 0:
-                    sp.rec_alt[i][:B].copy_(S)
-                outs.append((S * qt.unsqueeze(-1)).sum(dim=-2).to(x.dtype)[:, None])
-            rec.copy_(S)
-        o = torch.cat(outs, dim=1).reshape(-1, g.head_v_dim)
+        from inferstack.kernels.gdn_banked import gdn_banked
+        o = gdn_banked(q, k, v, gate, beta, sp.banks[i], sp.sel,
+                       backend='triton' if self.gdn_backend == 'triton' else 'torch').to(x.dtype)
+        o = o.reshape(-1, g.head_v_dim)
         o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, T, -1)
         return g.out_proj(o)
 
@@ -247,6 +231,12 @@ class QwenSpecDecoder(QwenStaticDecoder):
         h = r + self._attn_t(lay.self_attn, lay.input_layernorm(x), cos, sin, sp.mtp_kv[0][rows], sp.mtp_kv[1][rows],
                              mask, pos, L, backend, skey)
         return h + lay.mlp(lay.post_attention_layernorm(h))
+
+    def _draft(self, h):
+        import torch.nn.functional as F
+        if not self.draft_vocab:
+            return self.lm_head(h).argmax(-1)
+        return F.linear(h, self.lm_head.weight[:int(self.draft_vocab)]).argmax(-1)
 
     def _mtp_in(self, nxt, hidden):
         import torch
@@ -277,18 +267,19 @@ class QwenSpecDecoder(QwenStaticDecoder):
         h = self.text.norm(h)                                             # post-norm hidden [B, 2, H]
         y = self.lm_head(h).argmax(-1)                                    # [B, 2]
         acc = y[:, 0] == tok[:, 1]
-        # Rows that rejected the draft keep the GDN state after token 1.
+        # Rows that rejected the draft keep the GDN state after token 1: conv by copy (small),
+        # recurrent by flipping the bank selector.
         keep = acc.view(B, 1, 1)
         for i in st.conv:
             st.conv[i][:B].copy_(torch.where(keep, st.conv[i][:B], sp.conv_alt[i][:B]))
-            st.rec[i][:B].copy_(torch.where(keep.view(B, 1, 1, 1), st.rec[i][:B], sp.rec_alt[i][:B]))
+        sp.sel[:B].copy_(torch.where(acc, sp.sel[:B], 1 - sp.sel[:B]))
         mask.scatter_(1, cols[:, 1:], acc[:, None])                       # rejected draft column is not real
         # MTP: entries p and p+1 = (token after, hidden at). Draft from the last accepted one.
         first = torch.where(acc, tok[:, 1], y[:, 0])
         nxt = torch.stack([first, y[:, 1]], dim=1)
         hm = self._mtp_layer(self._mtp_in(nxt, h), cos, sin, sp, slice(0, B), mask, p, L, self.attn_backend, skey)
         sel = torch.where(acc[:, None], hm[:, 1], hm[:, 0])
-        draft = self.lm_head(self.mtp.norm(sel)).argmax(-1)
+        draft = self._draft(self.mtp.norm(sel))
         sp.y[:B].copy_(y)
         sp.accept[:B].copy_(acc)
         sp.tok[:B].copy_(torch.stack([torch.where(acc, y[:, 1], y[:, 0]), draft], dim=1))
@@ -311,7 +302,8 @@ class QwenSpecDecoder(QwenStaticDecoder):
             cos, sin = self.text.rotary_emb(x, posn.view(1, 1, n).expand(3, 1, n))
             hm = self._mtp_layer(x, cos, sin, sp, slice(slot, slot + 1), st.mask[slot:slot + 1],
                                  torch.zeros(1, dtype=torch.long, device=dev), n, 'sdpa', None)
-            draft = self.lm_head(self.mtp.norm(hm[:, -1])).argmax(-1)
+            draft = self._draft(self.mtp.norm(hm[:, -1]))
+            sp.sel[slot] = 0
             sp.tok[slot, 0] = int(first_token)
             sp.tok[slot, 1] = draft[0]
             sp.pos[slot] = n

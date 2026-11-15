@@ -1,0 +1,69 @@
+"""N6.1b banked GDN decode: torch reference vs token-by-token grouped reference; Triton vs reference."""
+import pytest
+
+torch = pytest.importorskip('torch')
+
+from inferstack.kernels import gdn_banked as GB  # noqa: E402
+from inferstack.kernels.gdn_triton import grouped_gdn_decode_reference  # noqa: E402
+
+
+def data(B=3, T=2, Hk=2, Hv=4, K=16, V=8, slots=4, seed=0, device='cpu'):
+    g = torch.Generator().manual_seed(seed)
+    r = lambda *s: torch.randn(*s, generator=g)   # noqa: E731
+    q, k, v = r(B, T, Hk, K), r(B, T, Hk, K), r(B, T, Hv, V)
+    gate = -torch.rand(B, T, Hv, generator=g)
+    beta = torch.rand(B, T, Hv, generator=g)
+    banks = r(2, slots, Hv, K, V)
+    sel = torch.tensor([0, 1, 1, 0][:slots], dtype=torch.int32)
+    return [t.to(device) for t in (q, k, v, gate, beta, banks, sel)]
+
+
+def stepwise(q, k, v, gate, beta, state):
+    outs = []
+    for t in range(q.shape[1]):
+        o, state = grouped_gdn_decode_reference(q[:, t:t + 1], k[:, t:t + 1], v[:, t:t + 1], gate[:, t:t + 1],
+                                                beta[:, t:t + 1], state, True, True)
+        outs.append((o, state))
+    return outs
+
+
+@pytest.mark.parametrize('T', [1, 2])
+def test_reference_matches_token_by_token_and_banks_follow_the_contract(T):
+    q, k, v, gate, beta, banks, sel = data(T=T)
+    B = q.shape[0]
+    before = banks.clone()
+    cur0 = torch.stack([before[int(sel[b]), b] for b in range(B)])
+    steps = stepwise(q, k, v, gate, beta, cur0)
+    out = GB.gdn_banked(q, k, v, gate, beta, banks, sel, backend='torch')
+    for t in range(T):
+        torch.testing.assert_close(out[:, t], steps[t][0][:, 0].float(), atol=1e-5, rtol=1e-5)
+    for b in range(B):
+        s = int(sel[b])
+        torch.testing.assert_close(banks[s, b], steps[-1][1][b], atol=1e-5, rtol=1e-5)        # current = last
+        other = steps[0][1][b] if T == 2 else before[1 - s, b]                                  # other = after token 1
+        torch.testing.assert_close(banks[1 - s, b], other, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(banks[:, B:], before[:, B:])                                     # unused slots untouched
+
+
+def test_rejects_bad_shapes():
+    q, k, v, gate, beta, banks, sel = data(T=2)
+    with pytest.raises(ValueError):
+        GB.gdn_banked(q.repeat(1, 2, 1, 1), k.repeat(1, 2, 1, 1), v.repeat(1, 2, 1, 1), gate.repeat(1, 2, 1),
+                      beta.repeat(1, 2, 1), banks, sel, backend='torch')
+
+
+needs_cuda = pytest.mark.skipif(not (torch.cuda.is_available() and GB.HAS_TRITON), reason='needs CUDA + triton')
+
+
+@needs_cuda
+@pytest.mark.parametrize('T', [1, 2])
+@pytest.mark.parametrize('B,Hk,Hv,K,V', [(1, 16, 16, 128, 128), (5, 16, 32, 128, 128), (3, 2, 4, 64, 48)])
+def test_triton_matches_reference(T, B, Hk, Hv, K, V):
+    q, k, v, gate, beta, banks, sel = data(B=B, T=T, Hk=Hk, Hv=Hv, K=K, V=V, slots=B + 2, seed=B + T, device='cuda')
+    sel = (torch.arange(B + 2, device='cuda') % 2).to(torch.int32)
+    q, k, v, beta = q.bfloat16(), k.bfloat16(), v.bfloat16(), beta.bfloat16()
+    ref_banks = banks.clone()
+    ref = GB.gdn_banked(q, k, v, gate, beta, ref_banks, sel, backend='torch')
+    got = GB.gdn_banked(q, k, v, gate, beta, banks, sel)
+    torch.testing.assert_close(got, ref, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(banks, ref_banks, atol=2e-3, rtol=2e-3)
