@@ -318,6 +318,11 @@ def _install_gdn(module, mod, cfg):
         from inferstack.kernels.gdn import fla_available
         if not fla_available():  # strict: never measure the reference path under an fla label
             raise RuntimeError('gdn_prefill_backend="fla" but flash-linear-attention is not importable')
+    conv_backend = str(getattr(cfg.native, 'gdn_conv_backend', 'reference') or 'reference')
+    if conv_backend == 'fla':
+        from inferstack.kernels.gdn_conv import fla_conv_available
+        if not fla_conv_available():
+            raise RuntimeError('gdn_conv_backend="fla" but flash-linear-attention is not importable')
 
     def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
         hidden_states = mod.apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -331,7 +336,24 @@ def _install_gdn(module, mod, cfg):
         b, a = ba.split([self.num_v_heads, self.num_v_heads], dim=-1)
         STATS.gdn_fused_projection_calls += 1
 
-        if use_precomputed_states and seq_len == 1 and not cache_params.layers[self.layer_idx].record_past:
+        layer_cache = cache_params.layers[self.layer_idx] if cache_params is not None else None
+        btd = False   # True when the conv output is already [B, T, D]
+        if (seq_len > 1 and conv_backend == 'fla' and hidden_states.is_cuda
+                and not getattr(layer_cache, 'record_past', False)):
+            # N4.2: fused FLA conv + SiLU on the [B, T, D] projection (no transposes); the
+            # cache keeps the same last-W-inputs conv state transformers keeps.
+            from inferstack.kernels.gdn_conv import causal_conv_prefill
+            init = layer_cache.conv_states[0] if use_precomputed_states else None
+            mixed_qkv, final = causal_conv_prefill(
+                qkv, self.conv1d.weight.squeeze(1), self.conv1d.bias, init, activation=self.activation,
+                output_final_state=cache_params is not None, backend='fla')
+            if cache_params is not None:
+                if use_precomputed_states:
+                    layer_cache.conv_states[0].copy_(final)
+                else:
+                    cache_params.update_conv_state(final, self.layer_idx, conv_kernel_size=self.conv_kernel_size)
+            btd = True
+        elif use_precomputed_states and seq_len == 1 and not cache_params.layers[self.layer_idx].record_past:
             conv_state = cache_params.layers[self.layer_idx].conv_states[0]
             mixed_qkv = mod.causal_conv1d_update(
                 mixed_qkv, conv_state, self.conv1d.weight.squeeze(1), self.conv1d.bias, self.activation,
@@ -344,7 +366,8 @@ def _install_gdn(module, mod, cfg):
             )
             if cache_params is not None:
                 mixed_qkv = mixed_qkv[:, :, -seq_len:]
-        mixed_qkv = mixed_qkv.transpose(1, 2)
+        if not btd:
+            mixed_qkv = mixed_qkv.transpose(1, 2)
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
         key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)

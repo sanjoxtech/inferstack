@@ -48,6 +48,9 @@ class NativeConfig:
     # N3.3: GDN prefill (T>1) backend: reference (upstream chunked algebra), fla (fused
     # FLA kernel; startup fails if it is not installed), auto (fla when available on CUDA).
     gdn_prefill_backend:str="reference"
+    # N4.2: GDN short conv for prefill (T>1): reference (upstream F.conv1d + SiLU) or fla
+    # (fused Triton conv + SiLU on [B, T, D]; startup fails if FLA is not installed).
+    gdn_conv_backend:str="reference"
     prefix_state_cache:bool=True
     prefix_state_cache_max_entries:int=64
     prefix_state_cache_max_mb:int=1024

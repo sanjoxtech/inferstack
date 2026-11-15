@@ -146,22 +146,23 @@ def _free_cuda():
         pass
 
 
-def run_ops(eng, tok, *, batch, chunk, prefix_cache, trace_path):
+def run_ops(eng, tok, *, batch, chunk, prefix_cache, trace_path, shapes=False):
     import torch
     from torch.profiler import ProfilerActivity, profile
     texts, case = scorecard_prompts(n=batch)
     ids = [tok.encode(t, add_special_tokens=False) for t in texts]
     measure_prefill(eng, ids, chunk=chunk, prefix_cache=prefix_cache, max_new_tokens=case['max_tokens'])  # warmup
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False) as prof:
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=shapes) as prof:
         timing = measure_prefill(eng, ids, chunk=chunk, prefix_cache=prefix_cache, max_new_tokens=case['max_tokens'])
         torch.cuda.synchronize()
     rows = []
-    for e in prof.key_averages():
+    for e in prof.key_averages(group_by_input_shape=shapes):
         dev = float(getattr(e, 'self_device_time_total', None) or getattr(e, 'self_cuda_time_total', 0.0) or 0.0)
         cpu = float(getattr(e, 'self_cpu_time_total', 0.0) or 0.0)
         if dev <= 0 and cpu <= 0:
             continue
-        rows.append({'name': e.key, 'count': int(e.count), 'self_device_us': dev, 'self_cpu_us': cpu})
+        rows.append({'name': e.key, 'count': int(e.count), 'self_device_us': dev, 'self_cpu_us': cpu,
+                     **({'input_shapes': str(e.input_shapes)[:300]} if shapes else {})})
     total_dev = sum(r['self_device_us'] for r in rows) or 1.0
     rows.sort(key=lambda r: r['self_device_us'], reverse=True)
     for r in rows:
@@ -197,6 +198,7 @@ def main():
     p.add_argument('--batch', type=int, default=1, help='ops: cohort size')
     p.add_argument('--chunk', type=int, default=128, help='ops: chunk size')
     p.add_argument('--no-prefix-cache', action='store_true', help='ops: disable prefix cache')
+    p.add_argument('--shapes', action='store_true', help='ops: group the operator table by input shapes')
     p.add_argument('--trace', default='results/n2/prefill-trace.json')
     p.add_argument('--out', required=True)
     a = p.parse_args()
@@ -210,7 +212,7 @@ def main():
     if a.mode == 'phases':
         body = {'rows': run_phases(eng, tok, batches=a.batches, chunks=a.chunks, repeats=a.repeats)}
     else:
-        body = run_ops(eng, tok, batch=a.batch, chunk=a.chunk, prefix_cache=not a.no_prefix_cache, trace_path=a.trace)
+        body = run_ops(eng, tok, batch=a.batch, chunk=a.chunk, prefix_cache=not a.no_prefix_cache, trace_path=a.trace, shapes=a.shapes)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({'version': 1, 'mode': a.mode, 'identity': ident, **body}, indent=2, default=str) + '\n')
