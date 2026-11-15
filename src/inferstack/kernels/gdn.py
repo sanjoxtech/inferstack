@@ -79,9 +79,9 @@ def _run_recurrent_triton(query, key, value, g, beta, state, output_state, qk_l2
 def _run_recurrent_upstream(query, key, value, g, beta, state, output_state, qk_l2norm, **kwargs):
     from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
     q, k = _repeat_heads(query, key, value)
-    return mod.torch_recurrent_gated_delta_rule(q, k, value, g=g, beta=beta, initial_state=state,
-                                                output_final_state=output_state, use_qk_l2norm_in_kernel=qk_l2norm,
-                                                **kwargs)
+    fn = _torch_function(mod.torch_recurrent_gated_delta_rule)   # never the hub/FLA swap-in
+    return fn(q, k, value, g=g, beta=beta, initial_state=state, output_final_state=output_state,
+              use_qk_l2norm_in_kernel=qk_l2norm, **kwargs)
 
 
 def _run_chunk_reference(query, key, value, g, beta, state, output_state, qk_l2norm, **kwargs):

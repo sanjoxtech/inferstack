@@ -53,19 +53,23 @@ def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=F
     start = cells[0].index(marker) + len(marker)
     cells[0] = cells[0][:start] + commit + cells[0][cells[0].index("'", start):]
     pre = ''
+    if tests:   # engine tests need torch + transformers (runtime only)
+        pre += ("assert logged([PY,'-m','pip','install','-q','pytest>=8','pytest-asyncio>=0.24'],'install-pytest.log',"
+                "env=ENV,timeout=900)==0\n"
+                "def run_tests(paths, log, *extra):\n"
+                "    t = logged([PY,'-m','pytest','-q','-rs','-p','no:cacheprovider',*extra,*paths],log,env=ENV,timeout=3600)\n"
+                "    print(log, 'exit:', t, flush=True)\n"
+                "    if t != 0:   # archive the failure so the driver can fetch it and stop the VM\n"
+                "        import shutil as _sh\n"
+                f"        os.replace(_sh.make_archive('/content/job-evidence-tmp','zip',root_dir=OUT.parent,base_dir=OUT.name),{ARCHIVE!r})\n"
+                "        raise SystemExit('engine tests failed: see '+log)\n"
+                # before FLA: once it is installed, transformers routes even CPU test tensors to it
+                f"run_tests({list(tests)!r}, 'pytest.log')\n")
     if install_fla:
         pre += ("assert logged([PY,'-m','pip','install','--no-deps','fla-core==0.6.0','flash-linear-attention==0.6.0',"
                 "'einops'],'install-fla.log',env=ENV,timeout=1800)==0\n")
-    if tests:   # engine tests need torch + transformers, which only the runtime has
-        pre += ("assert logged([PY,'-m','pip','install','-q','pytest>=8','pytest-asyncio>=0.24'],'install-pytest.log',"
-                "env=ENV,timeout=900)==0\n"
-                f"_t = logged([PY,'-m','pytest','-q','-rs','-p','no:cacheprovider',*{list(tests)!r}],'pytest.log',"
-                "env=ENV,timeout=3600)\n"
-                "print('pytest exit:', _t, flush=True)\n"
-                "if _t != 0:\n"
-                "    import shutil as _sh\n"   # archive the failure so the driver can fetch it and stop the VM
-                f"    os.replace(_sh.make_archive('/content/job-evidence-tmp','zip',root_dir=OUT.parent,base_dir=OUT.name),{ARCHIVE!r})\n"
-                "    raise SystemExit('engine tests failed: see pytest.log')\n")
+        if tests:   # the CUDA FLA-vs-oracle check only runs once FLA is present
+            pre += "run_tests(['tests/test_gdn_primitive.py'], 'pytest-fla.log', '-k', 'fla')\n"
     if gdn_check:
         pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
                 "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600), flush=True)\n")
