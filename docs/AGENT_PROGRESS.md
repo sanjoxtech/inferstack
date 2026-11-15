@@ -404,3 +404,15 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   - N6.3: batched spec admission (TTFT);
   - N5.2: mixed prefill+decode (prefill_heavy / shared_prefix c16);
   - c1 TTFT (65 vs 41 ms).
+
+## 2026-11-15 — N6.3 batched spec admission: lossless, no TTFT win
+
+- Code: `QwenSpecDecoder.load_spec_rows` (one right-padded MTP forward for all admitted rows, first
+  tokens stay on GPU), used by `StaticDecodeLane.try_admit`. Commits a20368b, b1e7a36.
+- L4 fast check `l4-1794754092` @b1e7a36 (native_spec, 2 rounds, default workload): all engine tests
+  passed (spec decode incl. batched == per-row load, static lane, banked GDN).
+- Result vs v1.14 run @08578c4: output tok/s and TTFT unchanged within noise in 15/16 cells
+  (interactive c16 TTFT 485 ms [179–791], one bad round). Per-row admission syncs were not the
+  TTFT cause. Evidence: docs/verification/evidence/n63-batched-admit-l4-b1e7a36-20261115/.
+- Next: instrument the request timeline (queue wait, prefill, first emit, admission) before
+  another TTFT change.
