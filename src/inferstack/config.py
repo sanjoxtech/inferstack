@@ -51,6 +51,9 @@ class NativeConfig:
     # N4.2: GDN short conv for prefill (T>1): reference (upstream F.conv1d + SiLU) or fla
     # (fused Triton conv + SiLU on [B, T, D]; startup fails if FLA is not installed).
     gdn_conv_backend:str="reference"
+    # fla conv only when batch x tokens of the forward reaches this (0 = always); below it the
+    # per-call Python cost of the FLA wrapper (~0.5 ms x 18 layers) outweighs the kernel gain.
+    gdn_conv_fla_min_tokens:int=0
     prefix_state_cache:bool=True
     prefix_state_cache_max_entries:int=64
     prefix_state_cache_max_mb:int=1024

@@ -319,6 +319,7 @@ def _install_gdn(module, mod, cfg):
         if not fla_available():  # strict: never measure the reference path under an fla label
             raise RuntimeError('gdn_prefill_backend="fla" but flash-linear-attention is not importable')
     conv_backend = str(getattr(cfg.native, 'gdn_conv_backend', 'reference') or 'reference')
+    conv_min_tokens = int(getattr(cfg.native, 'gdn_conv_fla_min_tokens', 0) or 0)
     if conv_backend == 'fla':
         from inferstack.kernels.gdn_conv import fla_conv_available
         if not fla_conv_available():
@@ -339,6 +340,7 @@ def _install_gdn(module, mod, cfg):
         layer_cache = cache_params.layers[self.layer_idx] if cache_params is not None else None
         btd = False   # True when the conv output is already [B, T, D]
         if (seq_len > 1 and conv_backend == 'fla' and hidden_states.is_cuda
+                and batch_size * seq_len >= conv_min_tokens   # small forwards: wrapper cost > gain
                 and not getattr(layer_cache, 'record_past', False)):
             # N4.2: fused FLA conv + SiLU on the [B, T, D] projection (no transposes); the
             # cache keeps the same last-W-inputs conv state transformers keeps.

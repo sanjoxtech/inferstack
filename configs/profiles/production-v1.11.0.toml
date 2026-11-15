@@ -40,6 +40,9 @@ gdn_prefill_backend = "fla"
 prefill_backlog_drain_steps = 4
 # v1.11 (N4.2): GDN prefill conv on FLA fused Triton conv + SiLU over [B, T, D] (no transposes).
 gdn_conv_backend = "fla"
+# Only for forwards of >= 1024 tokens (batch x tokens): the n42 L4 fast check showed +4-15 ms
+# TTFT on short single prompts from the FLA wrapper's per-layer Python cost.
+gdn_conv_fla_min_tokens = 1024
 prefix_state_cache = true
 prefix_state_cache_max_entries = 64
 prefix_state_cache_max_mb = 1024
