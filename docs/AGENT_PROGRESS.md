@@ -19,6 +19,15 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-15 — DeepSeek Ultrafast external architecture study
+
+- Studied `basetenlabs/deepseek-ultrafast` at upstream commit `76766a97308bfd1658fb055e835d0f92de737dc3`; added `docs/research/DEEPSEEK_ULTRAFAST_CODE_STUDY_2026-11-15.md`.
+- Upstream is a DeepSeek-V4.1-Flash-specific Rust/CUDA engine for B200/B300/GB300-class `sm_100a/sm_103a`, not a generic replacement for vLLM/SGLang and not runnable on our T4/A100/L4 lab hardware.
+- Technique handoff: captured speculative decode + acceptance metrics, custom TP/NVLS, compressed FP4 cache snapshots for transfer, RDMA cache mobility + Redis ownership/revision directory, bounded-replay long-context prefill, and agent-driven profiling/optimization.
+- License boundary: upstream is Elastic License 2.0. Do not vendor or mechanically port its code into Native; use provenance-bearing external evidence and independently implement applicable ideas.
+- Current ordering unchanged: v1.9 is kept; N4 packed/varlen prefill remains the immediate native task. DeepSeek Ultrafast informs later distributed-cache/routing, speculative/MTP metrics, multi-GPU TP and possible compiled Native-v2 work.
+
+
 ### 2026-11-14 UTC — ChatGPT (llama.cpp v1.0 roadmap integration)
 
 - Reviewed ggml-org/llama.cpp v1.0.0 (13 Nov 2026) and current repo. Added `docs/LLAMA_CPP_INTEGRATION_PLAN.md` as the authoritative track for llama.cpp as (a) an external technique/reference source and (b) a future fourth engine backend for portable/local/edge/quantized inference.
