@@ -296,6 +296,10 @@ def _install_mlp(module, cfg):
     return True
 
 
+class FusionBackendUnavailable(RuntimeError):
+    """A profile asked for a kernel backend (e.g. fla) that is not installed."""
+
+
 def _install_gdn(module, mod, cfg):
     from inferstack.kernels.gdn import STATS as GDN_STATS
     import torch
@@ -308,22 +312,24 @@ def _install_gdn(module, mod, cfg):
         return False
     if any(x.bias is not None for x in (qkv,zproj,bproj,aproj)):
         return False
-    _register_fused_weight(module, '_inferstack_qkvz_weight', [qkv.weight, zproj.weight])
-    _register_fused_weight(module, '_inferstack_ba_weight', [bproj.weight, aproj.weight])
-    module.in_proj_qkv = module.in_proj_z = module.in_proj_b = module.in_proj_a = None
-    use_beta_g = bool(cfg.native.fuse_gdn_beta_g)
-    grouped_decode = bool(cfg.native.grouped_gdn_decode)
+    # Check requested backends before touching the module: a failed install must leave the
+    # original layer intact (n51: the check ran after the projections were removed).
     prefill = str(getattr(cfg.native, 'gdn_prefill_backend', 'reference') or 'reference')
     if prefill == 'fla':
         from inferstack.kernels.gdn import fla_available
         if not fla_available():  # strict: never measure the reference path under an fla label
-            raise RuntimeError('gdn_prefill_backend="fla" but flash-linear-attention is not importable')
+            raise FusionBackendUnavailable('gdn_prefill_backend="fla" but flash-linear-attention is not importable')
     conv_backend = str(getattr(cfg.native, 'gdn_conv_backend', 'reference') or 'reference')
     conv_min_tokens = int(getattr(cfg.native, 'gdn_conv_fla_min_tokens', 0) or 0)
     if conv_backend == 'fla':
         from inferstack.kernels.gdn_conv import fla_conv_available
         if not fla_conv_available():
-            raise RuntimeError('gdn_conv_backend="fla" but flash-linear-attention is not importable')
+            raise FusionBackendUnavailable('gdn_conv_backend="fla" but flash-linear-attention is not importable')
+    _register_fused_weight(module, '_inferstack_qkvz_weight', [qkv.weight, zproj.weight])
+    _register_fused_weight(module, '_inferstack_ba_weight', [bproj.weight, aproj.weight])
+    module.in_proj_qkv = module.in_proj_z = module.in_proj_b = module.in_proj_a = None
+    use_beta_g = bool(cfg.native.fuse_gdn_beta_g)
+    grouped_decode = bool(cfg.native.grouped_gdn_decode)
 
     def forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
         hidden_states = mod.apply_mask_to_padding_states(hidden_states, attention_mask)
@@ -492,6 +498,8 @@ def install_qwen35_forward_fusion(model, cfg):
             elif name=='Qwen3_5GatedDeltaNet' and _install_gdn(module,mod,cfg):STATS.gdn_modules+=1
             elif name=='Qwen3_5Attention' and _install_attention(module,mod,cfg):STATS.attention_modules+=1
         STATS.installed=True;STATS.install_error=None
+    except FusionBackendUnavailable:
+        raise   # a requested kernel backend is missing: never serve the fallback under its label
     except Exception as exc:
         STATS.install_error=f'{type(exc).__name__}: {exc}'
         if bool(getattr(cfg.native,'forward_fusion_strict',False)):

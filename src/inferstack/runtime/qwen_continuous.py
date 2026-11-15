@@ -80,7 +80,7 @@ class QwenHybridContinuousEngine:
                 self._forward_fusion_diag=install_qwen35_forward_fusion(self.model,self.cfg)
             except Exception as exc:
                 self._forward_fusion_diag={'installed':False,'install_error':f'{type(exc).__name__}: {exc}'}
-                if bool(getattr(self.cfg.native,'forward_fusion_strict',False)): raise
+                if bool(getattr(self.cfg.native,'forward_fusion_strict',False)) or type(exc).__name__=='FusionBackendUnavailable': raise
     def _maybe_compile(self):
         if not (self.cfg.kernels.torch_compile and self.cfg.native.compile_model):return
         try:

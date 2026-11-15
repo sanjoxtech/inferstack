@@ -122,3 +122,24 @@ def test_engine_greedy_outputs_same_with_fla_conv():
     got = run('fla')
     assert C.STATS['fla'] > 0, 'fla conv never ran: fusion not installed on the GDN layers?'
     assert got == ref
+
+
+def test_missing_fla_backend_fails_before_touching_the_layer(monkeypatch):
+    """n51: the fla availability check ran after the projections were removed, leaving a broken
+    layer behind a swallowed error. It must raise first and leave the module intact."""
+    pytest.importorskip('transformers.models.qwen3_5.modeling_qwen3_5')
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as mod
+    from inferstack.kernels import gdn as G
+    from inferstack.kernels import qwen_forward_fusion as FF
+    from test_qwen_static_decode import tiny_model
+    from test_qwen_static_lane import cfg
+    model = tiny_model(seed=3)
+    layer = next(m for m in model.modules() if hasattr(m, 'in_proj_qkv'))
+    c = cfg(False)
+    c.native.forward_fusion = True
+    c.native.fuse_gdn_projections = True
+    c.native.gdn_prefill_backend = 'fla'
+    monkeypatch.setattr(G, 'fla_available', lambda: False)
+    with pytest.raises(FF.FusionBackendUnavailable):
+        FF._install_gdn(layer, mod, c)
+    assert layer.in_proj_qkv is not None and not getattr(layer, '_inferstack_gdn_fused', False)
