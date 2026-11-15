@@ -132,7 +132,8 @@ print('POLL ' + json.dumps({{'alive': alive, 'archive': os.path.exists({ARCHIVE!
 
 
 def retry(*argv, tries=5, wait=20, timeout=900):
-    """colab CLI steps are idempotent here; retry them through network drops and hangs."""
+    """colab CLI steps are idempotent here; retry them through network drops and hangs. A dropped
+    connection can leave `colab exec` hanging, so the quick steps get short timeouts."""
     for i in range(tries):
         if sh(*argv, check=False, timeout=timeout).returncode == 0:
             return
@@ -193,8 +194,8 @@ def main():
         retry(colab, 'new', '--gpu', args.gpu, '-s', args.session)
     retry(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
     retry(colab, 'upload', '-s', args.session, job, '/content/job.py')
-    retry(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300')
-    retry(colab, 'exec', '-s', args.session, '-f', launch, '--timeout', '120')
+    retry(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300', timeout=240)
+    retry(colab, 'exec', '-s', args.session, '-f', launch, '--timeout', '120', timeout=180)
     state, misses = None, 0
     while True:
         time.sleep(args.poll_s)
