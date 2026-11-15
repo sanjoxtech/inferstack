@@ -19,6 +19,13 @@ Check `git log origin/main` for the authoritative history; this file is coordina
 
 ## Log
 
+### 2026-11-15 — DeepSeek Ultrafast follow-up research
+- Verified upstream `basetenlabs/deepseek-ultrafast` at commit `76766a97308bfd1658fb055e835d0f92de737dc3` against its README, Rust/CUDA implementation and Baseten engineering write-up.
+- Extended the study with PDL, model-topology residual fusion, fused router+expert execution, whole-speculative-step graphing and the model-specific optimization-sandbox pattern.
+- Product decision: use DeepSeek Ultrafast as external evidence and future external endpoint/reference; do not vendor its ELv2 source into InferStack Native. `generic_openai` is sufficient before a specialized adapter is justified.
+- Immediate Native ordering unchanged: v1.9 kept; N4 packed/varlen prefill remains next. H5 gains a future model-specific sandbox mode with pinned reference sources + profiler + numerical oracle + benchmark + controller-owned promotion.
+
+
 ### 2026-11-15 — DeepSeek Ultrafast external architecture study
 
 - Studied `basetenlabs/deepseek-ultrafast` at upstream commit `76766a97308bfd1658fb055e835d0f92de737dc3`; added `docs/research/DEEPSEEK_ULTRAFAST_CODE_STUDY_2026-11-15.md`.
