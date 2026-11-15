@@ -1,0 +1,4 @@
+.............sssssssssssssssss...........                                [100%]
+=========================== short test summary info ============================
+SKIPPED [16] tests/test_gdn_conv.py:76: needs CUDA + flash-linear-attention
+SKIPPED [1] tests/test_gdn_conv.py:91: needs CUDA + flash-linear-attention
