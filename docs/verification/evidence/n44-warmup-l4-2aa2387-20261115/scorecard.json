@@ -1,0 +1,1409 @@
+{
+  "version": 1,
+  "baseline": "native_conv",
+  "min_rounds_for_relation": 3,
+  "runs": [
+    "l4-1794711757"
+  ],
+  "hosts": [
+    {
+      "python": "3.13.18",
+      "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+      "gpus": [
+        {
+          "name": "NVIDIA L4",
+          "memory_total": "23034 MiB",
+          "driver": "580.82.07",
+          "uuid": "GPU-6266c40b-43bc-1c42-667a-1a2449a0ffee"
+        }
+      ],
+      "commit": "2aa23870a1122447b4e4bd21d4c4b94583563128",
+      "dirty": false
+    }
+  ],
+  "workload_sha256": [
+    "afb6885f0f03a1166c1944b2fb7d20cb0ff68c59ced0556b29bf22d4d05b979e"
+  ],
+  "profiles": {
+    "native_conv": {
+      "rounds": 2,
+      "ready_rounds": 2
+    },
+    "native_drain": {
+      "rounds": 2,
+      "ready_rounds": 2
+    }
+  },
+  "unsupported_or_failed": {},
+  "cells": [
+    {
+      "profile": "native_conv",
+      "case": "interactive",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 63.637018500230624,
+          "min": 63.26846150022902,
+          "max": 64.00557550023223,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 65.75529107489047,
+          "min": 64.02082074985174,
+          "max": 67.4897613999292,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 2200.3034160001107,
+          "min": 2190.7350035000945,
+          "max": 2209.871828500127,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 2207.404499375093,
+          "min": 2198.3756806001566,
+          "max": 2216.4333181500297,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 16.82075320078778,
+          "min": 16.756502637796203,
+          "max": 16.88500376377936,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 58.15401266766139,
+          "min": 57.9161738467583,
+          "max": 58.39185148856449,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 6972.0,
+          "min": 6972.0,
+          "max": 6972.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 128.0,
+          "min": 128,
+          "max": 128,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999746661155966,
+          "min": 0.9999736596222903,
+          "max": 0.9999756726089027,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "interactive",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 64.10000499988655,
+          "min": 63.2403570000406,
+          "max": 64.9596529997325,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 65.66850562501259,
+          "min": 65.30356810003468,
+          "max": 66.03344314999049,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 2204.5554462499695,
+          "min": 2201.20167150003,
+          "max": 2207.909220999909,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 2210.903600924712,
+          "min": 2207.174745399743,
+          "max": 2214.632456449681,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 16.85737676574911,
+          "min": 16.83597594094641,
+          "max": 16.878777590551813,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 58.02048865132549,
+          "min": 57.9353435862557,
+          "max": 58.10563371639529,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 6972.0,
+          "min": 6972.0,
+          "max": 6972.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 128.0,
+          "min": 128,
+          "max": 128,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999778324375831,
+          "min": 0.9999775148631722,
+          "max": 0.999978150011994,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 1.0072754272680806,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 0.9986801754131233,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 1.0019324745028066,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 1.001585165541979,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0021772844844792,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 0.9977039586743746,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "interactive",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 271.3949714999444,
+          "min": 103.46386349988279,
+          "max": 439.326079500006,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 865.3461688000789,
+          "min": 192.3248747501475,
+          "max": 1538.3674628500103,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 3346.5754957500167,
+          "min": 3197.8825414998937,
+          "max": 3495.2684500001396,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 3967.425203999778,
+          "min": 3318.6565711996764,
+          "max": 4616.19383679988,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 24.317414167321978,
+          "min": 24.183684929133186,
+          "max": 24.451143405510773,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 595.5414786867491,
+          "min": 554.9230411348024,
+          "max": 636.1599162386959,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 7384.0,
+          "min": 7342.0,
+          "max": 7426.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 128.0,
+          "min": 128,
+          "max": 128,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.965124997175199,
+          "min": 15.963439665807948,
+          "max": 15.966810328542447,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "interactive",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 126.86556299991025,
+          "min": 101.24238299977151,
+          "max": 152.488743000049,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 535.9498026497022,
+          "min": 193.52235749970532,
+          "max": 878.377247799699,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 3394.710342750045,
+          "min": 3198.9756185000715,
+          "max": 3590.4450670000188,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 3696.197331150165,
+          "min": 3324.9501065000914,
+          "max": 4067.444555800239,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 24.44357688582708,
+          "min": 24.441328929133235,
+          "max": 24.445824842520928,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 602.9809099776367,
+          "min": 569.4418916653896,
+          "max": 636.5199282898838,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 7554.0,
+          "min": 7426.0,
+          "max": 7682.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 128.0,
+          "min": 128,
+          "max": 128,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.957474731981224,
+          "min": 15.95159696666583,
+          "max": 15.963352497296617,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 0.4674573088025555,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 0.6193472877945135,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 1.0143833142450118,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 0.9316362983790663,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0051881634139637,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 1.0124918776560996,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 1.0230227518959913,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "moderate",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 122.61892725007328,
+          "min": 121.3217669999267,
+          "max": 123.91608750021987,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 124.95422092490571,
+          "min": 123.06062824980017,
+          "max": 126.84781360001125,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 4528.449461250148,
+          "min": 4523.920248000195,
+          "max": 4532.9786745001,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 4534.827284124935,
+          "min": 4528.902640099977,
+          "max": 4540.7519281498935,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.278207272549174,
+          "min": 17.25579922156826,
+          "max": 17.300615323530092,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 56.54408928041195,
+          "min": 56.49970664126001,
+          "max": 56.5884719195639,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 7618.0,
+          "min": 7576.0,
+          "max": 7660.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 256.0,
+          "min": 256,
+          "max": 256,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999886981702655,
+          "min": 0.9999883515150373,
+          "max": 0.9999890448254938,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "moderate",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 123.64279375003662,
+          "min": 123.30339350023678,
+          "max": 123.98219399983645,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 125.63996642506936,
+          "min": 124.76355325022723,
+          "max": 126.51637959991149,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 4531.46057624997,
+          "min": 4518.892682500109,
+          "max": 4544.02846999983,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 4544.364882900027,
+          "min": 4530.753965550025,
+          "max": 4557.975800250028,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.284055772549042,
+          "min": 17.236151719608266,
+          "max": 17.331959825489818,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 56.49057827648123,
+          "min": 56.364873417634605,
+          "max": 56.61628313532786,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 7788.0,
+          "min": 7660.0,
+          "max": 7916.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 256.0,
+          "min": 256,
+          "max": 256,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999888493354923,
+          "min": 0.9999881696571884,
+          "max": 0.9999895290137962,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 1.0083499874197661,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 1.0054879738762548,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 1.0006649328927237,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 1.002103188981084,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0003384899780174,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 0.9990536410682052,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 1.0223155683906537,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "moderate",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 560.1000105000367,
+          "min": 532.0308205000401,
+          "max": 588.1692005000332,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 1505.5529178750362,
+          "min": 625.8781438499909,
+          "max": 2385.2276919000815,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 8047.364719250027,
+          "min": 7965.840979999939,
+          "max": 8128.888458500114,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 8990.804210374961,
+          "min": 8101.008842149963,
+          "max": 9880.599578599958,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 29.33943761666645,
+          "min": 29.293802511764465,
+          "max": 29.385072721568434,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 495.84635077041816,
+          "min": 479.9654157076201,
+          "max": 511.72728583321623,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 8403.0,
+          "min": 8402.0,
+          "max": 8404.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 256.0,
+          "min": 256,
+          "max": 256,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.977777264442153,
+          "min": 15.969390566771189,
+          "max": 15.986163962113116,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "moderate",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 552.180190750164,
+          "min": 513.8752385000771,
+          "max": 590.4851430002509,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 622.5935214501646,
+          "min": 593.6956605002479,
+          "max": 651.4913824000814,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 8017.269639250003,
+          "min": 8013.465606999944,
+          "max": 8021.073671500062,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 8083.327720224873,
+          "min": 8077.819361649768,
+          "max": 8088.836078799977,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 29.263339498038476,
+          "min": 29.112696756861872,
+          "max": 29.41398223921508,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 510.53138381638973,
+          "min": 509.82231117246465,
+          "max": 511.24045646031476,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 8377.0,
+          "min": 8350.0,
+          "max": 8404.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 256.0,
+          "min": 256,
+          "max": 256,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.987259119937288,
+          "min": 15.98119098522922,
+          "max": 15.993327254645356,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 0.9858599899992823,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 0.41353147674736274,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 0.996260256487688,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 0.8990661492658351,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 0.997406285709282,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 1.0296160958392753,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 0.9969058669522789,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "prefill_heavy",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 166.5134660000831,
+          "min": 165.73580800013588,
+          "max": 167.29112400003032,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 169.22142357497023,
+          "min": 169.09160570010044,
+          "max": 169.35124144984002,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 720.2226904998952,
+          "min": 720.0712520000252,
+          "max": 720.3741289997652,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 721.6570938751261,
+          "min": 721.5076543001487,
+          "max": 721.8065334501034,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.827123548389892,
+          "min": 17.822052645171073,
+          "max": 17.832194451608714,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 44.467178299059725,
+          "min": 44.45398541965353,
+          "max": 44.480371178465916,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 8589.0,
+          "min": 8588.0,
+          "max": 8590.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 32.0,
+          "min": 32,
+          "max": 32,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999316340070961,
+          "min": 0.9999299772970138,
+          "max": 0.9999332907171784,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "prefill_heavy",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 167.21561700001075,
+          "min": 166.25329800012878,
+          "max": 168.17793599989272,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 169.39914417506543,
+          "min": 168.52975200001765,
+          "max": 170.2685363501132,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 720.9104570000591,
+          "min": 719.075513000007,
+          "max": 722.7454010001111,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 723.6706939499413,
+          "min": 721.4389599999322,
+          "max": 725.9024278999505,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.8749015967733,
+          "min": 17.834403822579617,
+          "max": 17.91539937096698,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 44.39364887067293,
+          "min": 44.24961969906313,
+          "max": 44.53767804228273,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 8563.0,
+          "min": 8536.0,
+          "max": 8590.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 32.0,
+          "min": 32,
+          "max": 32,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999353341450206,
+          "min": 0.9999348563390471,
+          "max": 0.999935811950994,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 1.0042167820825212,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 1.0010502251803624,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 1.0009549358958498,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 1.002790244968012,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.002680076135318,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 0.9983464336798643,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 0.9969728722784957,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "prefill_heavy",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 1312.5639527501107,
+          "min": 1309.563494000031,
+          "max": 1315.5644115001905,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 3065.90724400005,
+          "min": 2734.046561800187,
+          "max": 3397.767926199913,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 3895.4666217499607,
+          "min": 3876.8628369998623,
+          "max": 3914.070406500059,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 5416.412106850089,
+          "min": 5088.007365849967,
+          "max": 5744.816847850211,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 82.95334178226386,
+          "min": 82.69932356452338,
+          "max": 83.20736000000433,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 128.62314067153594,
+          "min": 126.02709528888603,
+          "max": 131.21918605418585,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9188.0,
+          "min": 9134.0,
+          "max": 9242.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 32.0,
+          "min": 32,
+          "max": 32,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.634330970337501,
+          "min": 15.625935453376322,
+          "max": 15.642726487298681,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "prefill_heavy",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 777.6949829999467,
+          "min": 776.5923455001484,
+          "max": 778.7976204997449,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 2045.3114279752185,
+          "min": 2043.7389861002885,
+          "max": 2046.8838698501486,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 3458.0023267500337,
+          "min": 3454.208838500108,
+          "max": 3461.7958149999595,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 4098.255962000167,
+          "min": 4091.8546840502586,
+          "max": 4104.657239950075,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 84.90255504032194,
+          "min": 84.87244774193142,
+          "max": 84.93266233871245,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 148.22772918967596,
+          "min": 147.97620222033862,
+          "max": 148.4792561590133,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9099.0,
+          "min": 9026.0,
+          "max": 9172.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 32.0,
+          "min": 32,
+          "max": 32,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 15.862559206270046,
+          "min": 15.862030763815731,
+          "max": 15.86308764872436,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 0.5925006407272608,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 0.667114581492272,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 0.8876991288906475,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 0.756636659314962,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0234977062548531,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 1.1524188292696422,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 0.9903134523291249,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "shared_prefix",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 69.8429154998621,
+          "min": 68.69601999983388,
+          "max": 70.98981099989032,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 116.84823922511211,
+          "min": 115.73139630022521,
+          "max": 117.965082149999,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 747.1459580000328,
+          "min": 745.7162580001295,
+          "max": 748.5756579999361,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 1243.7106920000701,
+          "min": 1240.562237450058,
+          "max": 1246.8591465500822,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.83916787978051,
+          "min": 17.834966032371348,
+          "max": 17.84336972718967,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 51.90688730230632,
+          "min": 51.82126998694403,
+          "max": 51.992504617668615,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9230.0,
+          "min": 9176.0,
+          "max": 9284.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 43.125,
+          "min": 43.125,
+          "max": 43.125,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999401230191883,
+          "min": 0.9999374828562081,
+          "max": 0.9999427631821686,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "shared_prefix",
+      "concurrency": 1,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 70.33207624999704,
+          "min": 70.21797900006277,
+          "max": 70.44617349993132,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 116.96679867490045,
+          "min": 115.97445099996546,
+          "max": 117.95914634983544,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 749.207299749969,
+          "min": 748.6531520000881,
+          "max": 749.76144749985,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 1245.0455716749616,
+          "min": 1243.8469837999946,
+          "max": 1246.2441595499286,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 17.90931864972915,
+          "min": 17.902495266664825,
+          "max": 17.91614203279348,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 51.73853440655888,
+          "min": 51.735402426802544,
+          "max": 51.74166638631521,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9142.0,
+          "min": 9068.0,
+          "max": 9216.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 43.125,
+          "min": 43.125,
+          "max": 43.125,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 0.9999349866249683,
+          "min": 0.9999276812552826,
+          "max": 0.9999422919946538,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 1.0070037275310466,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 1.0010146447269943,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 1.0027589545628461,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 1.001073304011518,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0039324014674558,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 0.9967566366527247,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 0.990465872156013,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    },
+    {
+      "profile": "native_conv",
+      "case": "shared_prefix",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 185.50219824999203,
+          "min": 177.44393299994954,
+          "max": 193.56046350003453,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 703.4522060501552,
+          "min": 367.5843916501884,
+          "max": 1039.320020450122,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 1909.6707782499607,
+          "min": 1602.0969759999844,
+          "max": 2217.244580499937,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 3522.308414000042,
+          "min": 3289.3713841999433,
+          "max": 3755.2454438001405,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 46.563021567761275,
+          "min": 46.40941237302185,
+          "max": 46.7166307625007,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 264.4184160709906,
+          "min": 244.97876416564543,
+          "max": 283.85806797633575,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9241.0,
+          "min": 9188.0,
+          "max": 9294.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 37.046875,
+          "min": 37.046875,
+          "max": 37.046875,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 14.287066985621035,
+          "min": 14.16293678165005,
+          "max": 14.41119718959202,
+          "rounds": 2
+        }
+      }
+    },
+    {
+      "profile": "native_drain",
+      "case": "shared_prefix",
+      "concurrency": 16,
+      "rounds": 2,
+      "metrics": {
+        "ttft_p50_ms": {
+          "median": 182.23589575006827,
+          "min": 182.2081640000306,
+          "max": 182.26362750010594,
+          "rounds": 2
+        },
+        "ttft_p95_ms": {
+          "median": 365.92032782517606,
+          "min": 363.48663680009787,
+          "max": 368.3540188502542,
+          "rounds": 2
+        },
+        "e2e_p50_ms": {
+          "median": 1604.3582432500898,
+          "min": 1601.4184565001415,
+          "max": 1607.2980300000381,
+          "rounds": 2
+        },
+        "e2e_p95_ms": {
+          "median": 3309.622246074854,
+          "min": 3296.1341119496624,
+          "max": 3323.1103802000453,
+          "rounds": 2
+        },
+        "client_decode_p50_ms": {
+          "median": 46.84439529581085,
+          "min": 46.750425962505915,
+          "max": 46.93836462911578,
+          "rounds": 2
+        },
+        "output_tps": {
+          "median": 282.735839637492,
+          "min": 282.6993675279982,
+          "max": 282.7723117469858,
+          "rounds": 2
+        },
+        "success_rate": {
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "rounds": 2
+        },
+        "peak_memory_mb": {
+          "median": 9153.0,
+          "min": 9080.0,
+          "max": 9226.0,
+          "rounds": 2
+        },
+        "mean_output_tokens": {
+          "median": 37.046875,
+          "min": 37.046875,
+          "max": 37.046875,
+          "rounds": 2
+        },
+        "attained_mean_concurrency": {
+          "median": 14.163421784763187,
+          "min": 14.160988799564869,
+          "max": 14.165854769961506,
+          "rounds": 2
+        }
+      },
+      "vs_baseline": {
+        "ttft_p50_ms": {
+          "ratio_to_baseline": 0.9823921089305803,
+          "relation": "insufficient_rounds"
+        },
+        "ttft_p95_ms": {
+          "ratio_to_baseline": 0.5201779519319418,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p50_ms": {
+          "ratio_to_baseline": 0.8401229476424926,
+          "relation": "insufficient_rounds"
+        },
+        "e2e_p95_ms": {
+          "ratio_to_baseline": 0.939617392083036,
+          "relation": "insufficient_rounds"
+        },
+        "client_decode_p50_ms": {
+          "ratio_to_baseline": 1.0060428580142744,
+          "relation": "insufficient_rounds"
+        },
+        "output_tps": {
+          "ratio_to_baseline": 1.0692743865524994,
+          "relation": "insufficient_rounds"
+        },
+        "success_rate": {
+          "ratio_to_baseline": 1.0,
+          "relation": "insufficient_rounds"
+        },
+        "peak_memory_mb": {
+          "ratio_to_baseline": 0.9904772210799697,
+          "relation": "insufficient_rounds"
+        },
+        "equal_work": true
+      }
+    }
+  ],
+  "claim": "measurement only: relations need >= 3 rounds with non-overlapping ranges; not a release decision; quality is evaluated separately"
+}

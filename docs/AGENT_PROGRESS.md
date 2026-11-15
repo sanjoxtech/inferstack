@@ -263,3 +263,18 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   shared_prefix c16 tok/s ×1.07; every other cell within noise. Evidence:
   docs/verification/evidence/n41-fast-check-l4-70e9aad-20261115/.
 - Decision: candidate; full 3-round scorecard together with N4.2 (packed varlen prefill).
+
+### 2026-11-15 — N4.2 fused GDN conv (v1.11), N4.3 prefill-first (v1.12), startup warmup
+
+- Prefill diagnosis (L4, B=16 x ~1560 tokens): pure compute, linear in batch (~11.6k tok/s);
+  GEMMs ~half and already ~66 TFLOPS; the rest overhead (copies 269 ms, torch conv 162 + SiLU 48 ms,
+  padded mem-efficient attention 117 ms). Evidence: n42-prefill-diagnosis-l4-89ae361-20261115/.
+- v1.11: GDN prefill conv on FLA's fused conv+SiLU over [B, T, D] (kernels/gdn_conv.py, reference
+  oracle). Pure prefill B=16 2203 -> 1918 ms; copies -> ~77 ms. Only for forwards >= 1024 tokens
+  (wrapper cost hurt short-prompt TTFT by 4-15 ms). GPU engine test: greedy outputs identical.
+- v1.12: prefill-first draining (idle budget 16384, drain_steps 1). n44 vs v1.11: prefill_heavy c16
+  TTFT 1313 -> 778 ms, tok/s x1.15, E2E p95 5416 -> 4098; shared_prefix c16 x1.07; c1 unchanged.
+- Cold-start stall: first large prefill after startup paid ~15 s of Triton/FLA compile+autotune
+  (n42b/n43 moderate c16 TTFT max 16 s). prefill_warmup at startup removed it (n44 worst TTFT 2.3-3.4 s,
+  prefill_heavy c16 tails); ready time 17 -> 18 s.
+- Next: full 3-round scorecard v1.12 vs v1.9 vs vLLM vs SGLang.

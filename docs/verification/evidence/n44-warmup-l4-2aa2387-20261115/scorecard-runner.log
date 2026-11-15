@@ -1,0 +1,32 @@
+round 0 profile native_conv
+{"profile": "native_conv", "ready": true, "ready_s": 18.151, "error": null}
+round 0 profile native_drain
+{"profile": "native_drain", "ready": true, "ready_s": 18.083, "error": null}
+round 1 profile native_drain
+{"profile": "native_drain", "ready": true, "ready_s": 18.084, "error": null}
+round 1 profile native_conv
+{"profile": "native_conv", "ready": true, "ready_s": 18.083, "error": null}
+run complete: results/colab-l4-scorecard-2aa2387-20261115T025341Z/scorecard/l4-1794711757
+# Engine scorecard
+
+Runs: l4-1794711757 · baseline: `native_conv` · measurement only: relations need >= 3 rounds with non-overlapping ranges; not a release decision; quality is evaluated separately
+
+| case | conc | profile | rounds | TTFT p50 ms | E2E p95 ms | decode ms/tok | out tok/s | vs baseline (tok/s) | equal work |
+|---|---|---|---|---|---|---|---|---|---|
+| interactive | 1 | native_conv | 2 | 63.6 [63.3–64.0] | 2207.4 [2198.4–2216.4] | 16.8 [16.8–16.9] | 58.2 [57.9–58.4] |  |  |
+| interactive | 1 | native_drain | 2 | 64.1 [63.2–65.0] | 2210.9 [2207.2–2214.6] | 16.9 [16.8–16.9] | 58.0 [57.9–58.1] | insufficient_rounds ×1.00 | True |
+| interactive | 16 | native_conv | 2 | 271.4 [103.5–439.3] | 3967.4 [3318.7–4616.2] | 24.3 [24.2–24.5] | 595.5 [554.9–636.2] |  |  |
+| interactive | 16 | native_drain | 2 | 126.9 [101.2–152.5] | 3696.2 [3325.0–4067.4] | 24.4 [24.4–24.4] | 603.0 [569.4–636.5] | insufficient_rounds ×1.01 | True |
+| moderate | 1 | native_conv | 2 | 122.6 [121.3–123.9] | 4534.8 [4528.9–4540.8] | 17.3 [17.3–17.3] | 56.5 [56.5–56.6] |  |  |
+| moderate | 1 | native_drain | 2 | 123.6 [123.3–124.0] | 4544.4 [4530.8–4558.0] | 17.3 [17.2–17.3] | 56.5 [56.4–56.6] | insufficient_rounds ×1.00 | True |
+| moderate | 16 | native_conv | 2 | 560.1 [532.0–588.2] | 8990.8 [8101.0–9880.6] | 29.3 [29.3–29.4] | 495.8 [480.0–511.7] |  |  |
+| moderate | 16 | native_drain | 2 | 552.2 [513.9–590.5] | 8083.3 [8077.8–8088.8] | 29.3 [29.1–29.4] | 510.5 [509.8–511.2] | insufficient_rounds ×1.03 | True |
+| prefill_heavy | 1 | native_conv | 2 | 166.5 [165.7–167.3] | 721.7 [721.5–721.8] | 17.8 [17.8–17.8] | 44.5 [44.5–44.5] |  |  |
+| prefill_heavy | 1 | native_drain | 2 | 167.2 [166.3–168.2] | 723.7 [721.4–725.9] | 17.9 [17.8–17.9] | 44.4 [44.2–44.5] | insufficient_rounds ×1.00 | True |
+| prefill_heavy | 16 | native_conv | 2 | 1312.6 [1309.6–1315.6] | 5416.4 [5088.0–5744.8] | 83.0 [82.7–83.2] | 128.6 [126.0–131.2] |  |  |
+| prefill_heavy | 16 | native_drain | 2 | 777.7 [776.6–778.8] | 4098.3 [4091.9–4104.7] | 84.9 [84.9–84.9] | 148.2 [148.0–148.5] | insufficient_rounds ×1.15 | True |
+| shared_prefix | 1 | native_conv | 2 | 69.8 [68.7–71.0] | 1243.7 [1240.6–1246.9] | 17.8 [17.8–17.8] | 51.9 [51.8–52.0] |  |  |
+| shared_prefix | 1 | native_drain | 2 | 70.3 [70.2–70.4] | 1245.0 [1243.8–1246.2] | 17.9 [17.9–17.9] | 51.7 [51.7–51.7] | insufficient_rounds ×1.00 | True |
+| shared_prefix | 16 | native_conv | 2 | 185.5 [177.4–193.6] | 3522.3 [3289.4–3755.2] | 46.6 [46.4–46.7] | 264.4 [245.0–283.9] |  |  |
+| shared_prefix | 16 | native_drain | 2 | 182.2 [182.2–182.3] | 3309.6 [3296.1–3323.1] | 46.8 [46.8–46.9] | 282.7 [282.7–282.8] | insufficient_rounds ×1.07 | True |
+
