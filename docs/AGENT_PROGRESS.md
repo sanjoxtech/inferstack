@@ -301,3 +301,12 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   Expected tokens per verify step with 1 draft: 1.86-1.96. Caveat: scorecard prompts are word lists,
   continuations may be easier than chat. Evidence: n60-mtp-acceptance-l4-7280c6a-20261115/.
 - Decision: build N6.1 (one-draft MTP speculative decode in the static lane, lossless greedy).
+
+### 2026-11-15 — N5.1 decode attention (production-v1.13.0): served fast check, strong candidate
+
+- n52 (3d3a884, L4, 2 rounds) v1.13 vs v1.12 tok/s: shared_prefix c16 x1.37 (269 -> 370; decode
+  47.4 -> 35.6 ms/tok), moderate c16 x1.23 (decode 29.7 -> 23.5), prefill_heavy c16 x1.20 (E2E p95
+  4523 -> 3655), interactive c16 x1.12; c1 cells x1.01-1.06. No cell worse outside its range.
+- Against the v1.12 full run's rivals (same L4 image), v1.13 c16 tok/s vs vLLM: shared_prefix ~0.70
+  (was 0.51), moderate ~0.83 (0.67), interactive ~0.80 (0.75), prefill_heavy ~0.60 (0.51).
+- Next: N6.1 MTP speculative decode; full scorecard for v1.13 (+N6.1 if ready).
