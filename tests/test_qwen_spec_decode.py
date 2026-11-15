@@ -172,3 +172,66 @@ def test_release_drops_attention_scratch_of_that_state():
     dec._attn_scratch[(id(other), 0)] = 'keep'
     dec.release(st)
     assert list(dec._attn_scratch) == [(id(other), 0)]
+
+
+@pytest.mark.parametrize('windows', [[0, 0, 0], [3, 0, 2], [1, 1, 1]])
+def test_batched_spec_load_equals_per_row_load(windows):
+    """N6.3: load_spec_rows (one right-padded MTP forward) leaves the same state as load_spec_row per row."""
+    model = tiny_model()
+    prompts = PROMPTS
+    pre = []
+    for p in prompts:
+        ids = torch.tensor([p])
+        cache, hidden, first = prefill_with_hidden(model, ids)
+        pre.append((ids, cache, hidden, first))
+
+    def build(batched):
+        dec = QwenSpecDecoder(model, 'cpu', dtype=torch.float32, mtp_seed=1)
+        st = dec.new_state(len(prompts) + 1, 64)
+        sp = dec.new_spec_state(st)
+        hs = []
+        for slot, ((ids, cache, hidden, first), w) in enumerate(zip(pre, windows)):
+            dec.load_rows(st, cache, torch.ones(1, ids.shape[1], dtype=torch.long), ids.shape[1], [0], [slot])
+            h = hidden[-w:] if w else hidden
+            hs.append(h)
+            if not batched:
+                dec.load_spec_row(st, sp, slot, ids[0], h, first)
+        if batched:
+            dec.load_spec_rows(st, sp, 0, prompts, hs, torch.tensor([f for *_, f in pre]), [len(p) for p in prompts])
+        return dec, st, sp
+
+    _, _, a = build(False)
+    dec, st, b = build(True)
+    k = len(prompts)
+    for name in ('tok', 'pos', 'sel', 'mtp_mask'):
+        assert torch.equal(getattr(a, name)[:k], getattr(b, name)[:k]), name
+    for ca, cb in zip(a.mtp_kv, b.mtp_kv):
+        torch.testing.assert_close(ca[:k] * a.mtp_mask[:k, None, :, None], cb[:k] * b.mtp_mask[:k, None, :, None],
+                                   atol=1e-5, rtol=1e-5)
+    assert dec.stats['spec_batch_loads'] == 1
+
+
+def test_batched_spec_load_then_decode_is_greedy():
+    model = tiny_model()
+    n = 10
+    oracle = [hf_greedy(model, p, n) for p in PROMPTS]
+    dec = QwenSpecDecoder(model, 'cpu', dtype=torch.float32, mtp_seed=1)
+    st = dec.new_state(4, 64)
+    sp = dec.new_spec_state(st)
+    hs, firsts = [], []
+    for slot, p in enumerate(PROMPTS):
+        ids = torch.tensor([p])
+        cache, hidden, first = prefill_with_hidden(model, ids)
+        dec.load_rows(st, cache, torch.ones(1, len(p), dtype=torch.long), len(p), [0], [slot])
+        hs.append(hidden)
+        firsts.append(first)
+    dec.load_spec_rows(st, sp, 0, PROMPTS, hs, torch.tensor(firsts), [len(p) for p in PROMPTS])
+    emitted, pos = [[f] for f in firsts], [len(p) for p in PROMPTS]
+    while min(map(len, emitted)) < n:
+        y, acc = dec.spec_step(st, sp, len(PROMPTS), length=max(pos) + 2, use_graph=False)
+        for r in range(len(PROMPTS)):
+            emitted[r].append(int(y[r, 0]))
+            if bool(acc[r]):
+                emitted[r].append(int(y[r, 1]))
+            pos[r] += 1 + int(acc[r])
+    assert [e[:n] for e in emitted] == oracle

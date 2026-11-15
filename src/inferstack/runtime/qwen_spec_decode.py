@@ -347,6 +347,61 @@ class QwenSpecDecoder(QwenStaticDecoder):
         self.stats['spec_rows_loaded'] += 1
         return int(draft[0])
 
+    def load_spec_rows(self, st: StaticDecodeState, sp: SpecState, base: int, prompt_ids, hiddens, firsts, lengths):
+        """N6.3: `load_spec_row` for k rows at once, into slots base..base+k-1, with no host sync.
+
+        prompt_ids: k host sequences (each ends with the row's n prompt tokens); hiddens: k tensors
+        [w_j, H] (w_j <= n_j); firsts: device tensor [k] of first greedy tokens; lengths: the n_j.
+        Rows are right-padded to W = max w_j: row j's real entries sit at t < w_j (positions
+        n_j-w_j..n_j-1); padded entries write junk MTP K/V at columns >= n_j, which stay out of
+        sp.mtp_mask until a spec step rewrites them. One MTP forward for all rows."""
+        import torch
+        k = len(lengths)
+        if not k:
+            return
+        dev = self.device
+        ws = [int(h.shape[0]) for h in hiddens]
+        W = max(ws)
+        for n, w in zip(lengths, ws):
+            if not 1 <= w <= n:
+                raise ValueError(f'hidden covers {w} positions, prompt has {n}')
+            if n + W - w > st.max_len:
+                raise ValueError(f'padded MTP window reaches column {n + W - w} beyond max_len {st.max_len}')
+        if base + k > st.batch:
+            raise ValueError(f'slots {base}..{base + k - 1} outside pool of {st.batch}')
+        ids = torch.zeros(k, W, dtype=torch.long)
+        for j, (p, n, w) in enumerate(zip(prompt_ids, lengths, ws)):
+            p = list(p)[-n:]
+            if w > 1:
+                ids[j, :w - 1] = torch.tensor(p[n - w + 1:], dtype=torch.long)
+        H = hiddens[0].shape[-1]
+        hid = torch.zeros(k, W, H, dtype=self.dtype, device=dev)
+        for j, (h, w) in enumerate(zip(hiddens, ws)):
+            hid[j, :w].copy_(h.reshape(w, H))
+        with torch.inference_mode():
+            n_t = torch.tensor(lengths, dtype=torch.long).to(dev, non_blocking=True)
+            w_t = torch.tensor(ws, dtype=torch.long).to(dev, non_blocking=True)
+            nxt = ids.to(dev, non_blocking=True)
+            f = firsts.to(device=dev, dtype=torch.long).view(k)
+            nxt.scatter_(1, (w_t - 1)[:, None], f[:, None])
+            start = n_t - w_t                                              # [k] position of entry t=0
+            x = self._mtp_in(nxt, hid)
+            posn = start[:, None] + torch.arange(W, device=dev)            # [k, W]
+            cos, sin = self.text.rotary_emb(x, posn[None].expand(3, k, W))
+            rows = slice(base, base + k)
+            c = torch.arange(st.max_len, device=dev)
+            mm = (c[None] >= start[:, None]) & (c[None] < n_t[:, None])
+            sp.mtp_mask[rows].copy_(mm)
+            L = max(n + W - w for n, w in zip(lengths, ws))
+            hm = self._mtp_layer(x, cos, sin, sp, rows, sp.mtp_mask[rows], start, L, 'sdpa', None)
+            last = hm.gather(1, (w_t - 1).view(k, 1, 1).expand(k, 1, hm.shape[-1]))[:, 0]
+            draft = self._draft(self.mtp.norm(last))
+            sp.sel[rows].zero_()
+            sp.tok[rows].copy_(torch.stack([f, draft], dim=1))
+            sp.pos[rows].copy_(n_t)
+        self.stats['spec_rows_loaded'] += k
+        self.stats['spec_batch_loads'] = self.stats.get('spec_batch_loads', 0) + 1
+
     def capture_spec(self, st: StaticDecodeState, sp: SpecState, batches=None, lengths=None) -> int:
         """One graph per (batch bucket, length bucket); call while the pool is empty."""
         import torch

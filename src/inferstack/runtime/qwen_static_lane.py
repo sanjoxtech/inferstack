@@ -69,14 +69,15 @@ class StaticDecodeLane:
                                      fit, range(base, base + n))
         idx = torch.tensor(fit, dtype=torch.long, device=self.pos.device)
         if spec:
-            firsts = state.previous_gpu.index_select(0, idx).tolist()
+            # N6.3: one MTP forward for every admitted row; firsts stay on the GPU.
             hid = state.prompt_hidden
             cols = int(hid.shape[1])
             real = state.attention_mask[:, :state.physical_width][:, -cols:].sum(-1).tolist()
-            for j, i in enumerate(fit):
-                w = max(1, min(int(real[i]), lengths[j], cols))
-                ids = torch.tensor(list(state.requests[i].prompt_token_ids)[-lengths[j]:], dtype=torch.long)
-                self.dec.load_spec_row(self.st, self.sp, base + j, ids, hid[i, -w:], int(firsts[j]))
+            ws = [max(1, min(int(real[i]), lengths[j], cols)) for j, i in enumerate(fit)]
+            self.dec.load_spec_rows(self.st, self.sp, base,
+                                    [state.requests[i].prompt_token_ids for i in fit],
+                                    [hid[i, -w:] for i, w in zip(fit, ws)],
+                                    state.previous_gpu.index_select(0, idx), lengths)
         self.next_ids[base:base + n].copy_(state.previous_gpu.index_select(0, idx))
         self.pos[base:base + n].copy_(torch.tensor(lengths, dtype=torch.long, device=self.pos.device))
         b = self.batch
