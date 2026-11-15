@@ -118,3 +118,20 @@ serving-pack treatment, not part of the first GDN kernel experiment.
 
 The full native_static scorecard remains the gate before N3 implementation.
 
+
+
+## 15 November addendum — DeepSeek Ultrafast does not replace N4
+
+The Baseten DeepSeek Ultrafast code study is recorded in `docs/research/DEEPSEEK_ULTRAFAST_CODE_STUDY_2026-11-15.md`.
+
+The repo has since qualified v1.7 static decode and kept v1.9 FLA prefill. Therefore this external engine does not reopen the already-measured decode/prefill ordering. The immediate native bottleneck remains packed/variable-length execution at higher concurrency, so **N4 packed/varlen prefill stays next**.
+
+DeepSeek Ultrafast contributes later hypotheses instead:
+
+- speculative evidence should record step time and accepted tokens/step separately from output tok/s;
+- wider TP is not automatically better: the upstream TP4→TP8 result shows strong diminishing returns and must be judged against cost/topology;
+- transferable cache state can make load-aware routing viable without cache affinity, but only after a real multi-node RDMA-capable experiment exists;
+- cache snapshot encoding is a distinct treatment from live KV compute dtype;
+- a framework-free Rust/CUDA Native-v2 path is a future research branch only if post-N4 profiling still shows material Python/framework overhead.
+
+No Baseten source is to be copied into InferStack Native; the upstream ELv2 license and the product's hosted-serving direction require a clean implementation boundary.
