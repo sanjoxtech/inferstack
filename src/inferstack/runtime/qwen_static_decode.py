@@ -307,25 +307,19 @@ class QwenStaticDecoder:
             from fla.modules.causal_conv1d import causal_conv1d
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
             slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
-            if not cont:
-                mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=None,
-                                                  output_final_state=True, activation=g.activation,
-                                                  backend='triton', cu_seqlens=cu_t)
-            else:
-                # Continuing rows start from the slot's conv state: one conv call per segment.
-                from inferstack.kernels.gdn_conv import causal_conv_prefill
-                parts, finals = [], []
-                for j, s in enumerate(slots):
-                    init = st.conv[i][s:s + 1] if starts[j] else None
-                    y, f = causal_conv_prefill(qkv[:, cu[j]:cu[j + 1]], w, g.conv1d.bias, init,
-                                               activation=g.activation, backend='fla')
-                    parts.append(y)
-                    finals.append(f)
-                mixed, conv_final = torch.cat(parts, dim=1), torch.cat(finals, dim=0)
-            init_rec = None
+            init_conv = init_rec = None
             if cont:
+                # Continuing rows start from the slot's conv/recurrent state, fresh rows from zeros.
+                # FLA's varlen conv takes one initial state per sequence (P4: checked equal to
+                # per-segment calls on L4, max diff 0.0), so this stays a single call.
+                fresh = torch.tensor([s0 == 0 for s0 in starts], device=x.device)
+                init_conv = st.conv[i].index_select(0, slot_t).to(qkv.dtype)
+                init_conv[fresh] = 0
                 init_rec = st.rec[i].index_select(0, slot_t).float()
-                init_rec[torch.tensor([s0 == 0 for s0 in starts], device=x.device)] = 0
+                init_rec[fresh] = 0
+            mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=init_conv,
+                                              output_final_state=True, activation=g.activation,
+                                              backend='triton', cu_seqlens=cu_t)
             q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
             q = q.reshape(1, T, -1, g.head_k_dim)
             k = k.reshape(1, T, -1, g.head_k_dim)
