@@ -177,6 +177,7 @@ class QwenHybridContinuousEngine:
         try:await self._loop()
         except asyncio.CancelledError:raise
         except Exception as exc:
+            import sys,traceback;traceback.print_exc(file=sys.stderr)   # the only place a scheduler crash is visible in server.log
             self._fatal_error=f'{type(exc).__name__}: {exc}';self._fail_all(NativeQwenContinuousError(f'native scheduler failed: {self._fatal_error}'));self._stop=True;raise
     def _fail_all(self,exc):
         for rid,q in list(self._queues.items()):
