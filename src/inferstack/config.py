@@ -62,6 +62,10 @@ class NativeConfig:
     prefix_state_cache_max_mb:int=1024
     prefix_cache_min_tokens:int=128
     prefix_cache_block_tokens:int=128
+    # P5: snapshot a cold prompt's prefix the first time it is seen (radix-cache behaviour, as in
+    # SGLang/vLLM) instead of only once a recent prompt shared it. Costs one extra packed prefill
+    # call per admission with cold prompts; a repeat then restores instead of recomputing.
+    prefix_cache_store_first_sight:bool=False
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True

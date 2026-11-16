@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -42,6 +42,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24):
     n.static_decode_spec_mtp = 'random:3'
     n.static_decode_packed_prefill = packed
     n.static_decode_packed_max_tokens = budget
+    n.prefix_cache_store_first_sight = first_sight
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -58,11 +59,11 @@ async def drain(q, timeout=60):
         out.append(x)
 
 
-def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24):
+def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -182,6 +183,21 @@ def test_packed_prefill_with_prefix_cache_on():
     pp = d['static_decode']['pool_prefix_cache']
     # p1 is cold (no snapshot); p2 shares its prefix with p1, so p2 stores it; p3 hits it.
     assert pp['stores'] == 1 and pp['hits'] >= 1, pp
+
+
+def test_packed_prefill_first_sight_snapshot_serves_exact_repeat():
+    """P5: with store_first_sight a cold prompt is snapshotted on its first visit, so its exact
+    repeat restores from the cache (default policy: the repeat would only store it). Greedy
+    outputs stay equal to the Transformers path."""
+    long = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1]
+    plan = [(0.0, 'a1', long, 6), (0.6, 'a2', list(long), 6)]
+    ref, _ = run(False, plan, prefix=True)
+    got, d = run(True, plan, prefix=True, packed=True, first_sight=True)
+    assert got == ref
+    pp = d['static_decode']['pool_prefix_cache']
+    assert pp['stores'] == 1 and pp['hits'] >= 1, pp
+    _, d0 = run(True, plan, prefix=True, packed=True)
+    assert d0['static_decode']['pool_prefix_cache']['hits'] == 0, d0['static_decode']['pool_prefix_cache']
 
 
 @pytest.mark.parametrize('spec', [False, True])

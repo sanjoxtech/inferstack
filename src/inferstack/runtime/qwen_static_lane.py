@@ -40,6 +40,7 @@ class StaticDecodeLane:
                       'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
         n = engine.cfg.native
         self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
+        self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
@@ -231,8 +232,13 @@ class StaticDecodeLane:
                 groups.append((j0, members, bc))
                 continue
             # Alone in this cohort: only pay the extra prefix pass when a recent prompt shared
-            # the prefix (it is hot). Cold prompts stay one pass with no snapshot.
-            bs = max((min(lcp(prompts[j0], q) // blk * blk, b0) for q in recent), default=0)
+            # the prefix (it is hot). Cold prompts stay one pass with no snapshot, unless
+            # store_first_sight (P5): then every prompt's own boundary is stored, so an exact repeat
+            # (retry, re-sent conversation, rerun) restores on its first return.
+            if self.store_first_sight:
+                bs = b0
+            else:
+                bs = max((min(lcp(prompts[j0], q) // blk * blk, b0) for q in recent), default=0)
             if bs >= pc.min_tokens:
                 groups.append((j0, [], bs))
         if not groups:
