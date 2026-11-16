@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "shared_prefix",
+      "prompt_words": 1200,
+      "max_tokens": 64,
+      "shared_prefix": true
+    }
+  ],
+  "concurrency": [
+    4,
+    8
+  ],
+  "requests_per_cell": {
+    "min": 8,
+    "per_concurrency": 4
+  },
+  "warmup_requests": 2,
+  "temperature": 0.0,
+  "seed": 20261109
+}

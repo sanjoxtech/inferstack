@@ -250,7 +250,9 @@ async def one(client, base, model, prompt, max_tokens, temperature, timeout):
             'content_chunks': r['content_chunks']}
 
 
-SPEC_KEYS = ('spec_steps', 'spec_row_steps', 'spec_accepted', 'spec_step_ms', 'decode_steps')
+SPEC_KEYS = ('spec_steps', 'spec_row_steps', 'spec_accepted', 'spec_step_ms', 'decode_steps',
+             'packed_prefills', 'packed_rows', 'packed_prefix_hits', 'packed_prefix_groups', 'packed_tokens_saved',
+             'packed_ms')
 
 
 async def ttft_breakdown(base):
@@ -284,7 +286,11 @@ def breakdown_delta(before, after):
                    'spec_acceptance': round(d.get('lane_spec_accepted', 0) / rows, 4) if rows else None,
                    'tokens_per_row_step': round(1 + d.get('lane_spec_accepted', 0) / rows, 4) if rows else None,
                    'rows_per_step': round(rows / steps, 3) if steps else None,
-                   'spec_step_ms': round(d.get('lane_spec_step_ms', 0) / steps, 3) if steps else None}
+                   'spec_step_ms': round(d.get('lane_spec_step_ms', 0) / steps, 3) if steps else None,
+                   **{k: d.get('lane_' + k, 0) for k in ('packed_prefills', 'packed_rows', 'packed_prefix_hits',
+                                                         'packed_prefix_groups', 'packed_tokens_saved')},
+                   'packed_ms_per_prefill': round(d.get('lane_packed_ms', 0) / d['lane_packed_prefills'], 3)
+                   if d.get('lane_packed_prefills') else None}
     return out
 
 

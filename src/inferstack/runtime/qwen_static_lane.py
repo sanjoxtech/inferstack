@@ -37,7 +37,7 @@ class StaticDecodeLane:
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
                       'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
                       'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
-                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0}
+                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
         n = engine.cfg.native
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
@@ -147,6 +147,7 @@ class StaticDecodeLane:
             return rest
         rs, qs = [x[0] for x in take], [x[1] for x in take]
         now = time.perf_counter()
+        t_admit = now
         st = e._stats
         for r in rs:
             r.state = RequestState.RUNNING
@@ -183,7 +184,9 @@ class StaticDecodeLane:
         self.stats['packed_rows'] += k
         self.stats['packed_prefills'] += 1
         self.stats['max_live_rows'] = max(self.stats['max_live_rows'], self.rows)
-        e._accept_host(b, [None] * base + nxt.tolist())
+        firsts = nxt.tolist()                         # host sync: the packed prefill is done here
+        self.stats['packed_ms'] += (time.perf_counter() - t_admit) * 1000
+        e._accept_host(b, [None] * base + firsts)
         self.compact()
         return rest
 
