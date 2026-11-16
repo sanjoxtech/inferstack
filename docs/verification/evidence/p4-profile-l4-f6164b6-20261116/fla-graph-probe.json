@@ -1,0 +1,299 @@
+{
+  "fla_version": "0.6.0",
+  "host_read_lines": [
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 14,
+      "text": "from fla.ops.utils.cache import fla_cache_autotune"
+    },
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 21,
+      "text": "autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 48,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 56,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 359,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/common/chunk_delta_h.py",
+      "line": 367,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 14,
+      "text": "from fla.ops.utils.cache import fla_cache_autotune"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 23,
+      "text": "autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 56,
+      "text": "@fla_cache_autotune(configs=_O_CONFIGS, key=['H', 'HV', 'K', 'V', 'BT', 'STATE_V_FIRST'], **autotune_cache_kwargs)"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 164,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 171,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 358,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 456,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/common/chunk_o.py",
+      "line": 463,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/common/chunk_scaled_dot_kkt.py",
+      "line": 15,
+      "text": "from fla.utils import autotune_cache_kwargs"
+    },
+    {
+      "file": "ops/common/chunk_scaled_dot_kkt.py",
+      "line": 30,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 13,
+      "text": "from fla.utils import autotune_cache_kwargs, tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 22,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 40,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 45,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 50,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 58,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 66,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 101,
+      "text": "cu_seqlens = cu_seqlens.tolist()"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 137,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 144,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 149,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 155,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 167,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 175,
+      "text": "@tensor_cache"
+    },
+    {
+      "file": "ops/utils/index.py",
+      "line": 198,
+      "text": "Not cached: the construction runs (and is recorded) on every call."
+    },
+    {
+      "file": "ops/utils/solve_tril.py",
+      "line": 17,
+      "text": "from fla.utils import IS_TF32_SUPPORTED, IS_TMA_SUPPORTED, autotune_cache_kwargs, input_guard"
+    },
+    {
+      "file": "ops/utils/solve_tril.py",
+      "line": 41,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/solve_tril.py",
+      "line": 111,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/solve_tril.py",
+      "line": 201,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 13,
+      "text": "from fla.ops.utils.cache import fla_cache_autotune"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 16,
+      "text": "from fla.utils import autotune_cache_kwargs, check_shared_mem, input_guard"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 25,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 31,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 80,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 87,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 148,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/utils/cumsum.py",
+      "line": 206,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "modules/causal_conv1d.py",
+      "missing": true
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 14,
+      "text": "from fla.ops.utils.cache import fla_cache_autotune"
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 16,
+      "text": "from fla.utils import IS_INTEL, IS_NVIDIA_BLACKWELL, autotune_cache_kwargs, check_shared_mem"
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 33,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 40,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 113,
+      "text": "@fla_cache_autotune("
+    },
+    {
+      "file": "ops/gated_delta_rule/wy_fast.py",
+      "line": 120,
+      "text": "**autotune_cache_kwargs,"
+    },
+    {
+      "file": "modules/l2norm.py",
+      "missing": true
+    }
+  ],
+  "capture": "ok",
+  "replay_vs_eager": [
+    {
+      "split": [
+        0,
+        48,
+        96,
+        144,
+        192
+      ],
+      "o": 0.0,
+      "conv_final": 0.0,
+      "rec_final": 0.0
+    },
+    {
+      "split": [
+        0,
+        10,
+        100,
+        101,
+        192
+      ],
+      "o": 3.375,
+      "conv_final": 0.0,
+      "rec_final": 137364.453125
+    },
+    {
+      "split": [
+        0,
+        1,
+        2,
+        3,
+        192
+      ],
+      "o": 2.984375,
+      "conv_final": 0.0,
+      "rec_final": 25763.01171875
+    }
+  ],
+  "eager_ms": 1.5836847499997475,
+  "replay_ms": 0.08749469999997928
+}

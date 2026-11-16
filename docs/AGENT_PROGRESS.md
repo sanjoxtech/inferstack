@@ -486,3 +486,9 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   per-forward overhead (Python + per-layer launches + per-segment conv calls), the same thing
   behind the c1 TTFT gap (73 vs 43 ms). Target: P4 (cheaper small prefills), before pacing.
 - Evidence: docs/verification/evidence/p3-diag-shared-prefix-l4-a9b7164-20261116/.
+
+## 2026-11-16 P4 profile (L4, e836a32 then f6164b6)
+- Small packed prefill is host-bound: c1 cache hit (48 new tokens) 68 ms wall, ~21 ms GPU kernel time, ~1200 launches; FLA chunk_gated_delta_rule ~1.2 ms Python per call x 18 layers.
+- FLA varlen causal_conv1d takes per-sequence initial_state (equal to per-segment calls, diff 0.0). Continuation path now one conv call: c4 hit 96 -> 74 ms, c8 hit 133 -> 83 ms. FLA tests pass on L4.
+- FLA under torch.cuda.graph: capture works, replay 0.09 ms vs eager 1.58 ms, but cu_seqlens is read on host (ops/utils/index.py tolist) so the segment split is frozen at capture. Graphs need a fixed split per bucket (rows padded to a bucket length).
+- Evidence: docs/verification/evidence/p4-profile-l4-f6164b6-20261116/
