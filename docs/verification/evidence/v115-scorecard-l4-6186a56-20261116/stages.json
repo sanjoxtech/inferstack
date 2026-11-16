@@ -1,0 +1,6 @@
+{
+  "native_spec": "passed",
+  "native_packed": "passed",
+  "vllm": "passed",
+  "sglang": "passed"
+}

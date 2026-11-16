@@ -464,3 +464,13 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   (was 466 with P1 alone). Out tok/s c16: +38%, +11%, +17%, −6% (shared_prefix).
 - Evidence: docs/verification/evidence/p2-pool-prefix-l4-6cc1d88-20261116/.
 - Next: 3-round scorecard with vLLM/SGLang to decide keep v1.15.
+
+## 2026-11-16 — v1.15 full L4 scorecard (3 rounds, with vLLM/SGLang) @6186a56: keep v1.15
+
+- v1.15 vs v1.14: TTFT better in 13/16 cells (prefill_heavy c16 894 → 350 ms, moderate c16
+  434 → 157); tok/s better in 6, equal in 7, worse on shared_prefix c4/c8/c16 (−12/−15/−5%,
+  decode interrupted by admission-time prefills).
+- vs rivals: v1.15 leads output tok/s in 11/16 cells; SGLang still leads prefill-bound TTFT and
+  prefill_heavy c4–c16 throughput; c1 TTFT 73–137 vs 43–54 ms.
+- Doc: docs/verification/V115_SCORECARD_L4_2026-11-16.md. Next: P3 pacing for shared_prefix,
+  then P4 prefill graphs.
