@@ -143,6 +143,9 @@ class HybridPrefixStateCache:
             if len(key)<=len(tokens) and tokens[:len(key)]==key and (best is None or len(key)>len(best.tokens)):best=e
         if best is None:self.misses+=1;return None
         self.hits+=1;self._entries.move_to_end(best.tokens);return best
+    def has_prefix(self,tokens):
+        """True when some entry is a prefix of tokens (no hit/miss counting, no LRU touch)."""
+        tokens=tuple(tokens);return any(len(k)<=len(tokens) and tokens[:len(k)]==k for k in self._entries)
     def fork(self,entry):self.cow_forks+=1;return fork_cache_cow(entry.cache)
     def diagnostics(self):
         cur=sum(x.bytes for x in self._entries.values())

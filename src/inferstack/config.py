@@ -99,6 +99,11 @@ class NativeConfig:
     static_decode_spec_mtp:str=""                  # "repo@revision" of the mtp.* tensors, or "random:SEED" (tests)
     static_decode_spec_draft_vocab:int=0           # draft over the first N token ids (0 = full vocabulary)
     static_decode_spec_window:int=256              # prompt positions (from the last prefill forwards) given MTP entries
+    # P1: prefill admitted prompts as one flat token batch written straight into the static pool
+    # (QwenStaticDecoder.prefill_packed). Rows that cannot go (no free slot, too long for the pool or
+    # the token budget, sampled rows under spec, prefix-cache hits) keep the Transformers prefill path.
+    static_decode_packed_prefill:bool=False
+    static_decode_packed_max_tokens:int=8192       # flat tokens per packed forward
 
     # v1.6 Qwen forward-fusion engine. These are inference-only structural
     # optimizations installed after weights load; every path has a safe fallback.

@@ -119,6 +119,11 @@ class QwenHybridContinuousEngine:
             st=dec.new_state(slots,max_len,list(n.static_decode_batch_buckets),list(n.static_decode_len_buckets))
             if bool(getattr(n,'static_decode_spec',False)):sp=dec.new_spec_state(st)
             t=time.perf_counter();graphs=(dec.capture_spec(st,sp) if sp is not None else dec.capture(st)) if bool(n.static_decode_cuda_graph) else 0
+            if bool(getattr(n,'static_decode_packed_prefill',False)) and str(self.device).startswith('cuda'):
+                # Compile/autotune the varlen FLA kernels now; warm-up writes slots, so zero after.
+                t0=time.perf_counter();k=min(2,st.batch);ls=[min(max_len-1,700),min(max_len-1,37)][:k]
+                with torch.inference_mode():dec.prefill_packed(st,range(k),[[1]*x for x in ls])
+                dec.reset(st);torch.cuda.synchronize();self._static_diag['packed_warmup_s']=round(time.perf_counter()-t0,3)
             self._lane=StaticDecodeLane(self,dec,st,spec=sp);self._static_diag.update(active=True,spec=sp is not None,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))
         except Exception as exc:
             self._lane=None;self._static_diag.update(active=False,error=f'{type(exc).__name__}: {exc}')
@@ -280,6 +285,13 @@ class QwenHybridContinuousEngine:
             t=torch.tensor(r.prompt_token_ids,dtype=torch.long,device=self.device);inp[i,-len(t):]=t;mask[i,w-len(t):w]=1
         pm=mask[:,:w];pos=pm.cumsum(-1)-1;pos.masked_fill_(pm==0,0)
         return PrefillJob(rs,qs,inp,mask,pos,lens,w,max_new,0,0,past,None)
+    def _packed_admit(self,cohort):
+        """P1: send what fits through the static lane's packed prefill; return the rest."""
+        live=[]
+        for r,q in cohort:
+            if r.state==RequestState.CANCELLED:self._stats['cancelled_before_gpu']+=1;self._finish_cancelled(r,q)
+            else:live.append((r,q))
+        return self._lane.admit_packed(live) if live else []
     def _maybe_store_prefix(self,job):
         if len(job.requests)!=1 or not self._prefix_cache.enabled or job.past is None or job.terminal_logits is None:return
         logical=job.prefix_len+job.cursor;block=self._prefix_cache.block_tokens
@@ -476,6 +488,10 @@ class QwenHybridContinuousEngine:
         cohort=await self._gather(wait=not (self._decode_work() or self._prefill_jobs))
         if not cohort:return False
         if self._decode_work():self._stats['mid_generation_admissions']+=len(cohort)
+        if self._lane is not None and bool(getattr(self.cfg.native,'static_decode_packed_prefill',False)):
+            n0=len(cohort);cohort=await self._gpu(self._packed_admit,cohort)
+            if len(cohort)<n0:self._stats['cohorts']+=1;self._stats['requests_batched']+=n0-len(cohort);self._stats['max_observed_batch']=max(self._stats['max_observed_batch'],n0-len(cohort))
+            if not cohort:return True
         job=await self._gpu(self._prepare_prefill,cohort);self._stats['cohorts']+=1;self._stats['requests_batched']+=len(cohort);self._stats['max_observed_batch']=max(self._stats['max_observed_batch'],len(cohort))
         if job:self._prefill_jobs.append(job)
         return True

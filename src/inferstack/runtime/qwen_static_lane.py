@@ -35,7 +35,8 @@ class StaticDecodeLane:
         self.positions: list[int] = []        # host copy of pos for live rows
         self.stats = {'rows_admitted': 0, 'rows_rejected_full': 0, 'rows_rejected_length': 0,
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
-                      'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0}
+                      'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
+                      'packed_prefills': 0, 'packed_rows': 0}
 
     @property
     def rows(self) -> int:
@@ -105,6 +106,72 @@ class StaticDecodeLane:
         state.generated = [state.generated[i] for i in rest]
         state.stop_sets = [state.stop_sets[i] for i in rest]
         return False
+
+    def admit_packed(self, items):
+        """P1: prefill (request, queue) pairs as one flat token batch straight into free slots
+        (QwenStaticDecoder.prefill_packed) and emit their first tokens. Returns the pairs that
+        must take the Transformers prefill path instead: no free slot, prompt + max_new_tokens
+        longer than the pool, over the packed token budget, sampled rows under spec, or a
+        prefix-cache hit (that path reuses the cached state)."""
+        import time
+        import torch
+        e = self.e
+        spec = self.sp is not None
+        extra = 2 if spec else 0
+        budget = int(getattr(e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
+        pc = e._prefix_cache
+        free = self.st.batch - self.rows
+        take, rest, T = [], [], 0
+        for r, q in items:
+            n = len(r.prompt_token_ids)
+            if (len(take) < free and n + r.sampling.max_new_tokens + extra <= self.st.max_len and T + n <= budget
+                    and not (spec and float(r.sampling.temperature) > 0)
+                    and not (pc.enabled and pc.has_prefix(r.prompt_token_ids))):
+                take.append((r, q))
+                T += n
+            else:
+                rest.append((r, q))
+        if not take:
+            return rest
+        rs, qs = [x[0] for x in take], [x[1] for x in take]
+        now = time.perf_counter()
+        st = e._stats
+        for r in rs:
+            r.state = RequestState.RUNNING
+            r._t_prep = r._t_pf = now
+            r._ds0 = st['decode_forward_calls']
+            r._pf0 = r._pf1 = st['prefill_forward_calls']
+        base, k = self.rows, len(rs)
+        lengths = [len(r.prompt_token_ids) for r in rs]
+        prompts = [r.prompt_token_ids for r in rs]
+        with torch.inference_mode():
+            logits, hid, cu = self.dec.prefill_packed(self.st, range(base, base + k), prompts)
+            nxt = e._sampler.sample(logits, rs, 0)
+            if spec:
+                win = int(getattr(e.cfg.native, 'static_decode_spec_window', 256) or 256)
+                ws = [min(n, win) for n in lengths]
+                self.dec.load_spec_rows(self.st, self.sp, base, prompts,
+                                        [hid[cu[j + 1] - w:cu[j + 1]] for j, w in enumerate(ws)], nxt, lengths)
+        self.next_ids[base:base + k].copy_(nxt)
+        self.pos[base:base + k].copy_(torch.tensor(lengths, dtype=torch.long, device=self.pos.device))
+        b = self.batch
+        b.requests += rs
+        b.queues += qs
+        b.generated += [0] * k
+        b.stop_sets += [e._stop_ids(r) for r in rs]
+        self.positions += lengths
+        for r in rs:
+            r.prompt_cursor = len(r.prompt_token_ids)
+        st['prefill_forward_calls'] += 1
+        st['prefill_chunks'] += 1
+        st['prefill_tokens'] += T
+        self.stats['rows_admitted'] += k
+        self.stats['packed_rows'] += k
+        self.stats['packed_prefills'] += 1
+        self.stats['max_live_rows'] = max(self.stats['max_live_rows'], self.rows)
+        e._accept_host(b, [None] * base + nxt.tolist())
+        self.compact()
+        return rest
 
     def _sample(self, logits):
         import torch
