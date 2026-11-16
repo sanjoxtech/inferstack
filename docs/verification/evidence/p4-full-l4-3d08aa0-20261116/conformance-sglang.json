@@ -1,0 +1,61 @@
+{
+  "engine": "sglang",
+  "model": "Qwen/Qwen3.5-2B-Base",
+  "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+  "argv": [
+    "python",
+    "-m",
+    "sglang.launch_server",
+    "--model-path",
+    "Qwen/Qwen3.5-2B-Base",
+    "--revision",
+    "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "52469",
+    "--dtype",
+    "bfloat16",
+    "--enable-metrics",
+    "--context-length=8192"
+  ],
+  "identity": {
+    "engine": "sglang",
+    "version": "0.5.23",
+    "served_models": [
+      "Qwen/Qwen3.5-2B-Base"
+    ],
+    "flags": {
+      "disable_radix_cache": false,
+      "disable_cuda_graph": false,
+      "enable_torch_compile": false,
+      "attention_backend": "flashinfer",
+      "dtype": "bfloat16",
+      "kv_cache_dtype": "auto",
+      "enable_metrics": true
+    },
+    "errors": []
+  },
+  "metric_families_missing": [],
+  "features": {
+    "prefix_cache": {
+      "effective": "enabled_by_config",
+      "evidence": "get_server_info.disable_radix_cache (configuration, not usage)"
+    },
+    "cuda_graph_replay": {
+      "effective": "enabled_by_config",
+      "evidence": "get_server_info.disable_cuda_graph (configuration, not replay proof)"
+    }
+  },
+  "checks": {
+    "ready": true,
+    "version_reported": true,
+    "revision_in_running_argv": true,
+    "deterministic_completion": true,
+    "usage_reported": true,
+    "live_after_abandoned_stream": true,
+    "metric_families_present": true,
+    "stopped_cleanly": true
+  },
+  "pass": true
+}

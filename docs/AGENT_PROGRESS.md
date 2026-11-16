@@ -505,3 +505,8 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   TTFT p50 interactive c1 71->31, c8 78->42; shared_prefix c1 81->39, c4 88->50, c8 88->48, c16 128->90; prefill_heavy c8 228->153.
   tok/s up in 14/16 cells, shared_prefix c4/c8/c16 +20/+24/+20%. moderate c1 unchanged (prompts > 128-token bucket).
 - Next: full 3-round scorecard with vLLM/SGLang (needs approval, ~10 CU); rival study (how vLLM/SGLang graph GDN prefill).
+
+## 2026-11-16 18:45 IST — v1.16 full scorecard (3d08aa0) done: KEEP
+- 3 rounds, equal work, 100% success. v1.16 ≥ v1.15 tok/s in all 16 cells (13 ahead, 3 overlap).
+- vs vLLM/SGLang: ahead 12/16; behind prefill_heavy c4/c8/c16 + shared_prefix c16 (decode stalls behind long prefill: 61 vs 21.6 ms/tok at prefill_heavy c16).
+- Next: P5 chunked prefill interleaved with decode (rival study first). Doc: docs/verification/V116_SCORECARD_L4_2026-11-16.md

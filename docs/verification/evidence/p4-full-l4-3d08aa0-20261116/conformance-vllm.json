@@ -1,0 +1,48 @@
+{
+  "engine": "vllm",
+  "model": "Qwen/Qwen3.5-2B-Base",
+  "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+  "argv": [
+    "vllm",
+    "serve",
+    "Qwen/Qwen3.5-2B-Base",
+    "--revision",
+    "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "--tokenizer-revision",
+    "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "44139",
+    "--dtype",
+    "bfloat16",
+    "--max-model-len=8192"
+  ],
+  "identity": {
+    "engine": "vllm",
+    "version": "0.33.0",
+    "served_models": [
+      "Qwen/Qwen3.5-2B-Base"
+    ],
+    "flags": {},
+    "errors": []
+  },
+  "metric_families_missing": [],
+  "features": {
+    "prefix_cache": {
+      "effective": "active",
+      "evidence": "vllm:prefix_cache_queries_total"
+    }
+  },
+  "checks": {
+    "ready": true,
+    "version_reported": true,
+    "revision_in_running_argv": true,
+    "deterministic_completion": true,
+    "usage_reported": true,
+    "live_after_abandoned_stream": true,
+    "metric_families_present": true,
+    "stopped_cleanly": true
+  },
+  "pass": true
+}
