@@ -474,3 +474,15 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   prefill_heavy c4–c16 throughput; c1 TTFT 73–137 vs 43–54 ms.
 - Doc: docs/verification/V115_SCORECARD_L4_2026-11-16.md. Next: P3 pacing for shared_prefix,
   then P4 prefill graphs.
+
+## 2026-11-16 — P3 diagnosis: shared_prefix c4/c8, L4 @a9b7164 (1 round, shared_prefix only)
+
+- Prefix cache works: native_packed c8 had 32/32 pool-cache hits (36,864 prompt tokens skipped);
+  TTFT mean 105 ms vs 328 ms for native_spec; decode ms/token equal at c4 (18.1 vs 17.9).
+- In this run native_packed out-tok/s *beat* native_spec (c4 203 vs 155, c8 263 vs 225), the
+  opposite of the full run (205 vs 232, 258 vs 302). shared_prefix c4–c8 throughput swings with
+  run conditions; the full-run "regression" is not reproduced in isolation.
+- Clear cost: a packed admission takes 79–87 ms even on a cache hit with a short suffix. That is
+  per-forward overhead (Python + per-layer launches + per-segment conv calls), the same thing
+  behind the c1 TTFT gap (73 vs 43 ms). Target: P4 (cheaper small prefills), before pacing.
+- Evidence: docs/verification/evidence/p3-diag-shared-prefix-l4-a9b7164-20261116/.
