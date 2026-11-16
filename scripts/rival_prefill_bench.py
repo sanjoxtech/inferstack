@@ -51,7 +51,8 @@ def main():
             return
     res['version'] = subprocess.run([py, '-c', 'import sglang;print(sglang.__version__)'],
                                     capture_output=True, text=True).stdout.strip()
-    env_path = f"{venv / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+    import os   # full environment (CUDA driver paths such as LD_LIBRARY_PATH), engine venv first on PATH
+    env = {**os.environ, 'PATH': f"{venv / 'bin'}:{os.environ.get('PATH', '')}"}
     for bs, n in SHAPES:
         rf = out.parent / f'sglang-bench-{bs}x{n}.jsonl'
         text_log = out.parent / f'sglang-bench-{bs}x{n}.log'
@@ -60,7 +61,7 @@ def main():
                '--output-len', 2, '--run-name', f'{bs}x{n}', '--result-filename', rf]
         with open(text_log, 'w') as f:
             code = subprocess.run(list(map(str, cmd)), stdout=f, stderr=subprocess.STDOUT, timeout=1800,
-                                  env={'PATH': env_path, 'HOME': '/root', 'HF_HOME': '/root/.cache/huggingface'}).returncode
+                                  env=env).returncode
         txt = text_log.read_text(errors='replace')
         lat = re.findall(r'Prefill\.\s+latency:\s+([0-9.]+)\s*s', txt)
         row = {'batch': bs, 'input_len': n, 'exit': code,
