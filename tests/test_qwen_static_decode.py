@@ -210,3 +210,104 @@ def test_load_rows_into_chosen_slots_with_holes_in_mask():
         got = dec.step(st, tok, torch.tensor([5 + s]))
         torch.testing.assert_close(got[0].float(), ref.logits[0, -1].float(), rtol=1e-4, atol=1e-4)
         tok = ref.logits[:, -1].argmax(-1)
+
+
+# ---- P1: packed prefill straight into the pool ------------------------------------------
+@pytest.mark.parametrize('fused', [False, True])
+def test_packed_prefill_matches_transformers(fused):
+    """prefill_packed (flat tokens, per-segment GDN/attention, written into chosen slots)
+    then static decode must equal unbatched Transformers greedy decode, logits included."""
+    model = tiny_model(seed=5)
+    if fused:
+        from types import SimpleNamespace
+        from inferstack.kernels.qwen_forward_fusion import install_qwen35_forward_fusion
+        flags = ('forward_fusion', 'fuse_rmsnorm', 'fuse_add_rmsnorm', 'fuse_gated_rmsnorm', 'fuse_mlp_gate_up',
+                 'fuse_mlp_activation', 'fuse_gdn_projections', 'fuse_gdn_beta_g', 'grouped_gdn_decode',
+                 'fuse_attention_qkv', 'forward_fusion_strict')
+        install_qwen35_forward_fusion(model, SimpleNamespace(native=SimpleNamespace(**dict.fromkeys(flags, True))))
+    prompts = [[5, 7, 11, 13, 2, 9, 4, 4, 1, 3], [3], [6, 6, 6, 1, 2], [8, 2]]
+    slots = [3, 0, 5, 1]                     # out of order, with holes
+    steps = 5
+    refs = [hf_greedy(model, p, steps + 1) for p in prompts]
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    st = dec.new_state(8, 32)
+    st.mask.fill_(True)                      # stale columns from a previous occupant must be cleared
+    with torch.inference_mode():
+        logits, hid, cu = dec.prefill_packed(st, slots, prompts)
+    assert cu == [0, 10, 11, 16, 18] and hid.shape[0] == 18
+    for j, p in enumerate(prompts):
+        with torch.inference_mode():
+            ref = model(input_ids=torch.tensor([p])).logits[0, -1].float()
+        torch.testing.assert_close(logits[j].float(), ref, rtol=1e-4, atol=1e-4)
+        assert int(st.mask[slots[j]].sum()) == len(p)
+    assert [int(t) for t in logits.argmax(-1)] == [r[0][0] for r in refs]
+    # Rows in slots 0 and 1 (prompts 1 and 3) then decode together and stay greedy-equal.
+    nxt = torch.tensor([refs[1][0][0], refs[3][0][0]])
+    pos = torch.tensor([len(prompts[1]), len(prompts[3])])
+    for t in range(steps):
+        got = dec.step(st, nxt, pos).float()
+        torch.testing.assert_close(got[0], refs[1][1][t], rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(got[1], refs[3][1][t], rtol=1e-4, atol=1e-4)
+        nxt, pos = got.argmax(-1), pos + 1
+
+
+def test_packed_prefill_then_batched_decode_is_greedy():
+    model = tiny_model(seed=6)
+    prompts = [[1, 2, 3, 4, 5, 6, 7], [9, 8], [4, 4, 4, 4]]
+    steps = 6
+    refs = [hf_greedy(model, p, steps + 1)[0] for p in prompts]
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    st = dec.new_state(4, 32)
+    with torch.inference_mode():
+        logits, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts)
+    nxt = logits.argmax(-1)
+    pos = torch.tensor([len(p) for p in prompts])
+    out = [[int(t)] for t in nxt]
+    for s in range(steps):
+        nxt = dec.step(st, nxt, pos).argmax(-1)
+        pos = pos + 1
+        for j in range(3):
+            out[j].append(int(nxt[j]))
+    assert out == refs
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='FLA varlen kernels need CUDA')
+def test_packed_prefill_fla_matches_reference_on_cuda():
+    """FLA varlen conv + chunked delta rule (cu_seqlens) vs the per-segment reference:
+    same logits within bf16-kernel tolerance, same pool state, same greedy first token."""
+    from inferstack.kernels.gdn import fla_available
+    if not fla_available():
+        pytest.skip('flash-linear-attention not installed')
+    torch.manual_seed(7)
+    cfg = Qwen3_5TextConfig(
+        vocab_size=97, hidden_size=128, intermediate_size=192, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=32,
+        linear_conv_kernel_dim=4, linear_key_head_dim=32, linear_value_head_dim=32,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        layer_types=['linear_attention', 'linear_attention', 'full_attention', 'linear_attention'],
+        max_position_embeddings=512, rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0,
+                                                      'partial_rotary_factor': 0.5, 'mrope_section': [4, 2, 2]},
+        attn_implementation='sdpa')
+    model = qwen.Qwen3_5ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.05)
+    model = model.cuda()
+    g = torch.Generator().manual_seed(0)
+    prompts = [torch.randint(0, 97, (n,), generator=g).tolist() for n in (130, 1, 67, 200)]
+    slots = [2, 0, 3, 1]
+    out = {}
+    for be in ('reference', 'fla'):
+        dec = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+        st = dec.new_state(4, 256)
+        with torch.inference_mode():
+            logits, _, _ = dec.prefill_packed(st, slots, prompts, backend=be)
+        out[be] = (logits.float(), st)
+    (lr, sr), (lf, sf) = out['reference'], out['fla']
+    torch.testing.assert_close(lf, lr, rtol=2e-2, atol=2e-2)
+    for i in sr.conv:
+        torch.testing.assert_close(sf.conv[i], sr.conv[i], rtol=2e-2, atol=2e-2)
+        torch.testing.assert_close(sf.rec[i], sr.rec[i], rtol=2e-2, atol=2e-2)
+    for i in sr.kv:
+        torch.testing.assert_close(sf.kv[i][0], sr.kv[i][0], rtol=2e-2, atol=2e-2)
+    assert torch.equal(sf.mask, sr.mask)

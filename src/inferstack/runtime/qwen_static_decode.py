@@ -223,6 +223,151 @@ class QwenStaticDecoder:
             t[dst].copy_(t[src])
         self.stats['row_moves'] += 1
 
+    # ---- P1: packed prefill straight into the pool -----------------------------------
+    def prefill_packed(self, st: StaticDecodeState, slots, prompts, *, backend='auto'):
+        """Prefill several prompts as one flat token batch and write the results straight
+        into pool slots (no padding, no Transformers cache, no load_rows copy).
+
+        The dense parts (embeddings, norms, projections, MLP) run once over all T tokens.
+        GDN layers run the causal conv and the chunked delta rule per request segment
+        (FLA varlen kernels with cu_seqlens on CUDA, a per-segment reference otherwise);
+        the final conv inputs and recurrent states go to st.conv/st.rec[slot]. Full-attention
+        layers write K/V at columns 0..n-1 of each slot and attend causally per segment.
+
+        backend: 'auto' (FLA on CUDA when importable), 'fla' or 'reference'.
+        Returns (logits [k, vocab] at each prompt's last token, post-norm hidden [T, H],
+        cu_seqlens list of k+1 offsets)."""
+        import torch
+        dev = self.device
+        slots, prompts = [int(s) for s in slots], [list(map(int, p)) for p in prompts]
+        if len(slots) != len(prompts) or not prompts:
+            raise ValueError('need one slot per prompt')
+        lens = [len(p) for p in prompts]
+        if min(lens) < 1 or max(lens) >= st.max_len:
+            raise ValueError(f'prompt lengths {lens} must be in 1..{st.max_len - 1}')
+        if any(not 0 <= s < st.batch for s in slots):
+            raise ValueError(f'slots {slots} outside pool of {st.batch}')
+        if backend == 'auto':
+            from inferstack.kernels.gdn import fla_available
+            backend = 'fla' if dev.type == 'cuda' and fla_available() else 'reference'
+        cu = [0]
+        for n in lens:
+            cu.append(cu[-1] + n)
+        T = cu[-1]
+        ids = torch.tensor([t for p in prompts for t in p], dtype=torch.long, device=dev)[None]
+        pos = torch.cat([torch.arange(n, device=dev) for n in lens])
+        cu_t = torch.tensor(cu, dtype=torch.int32 if backend == 'fla' else torch.long, device=dev)
+        slot_t = torch.tensor(slots, dtype=torch.long, device=dev)
+        n_t = torch.tensor(lens, dtype=torch.long, device=dev)
+        st.mask[slot_t] = torch.arange(st.max_len, device=dev)[None] < n_t[:, None]
+        h = self.text.embed_tokens(ids)
+        cos, sin = self.text.rotary_emb(h, pos.view(1, 1, T).expand(3, 1, T))
+        for i, kind in enumerate(self.layer_types):
+            layer = self.text.layers[i]
+            r = h
+            h = layer.input_layernorm(h)
+            if kind == 'linear_attention':
+                h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend)
+            else:
+                h = self._attn_packed(i, layer.self_attn, h, cos, sin, st, slots, cu)
+            h = r + h
+            h = h + layer.mlp(layer.post_attention_layernorm(h))
+        h = self.text.norm(h)[0]                                         # [T, H]
+        last = torch.tensor(cu[1:], device=dev) - 1
+        logits = self.lm_head(h.index_select(0, last))
+        self.stats['packed_prefills'] = self.stats.get('packed_prefills', 0) + 1
+        self.stats['packed_rows'] = self.stats.get('packed_rows', 0) + len(slots)
+        self.stats['packed_tokens'] = self.stats.get('packed_tokens', 0) + T
+        return logits, h, cu
+
+    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend):
+        import torch
+        import torch.nn.functional as F
+        T = x.shape[1]
+        if getattr(g, 'in_proj_qkv', None) is None:
+            qkv, z = F.linear(x, g._inferstack_qkvz_weight).split([g.conv_dim, g.value_dim], dim=-1)
+            b, a = F.linear(x, g._inferstack_ba_weight).split([g.num_v_heads, g.num_v_heads], dim=-1)
+        else:
+            qkv, z = g.in_proj_qkv(x), g.in_proj_z(x)
+            b, a = g.in_proj_b(x), g.in_proj_a(x)
+        w = g.conv1d.weight.squeeze(1)                                   # [C, K]
+        K = w.shape[-1]
+        beta = b.sigmoid()
+        gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
+        if backend == 'fla':
+            from fla.modules.causal_conv1d import causal_conv1d
+            from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+            mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=None,
+                                              output_final_state=True, activation=g.activation,
+                                              backend='triton', cu_seqlens=cu_t)
+            q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
+            q = q.reshape(1, T, -1, g.head_k_dim)
+            k = k.reshape(1, T, -1, g.head_k_dim)
+            v = v.reshape(1, T, -1, g.head_v_dim)
+            o, rec_final = chunk_gated_delta_rule(q, k, v, g=gate, beta=beta, scale=g.head_k_dim ** -0.5,
+                                                  initial_state=None, output_final_state=True,
+                                                  use_qk_l2norm_in_kernel=True, cu_seqlens=cu_t)
+            slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
+            st.conv[i].index_copy_(0, slot_t, conv_final.to(st.conv[i].dtype))
+            st.rec[i].index_copy_(0, slot_t, rec_final.float())
+            o = o.to(x.dtype)
+        else:
+            from inferstack.kernels.gdn import gdn
+            from inferstack.kernels.gdn_conv import causal_conv_prefill
+            outs = []
+            for j, s in enumerate(slots):
+                a0, a1 = cu[j], cu[j + 1]
+                mixed, cf = causal_conv_prefill(qkv[:, a0:a1], w, g.conv1d.bias, None,
+                                                activation=g.activation, backend='reference')
+                q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
+                n = a1 - a0
+                q = q.reshape(1, n, -1, g.head_k_dim)
+                k = k.reshape(1, n, -1, g.head_k_dim)
+                v = v.reshape(1, n, -1, g.head_v_dim)
+                o, rf = gdn(q, k, v, gate[:, a0:a1], beta[:, a0:a1], None, output_state=True,
+                            qk_l2norm=True, backend='recurrent_reference')
+                st.conv[i][s].copy_(cf[0])
+                st.rec[i][s].copy_(rf[0])
+                outs.append(o)
+            o = torch.cat(outs, dim=1)
+        o = g.norm(o.reshape(-1, g.head_v_dim), z.reshape(-1, g.head_v_dim)).reshape(1, T, -1)
+        return g.out_proj(o)
+
+    def _attn_packed(self, i, a, x, cos, sin, st, slots, cu):
+        import torch
+        import torch.nn.functional as F
+        mod = self.mod
+        T = x.shape[1]
+        if getattr(a, 'q_proj', None) is None:
+            qraw, kraw, vraw = F.linear(x, a._inferstack_qkv_weight, a._inferstack_qkv_bias).split(
+                a._inferstack_qkv_splits, dim=-1)
+        else:
+            qraw, kraw, vraw = a.q_proj(x), a.k_proj(x), a.v_proj(x)
+        q, gate = torch.chunk(qraw.view(1, T, -1, a.head_dim * 2), 2, dim=-1)
+        gate = gate.reshape(1, T, -1)
+        q = a.q_norm(q.reshape(1, T, -1, a.head_dim)).transpose(1, 2)    # [1, Hq, T, D]
+        k = a.k_norm(kraw.view(1, T, -1, a.head_dim)).transpose(1, 2)    # [1, Hkv, T, D]
+        v = vraw.view(1, T, -1, a.head_dim).transpose(1, 2)
+        q, k = mod.apply_rotary_pos_emb(q, k, cos, sin)
+        kc, vc = st.kv[i]
+        outs = []
+        for j, s in enumerate(slots):
+            a0, a1 = cu[j], cu[j + 1]
+            n = a1 - a0
+            kc[s, :, :n].copy_(k[0, :, a0:a1])
+            vc[s, :, :n].copy_(v[0, :, a0:a1])
+            qs, ks, vs = q[:, :, a0:a1], k[:, :, a0:a1], v[:, :, a0:a1]
+            if self._sdpa_gqa:
+                o = F.scaled_dot_product_attention(qs, ks, vs, is_causal=True, scale=a.scaling,
+                                                   enable_gqa=a.num_key_value_groups > 1)
+            else:
+                o = F.scaled_dot_product_attention(qs, mod.repeat_kv(ks, a.num_key_value_groups),
+                                                   mod.repeat_kv(vs, a.num_key_value_groups),
+                                                   is_causal=True, scale=a.scaling)
+            outs.append(o)
+        o = torch.cat(outs, dim=2).transpose(1, 2).reshape(1, T, -1) * torch.sigmoid(gate)
+        return a.o_proj(o)
+
     # ---- one decode step (static shapes; graph-capturable) --------------------------
     def _gdn(self, i, g, x, st):
         import torch
