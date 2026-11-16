@@ -36,7 +36,14 @@ class StaticDecodeLane:
         self.stats = {'rows_admitted': 0, 'rows_rejected_full': 0, 'rows_rejected_length': 0,
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
                       'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
-                      'packed_prefills': 0, 'packed_rows': 0}
+                      'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
+                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0}
+        n = engine.cfg.native
+        self.pcache = None
+        if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
+            from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
+            self.pcache = PoolPrefixCache(n.prefix_state_cache_max_entries, n.prefix_cache_min_tokens,
+                                          n.prefix_cache_block_tokens, int(n.prefix_state_cache_max_mb) * 2 ** 20)
 
     @property
     def rows(self) -> int:
@@ -111,8 +118,12 @@ class StaticDecodeLane:
         """P1: prefill (request, queue) pairs as one flat token batch straight into free slots
         (QwenStaticDecoder.prefill_packed) and emit their first tokens. Returns the pairs that
         must take the Transformers prefill path instead: no free slot, prompt + max_new_tokens
-        longer than the pool, over the packed token budget, sampled rows under spec, or a
-        prefix-cache hit (that path reuses the cached state)."""
+        longer than the pool, over the packed token budget, or sampled rows under spec.
+
+        P2 (pool prefix cache): a row whose prompt starts with a cached block-aligned prefix
+        gets that state copied into its slot and only computes the rest. Rows without a hit
+        that are long enough have their prefix up to a block boundary computed first (once per
+        group of rows sharing it), snapshotted, then continued."""
         import time
         import torch
         e = self.e
@@ -125,8 +136,7 @@ class StaticDecodeLane:
         for r, q in items:
             n = len(r.prompt_token_ids)
             if (len(take) < free and n + r.sampling.max_new_tokens + extra <= self.st.max_len and T + n <= budget
-                    and not (spec and float(r.sampling.temperature) > 0)
-                    and not (pc.enabled and pc.has_prefix(r.prompt_token_ids))):
+                    and not (spec and float(r.sampling.temperature) > 0)):
                 take.append((r, q))
                 T += n
             else:
@@ -144,12 +154,14 @@ class StaticDecodeLane:
         base, k = self.rows, len(rs)
         lengths = [len(r.prompt_token_ids) for r in rs]
         prompts = [r.prompt_token_ids for r in rs]
+        slots = list(range(base, base + k))
         with torch.inference_mode():
-            logits, hid, cu = self.dec.prefill_packed(self.st, range(base, base + k), prompts)
+            starts = self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled else None
+            logits, hid, cu = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
             nxt = e._sampler.sample(logits, rs, 0)
             if spec:
                 win = int(getattr(e.cfg.native, 'static_decode_spec_window', 256) or 256)
-                ws = [min(n, win) for n in lengths]
+                ws = [min(cu[j + 1] - cu[j], win) for j in range(k)]
                 self.dec.load_spec_rows(self.st, self.sp, base, prompts,
                                         [hid[cu[j + 1] - w:cu[j + 1]] for j, w in enumerate(ws)], nxt, lengths)
         self.next_ids[base:base + k].copy_(nxt)
@@ -164,7 +176,7 @@ class StaticDecodeLane:
             r.prompt_cursor = len(r.prompt_token_ids)
         st['prefill_forward_calls'] += 1
         st['prefill_chunks'] += 1
-        st['prefill_tokens'] += T
+        st['prefill_tokens'] += cu[-1]
         self.stats['rows_admitted'] += k
         self.stats['packed_rows'] += k
         self.stats['packed_prefills'] += 1
@@ -172,6 +184,55 @@ class StaticDecodeLane:
         e._accept_host(b, [None] * base + nxt.tolist())
         self.compact()
         return rest
+
+    def _prefix_plan(self, slots, prompts):
+        """Fill slots from the pool prefix cache; compute and store missing shared prefixes.
+        Returns per-row start columns for the continuation prefill."""
+        pc, st, dec = self.pcache, self.st, self.dec
+        k = len(slots)
+        starts = [0] * k
+        for j in range(k):
+            e = pc.longest(prompts[j])
+            if e is not None:
+                pc.restore(e, st, slots[j])
+                starts[j] = len(e.tokens)
+                self.stats['packed_prefix_hits'] += 1
+                self.stats['packed_tokens_saved'] += starts[j]
+        blk = pc.block_tokens
+
+        def lcp(a, b):
+            m = min(len(a), len(b))
+            i = 0
+            while i < m and a[i] == b[i]:
+                i += 1
+            return i
+        todo = [j for j in range(k) if not starts[j] and pc.boundary(len(prompts[j]))]
+        groups = []                                  # (leader, [members], b)
+        while todo:
+            j0 = todo.pop(0)
+            b0 = pc.boundary(len(prompts[j0]))
+            shared = {l: min(lcp(prompts[j0], prompts[l]) // blk * blk, b0, pc.boundary(len(prompts[l])))
+                      for l in todo}
+            bc = max([b for b in shared.values() if b >= pc.min_tokens], default=0)
+            if bc:
+                members = [l for l, b in shared.items() if b >= bc]
+                todo = [l for l in todo if l not in members]
+                groups.append((j0, members, bc))
+            else:
+                groups.append((j0, [], b0))
+        if not groups:
+            return starts
+        dec.prefill_packed(st, [slots[j] for j, _, _ in groups], [prompts[j][:b] for j, _, b in groups])
+        for j0, members, b in groups:
+            pc.put(prompts[j0][:b], st, slots[j0])
+            for l in members:
+                pc.copy_slot(st, slots[j0], slots[l], b)
+                starts[l] = b
+                self.stats['packed_tokens_saved'] += b
+            starts[j0] = b
+            self.stats['packed_prefix_groups'] += 1
+            self.stats['packed_prefix_shared_rows'] += len(members)
+        return starts
 
     def _sample(self, logits):
         import torch
@@ -261,5 +322,6 @@ class StaticDecodeLane:
                 'batch_buckets': list(st.batch_buckets), 'len_buckets': list(st.len_buckets),
                 'decoder': dict(self.dec.stats), 'graphs': len(self.dec.graphs) + len(getattr(self.dec, 'spec_graphs', {})),
                 'spec': self.sp is not None,
+                'pool_prefix_cache': self.pcache.diagnostics() if self.pcache is not None else None,
                 'spec_acceptance': (self.stats['spec_accepted'] / self.stats['spec_row_steps'])
                 if self.stats['spec_row_steps'] else None}

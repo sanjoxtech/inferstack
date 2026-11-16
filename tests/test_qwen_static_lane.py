@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -41,7 +41,7 @@ def cfg(static, prefix=False, spec=False, packed=False):
     n.static_decode_spec = spec
     n.static_decode_spec_mtp = 'random:3'
     n.static_decode_packed_prefill = packed
-    n.static_decode_packed_max_tokens = 24
+    n.static_decode_packed_max_tokens = budget
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -58,11 +58,11 @@ async def drain(q, timeout=60):
         out.append(x)
 
 
-def run(static, plan, prefix=False, spec=False, temps=None, packed=False):
+def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -179,3 +179,18 @@ def test_packed_prefill_with_prefix_cache_on():
     ref, _ = run(False, plan, prefix=True)
     got, d = run(True, plan, prefix=True, packed=True)
     assert got == ref
+    pp = d['static_decode']['pool_prefix_cache']
+    assert pp['stores'] >= 1 and pp['hits'] >= 1, pp          # p1 stores its prefix, p2 hits it
+
+
+@pytest.mark.parametrize('spec', [False, True])
+def test_packed_prefill_shares_prefix_within_a_cohort(spec):
+    """Rows arriving together with a common 16-token prefix: the prefix is computed once,
+    snapshotted and copied; the outputs stay greedy-equal to Transformers."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'q1', shared + [1, 2], 6), (0.0, 'q2', shared + [3, 3, 3], 5), (0.0, 'q3', shared + [7], 6)]
+    ref, _ = run(False, plan)
+    got, d = run(True, plan, prefix=True, packed=True, spec=spec, budget=64)
+    assert got == ref
+    sd = d['static_decode']
+    assert sd['packed_prefix_groups'] >= 1 and sd['packed_prefix_shared_rows'] >= 1, sd

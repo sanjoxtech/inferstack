@@ -224,7 +224,7 @@ class QwenStaticDecoder:
         self.stats['row_moves'] += 1
 
     # ---- P1: packed prefill straight into the pool -----------------------------------
-    def prefill_packed(self, st: StaticDecodeState, slots, prompts, *, backend='auto'):
+    def prefill_packed(self, st: StaticDecodeState, slots, prompts, *, starts=None, backend='auto'):
         """Prefill several prompts as one flat token batch and write the results straight
         into pool slots (no padding, no Transformers cache, no load_rows copy).
 
@@ -234,16 +234,24 @@ class QwenStaticDecoder:
         the final conv inputs and recurrent states go to st.conv/st.rec[slot]. Full-attention
         layers write K/V at columns 0..n-1 of each slot and attend causally per segment.
 
+        starts (P2): per row, how many leading prompt tokens the slot already holds (K/V
+        columns 0..s-1 plus the GDN conv/recurrent state after them, e.g. a restored prefix
+        snapshot). Only prompt[s:] is computed, from that state. Default all 0.
+
         backend: 'auto' (FLA on CUDA when importable), 'fla' or 'reference'.
-        Returns (logits [k, vocab] at each prompt's last token, post-norm hidden [T, H],
-        cu_seqlens list of k+1 offsets)."""
+        Returns (logits [k, vocab] at each prompt's last token, post-norm hidden [T, H] of the
+        computed tokens, cu_seqlens list of k+1 offsets into them)."""
         import torch
         dev = self.device
         slots, prompts = [int(s) for s in slots], [list(map(int, p)) for p in prompts]
         if len(slots) != len(prompts) or not prompts:
             raise ValueError('need one slot per prompt')
-        lens = [len(p) for p in prompts]
-        if min(lens) < 1 or max(lens) >= st.max_len:
+        full = [len(p) for p in prompts]
+        starts = [0] * len(prompts) if starts is None else [int(x) for x in starts]
+        if len(starts) != len(prompts) or any(not 0 <= s0 < n for s0, n in zip(starts, full)):
+            raise ValueError(f'starts {starts} must leave at least one token of {full}')
+        lens = [n - s0 for n, s0 in zip(full, starts)]
+        if min(lens) < 1 or max(full) >= st.max_len:
             raise ValueError(f'prompt lengths {lens} must be in 1..{st.max_len - 1}')
         if any(not 0 <= s < st.batch for s in slots):
             raise ValueError(f'slots {slots} outside pool of {st.batch}')
@@ -254,11 +262,11 @@ class QwenStaticDecoder:
         for n in lens:
             cu.append(cu[-1] + n)
         T = cu[-1]
-        ids = torch.tensor([t for p in prompts for t in p], dtype=torch.long, device=dev)[None]
-        pos = torch.cat([torch.arange(n, device=dev) for n in lens])
+        ids = torch.tensor([t for p, s0 in zip(prompts, starts) for t in p[s0:]], dtype=torch.long, device=dev)[None]
+        pos = torch.cat([torch.arange(s0, n, device=dev) for s0, n in zip(starts, full)])
         cu_t = torch.tensor(cu, dtype=torch.int32 if backend == 'fla' else torch.long, device=dev)
         slot_t = torch.tensor(slots, dtype=torch.long, device=dev)
-        n_t = torch.tensor(lens, dtype=torch.long, device=dev)
+        n_t = torch.tensor(full, dtype=torch.long, device=dev)
         st.mask[slot_t] = torch.arange(st.max_len, device=dev)[None] < n_t[:, None]
         h = self.text.embed_tokens(ids)
         cos, sin = self.text.rotary_emb(h, pos.view(1, 1, T).expand(3, 1, T))
@@ -267,9 +275,9 @@ class QwenStaticDecoder:
             r = h
             h = layer.input_layernorm(h)
             if kind == 'linear_attention':
-                h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend)
+                h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend, starts)
             else:
-                h = self._attn_packed(i, layer.self_attn, h, cos, sin, st, slots, cu)
+                h = self._attn_packed(i, layer.self_attn, h, cos, sin, st, slots, cu, starts)
             h = r + h
             h = h + layer.mlp(layer.post_attention_layernorm(h))
         h = self.text.norm(h)[0]                                         # [T, H]
@@ -280,7 +288,7 @@ class QwenStaticDecoder:
         self.stats['packed_tokens'] = self.stats.get('packed_tokens', 0) + T
         return logits, h, cu
 
-    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend):
+    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend, starts):
         import torch
         import torch.nn.functional as F
         T = x.shape[1]
@@ -294,20 +302,37 @@ class QwenStaticDecoder:
         K = w.shape[-1]
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
+        cont = any(starts)
         if backend == 'fla':
             from fla.modules.causal_conv1d import causal_conv1d
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-            mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=None,
-                                              output_final_state=True, activation=g.activation,
-                                              backend='triton', cu_seqlens=cu_t)
+            slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
+            if not cont:
+                mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=None,
+                                                  output_final_state=True, activation=g.activation,
+                                                  backend='triton', cu_seqlens=cu_t)
+            else:
+                # Continuing rows start from the slot's conv state: one conv call per segment.
+                from inferstack.kernels.gdn_conv import causal_conv_prefill
+                parts, finals = [], []
+                for j, s in enumerate(slots):
+                    init = st.conv[i][s:s + 1] if starts[j] else None
+                    y, f = causal_conv_prefill(qkv[:, cu[j]:cu[j + 1]], w, g.conv1d.bias, init,
+                                               activation=g.activation, backend='fla')
+                    parts.append(y)
+                    finals.append(f)
+                mixed, conv_final = torch.cat(parts, dim=1), torch.cat(finals, dim=0)
+            init_rec = None
+            if cont:
+                init_rec = st.rec[i].index_select(0, slot_t).float()
+                init_rec[torch.tensor([s0 == 0 for s0 in starts], device=x.device)] = 0
             q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
             q = q.reshape(1, T, -1, g.head_k_dim)
             k = k.reshape(1, T, -1, g.head_k_dim)
             v = v.reshape(1, T, -1, g.head_v_dim)
             o, rec_final = chunk_gated_delta_rule(q, k, v, g=gate, beta=beta, scale=g.head_k_dim ** -0.5,
-                                                  initial_state=None, output_final_state=True,
+                                                  initial_state=init_rec, output_final_state=True,
                                                   use_qk_l2norm_in_kernel=True, cu_seqlens=cu_t)
-            slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
             st.conv[i].index_copy_(0, slot_t, conv_final.to(st.conv[i].dtype))
             st.rec[i].index_copy_(0, slot_t, rec_final.float())
             o = o.to(x.dtype)
@@ -317,14 +342,16 @@ class QwenStaticDecoder:
             outs = []
             for j, s in enumerate(slots):
                 a0, a1 = cu[j], cu[j + 1]
-                mixed, cf = causal_conv_prefill(qkv[:, a0:a1], w, g.conv1d.bias, None,
+                mixed, cf = causal_conv_prefill(qkv[:, a0:a1], w, g.conv1d.bias,
+                                                st.conv[i][s:s + 1] if starts[j] else None,
                                                 activation=g.activation, backend='reference')
                 q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
                 n = a1 - a0
                 q = q.reshape(1, n, -1, g.head_k_dim)
                 k = k.reshape(1, n, -1, g.head_k_dim)
                 v = v.reshape(1, n, -1, g.head_v_dim)
-                o, rf = gdn(q, k, v, gate[:, a0:a1], beta[:, a0:a1], None, output_state=True,
+                o, rf = gdn(q, k, v, gate[:, a0:a1], beta[:, a0:a1],
+                            st.rec[i][s:s + 1].clone() if starts[j] else None, output_state=True,
                             qk_l2norm=True, backend='recurrent_reference')
                 st.conv[i][s].copy_(cf[0])
                 st.rec[i][s].copy_(rf[0])
@@ -333,7 +360,7 @@ class QwenStaticDecoder:
         o = g.norm(o.reshape(-1, g.head_v_dim), z.reshape(-1, g.head_v_dim)).reshape(1, T, -1)
         return g.out_proj(o)
 
-    def _attn_packed(self, i, a, x, cos, sin, st, slots, cu):
+    def _attn_packed(self, i, a, x, cos, sin, st, slots, cu, starts):
         import torch
         import torch.nn.functional as F
         mod = self.mod
@@ -353,17 +380,24 @@ class QwenStaticDecoder:
         outs = []
         for j, s in enumerate(slots):
             a0, a1 = cu[j], cu[j + 1]
-            n = a1 - a0
-            kc[s, :, :n].copy_(k[0, :, a0:a1])
-            vc[s, :, :n].copy_(v[0, :, a0:a1])
-            qs, ks, vs = q[:, :, a0:a1], k[:, :, a0:a1], v[:, :, a0:a1]
+            s0 = starts[j]
+            n = s0 + a1 - a0
+            kc[s, :, s0:n].copy_(k[0, :, a0:a1])
+            vc[s, :, s0:n].copy_(v[0, :, a0:a1])
+            qs = q[:, :, a0:a1]
+            ks, vs = kc[s:s + 1, :, :n], vc[s:s + 1, :, :n]
+            if s0:   # queries at positions s0..n-1 see columns <= their own position
+                causal, msk = False, (torch.arange(n, device=x.device)[None] <=
+                                      torch.arange(s0, n, device=x.device)[:, None])
+            else:
+                causal, msk = True, None
             if self._sdpa_gqa:
-                o = F.scaled_dot_product_attention(qs, ks, vs, is_causal=True, scale=a.scaling,
+                o = F.scaled_dot_product_attention(qs, ks, vs, attn_mask=msk, is_causal=causal, scale=a.scaling,
                                                    enable_gqa=a.num_key_value_groups > 1)
             else:
                 o = F.scaled_dot_product_attention(qs, mod.repeat_kv(ks, a.num_key_value_groups),
                                                    mod.repeat_kv(vs, a.num_key_value_groups),
-                                                   is_causal=True, scale=a.scaling)
+                                                   attn_mask=msk, is_causal=causal, scale=a.scaling)
             outs.append(o)
         o = torch.cat(outs, dim=2).transpose(1, 2).reshape(1, T, -1) * torch.sigmoid(gate)
         return a.o_proj(o)

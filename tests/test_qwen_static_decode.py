@@ -311,3 +311,85 @@ def test_packed_prefill_fla_matches_reference_on_cuda():
     for i in sr.kv:
         torch.testing.assert_close(sf.kv[i][0], sr.kv[i][0], rtol=2e-2, atol=2e-2)
     assert torch.equal(sf.mask, sr.mask)
+
+
+# ---- P2: continuation from a slot's state (prefix snapshots) ------------------------------
+def test_packed_prefill_continues_from_restored_prefix():
+    """Prefill a 16-token prefix, snapshot it (PoolPrefixCache), then prefill three prompts in
+    one call: one continuing from the snapshot restored into another slot, one continuing from
+    a slot copy, one fresh (start 0). Logits must equal unbatched Transformers, and decode
+    after it must stay greedy-equal."""
+    from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
+    model = tiny_model(seed=8)
+    pre = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    prompts = [pre + [1, 2, 3], pre + [4], [6, 1, 2, 5, 5]]
+    steps = 4
+    refs = [hf_greedy(model, p, steps + 1) for p in prompts]
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    st = dec.new_state(6, 40)
+    pc = PoolPrefixCache(8, min_tokens=8, block_tokens=8, max_bytes=1 << 26)
+    with torch.inference_mode():
+        dec.prefill_packed(st, [5], [pre])
+    assert pc.put(pre, st, 5) and pc.boundary(len(prompts[0])) == 16
+    st.mask.fill_(True)
+    pc.copy_slot(st, 5, 1, 16)
+    e = pc.longest(prompts[0])
+    assert e is not None and len(e.tokens) == 16 and pc.longest(pre) is None   # never the whole prompt
+    pc.restore(e, st, 0)
+    with torch.inference_mode():
+        logits, hid, cu = dec.prefill_packed(st, [0, 1, 2], prompts, starts=[16, 16, 0])
+    assert cu == [0, 3, 4, 9] and hid.shape[0] == 9
+    for j, p in enumerate(prompts):
+        with torch.inference_mode():
+            ref = model(input_ids=torch.tensor([p])).logits[0, -1].float()
+        torch.testing.assert_close(logits[j].float(), ref, rtol=1e-4, atol=1e-4)
+        assert int(st.mask[j].sum()) == len(p)
+    nxt = logits.argmax(-1)
+    pos = torch.tensor([len(p) for p in prompts])
+    for t in range(steps):
+        got = dec.step(st, nxt, pos).float()
+        for j in range(3):
+            torch.testing.assert_close(got[j], refs[j][1][t], rtol=1e-4, atol=1e-4)
+        nxt, pos = got.argmax(-1), pos + 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='FLA varlen kernels need CUDA')
+def test_packed_continuation_fla_matches_reference_on_cuda():
+    from inferstack.kernels.gdn import fla_available
+    if not fla_available():
+        pytest.skip('flash-linear-attention not installed')
+    torch.manual_seed(9)
+    cfg = Qwen3_5TextConfig(
+        vocab_size=97, hidden_size=128, intermediate_size=192, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=32,
+        linear_conv_kernel_dim=4, linear_key_head_dim=32, linear_value_head_dim=32,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        layer_types=['linear_attention', 'linear_attention', 'full_attention', 'linear_attention'],
+        max_position_embeddings=512, rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0,
+                                                      'partial_rotary_factor': 0.5, 'mrope_section': [4, 2, 2]},
+        attn_implementation='sdpa')
+    model = qwen.Qwen3_5ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.05)
+    model = model.cuda()
+    g = torch.Generator().manual_seed(1)
+    pre = torch.randint(0, 97, (128,), generator=g).tolist()
+    prompts = [pre + torch.randint(0, 97, (n,), generator=g).tolist() for n in (40, 1)] + \
+              [torch.randint(0, 97, (90,), generator=g).tolist()]
+    out = {}
+    for be in ('reference', 'fla'):
+        dec = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+        st = dec.new_state(4, 256)
+        with torch.inference_mode():
+            dec.prefill_packed(st, [0], [pre], backend=be)
+            for k, v in st.kv.values():
+                k[1, :, :128].copy_(k[0, :, :128]); v[1, :, :128].copy_(v[0, :, :128])
+            for t in list(st.conv.values()) + list(st.rec.values()):
+                t[1].copy_(t[0])
+            logits, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts, starts=[128, 128, 0], backend=be)
+            full, _, _ = dec.prefill_packed(st, [3], [prompts[0]], backend=be)
+        out[be] = (logits.float(), full.float())
+    (lr, fr), (lf, ff) = out['reference'], out['fla']
+    torch.testing.assert_close(lf, lr, rtol=2e-2, atol=2e-2)
+    torch.testing.assert_close(lf[0], ff[0], rtol=2e-2, atol=2e-2)   # continuation == from scratch
