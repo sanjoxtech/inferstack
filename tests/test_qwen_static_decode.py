@@ -393,3 +393,80 @@ def test_packed_continuation_fla_matches_reference_on_cuda():
     (lr, fr), (lf, ff) = out['reference'], out['fla']
     torch.testing.assert_close(lf, lr, rtol=2e-2, atol=2e-2)
     torch.testing.assert_close(lf[0], ff[0], rtol=2e-2, atol=2e-2)   # continuation == from scratch
+
+
+# ---- P4: small packed prefills as CUDA graphs -------------------------------------------
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='prefill graphs need CUDA')
+def test_prefill_graphed_fla_matches_eager_on_cuda():
+    """prefill_graphed (rows padded to a bucket, inert padding, fixed split, graph replay) gives
+    the same logits, hidden states, pool K/V and GDN states as eager prefill_packed, for fresh
+    rows and rows continuing from a restored prefix, across two replays of one graph."""
+    from inferstack.kernels.gdn import fla_available
+    if not fla_available():
+        pytest.skip('flash-linear-attention not installed')
+    torch.manual_seed(11)
+    cfg = Qwen3_5TextConfig(
+        vocab_size=97, hidden_size=128, intermediate_size=192, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=32,
+        linear_conv_kernel_dim=4, linear_key_head_dim=32, linear_value_head_dim=32,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        layer_types=['linear_attention', 'linear_attention', 'full_attention', 'linear_attention'],
+        max_position_embeddings=512, rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0,
+                                                      'partial_rotary_factor': 0.5, 'mrope_section': [4, 2, 2]},
+        attn_implementation='sdpa')
+    model = qwen.Qwen3_5ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.05)
+    model = model.cuda()
+    g = torch.Generator().manual_seed(2)
+    pre = torch.randint(0, 97, (128,), generator=g).tolist()
+
+    def rnd(n):
+        return torch.randint(0, 97, (n,), generator=g).tolist()
+
+    def seed_prefix(dec, st, rows):
+        dec.prefill_packed(st, [0], [pre])
+        for r in rows:
+            if r == 0:
+                continue
+            for k, v in st.kv.values():
+                k[r, :, :128].copy_(k[0, :, :128]); v[r, :, :128].copy_(v[0, :, :128])
+            for t in list(st.conv.values()) + list(st.rec.values()):
+                t[r].copy_(t[0])
+
+    cases = [([rnd(40), rnd(3), rnd(17)], [0, 0, 0]),                       # fresh, mixed lengths
+             ([pre + rnd(40), pre + rnd(1), rnd(60)], [128, 128, 0]),       # continuation + fresh
+             ([rnd(5), rnd(33), rnd(64)], [0, 0, 0])]                       # second replay, other lengths
+    dg = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+    sg = dg.new_state(4, 512)
+    with torch.inference_mode():
+        dg.capture_prefill_graph(sg, 3, 64)
+    dg.reset(sg)
+    for prompts, starts in cases:
+        de = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+        se = de.new_state(4, 512)
+        with torch.inference_mode():
+            seed_prefix(de, se, [j for j, s in enumerate(starts) if s])
+            seed_prefix(dg, sg, [j for j, s in enumerate(starts) if s])
+            le, he, cue = de.prefill_packed(se, [0, 1, 2], prompts, starts=starts)
+            res = dg.prefill_graphed(sg, [0, 1, 2], prompts, starts=starts)
+        assert res is not None
+        lg, hg, cug = res
+        assert cug == cue
+        torch.testing.assert_close(lg, le, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(hg, he, rtol=1e-3, atol=1e-3)
+        for j, p in enumerate(prompts):
+            n = len(p)
+            assert bool(sg.mask[j, :n].all()) and not bool(sg.mask[j, n:].any())
+            for (kg, vg), (ke, ve) in zip(sg.kv.values(), se.kv.values()):
+                torch.testing.assert_close(kg[j, :, :n], ke[j, :, :n], rtol=1e-3, atol=1e-3)
+                torch.testing.assert_close(vg[j, :, :n], ve[j, :, :n], rtol=1e-3, atol=1e-3)
+        for i in sg.conv:
+            torch.testing.assert_close(sg.conv[i][:3], se.conv[i][:3], rtol=1e-3, atol=1e-3)
+            torch.testing.assert_close(sg.rec[i][:3], se.rec[i][:3], rtol=1e-3, atol=1e-3)
+    assert dg.stats['prefill_replays'] == 3
+    # prompts that do not fit a bucket fall back (None), as do uncaptured buckets
+    with torch.inference_mode():
+        assert dg.prefill_graphed(sg, [0], [rnd(200)]) is None
+        assert dg.prefill_graphed(sg, [0, 1], [rnd(5), rnd(5)]) is None

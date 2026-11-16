@@ -124,6 +124,13 @@ class QwenHybridContinuousEngine:
                 t0=time.perf_counter();k=min(2,st.batch);ls=[min(max_len-1,700),min(max_len-1,37)][:k]
                 with torch.inference_mode():dec.prefill_packed(st,range(k),[[1]*x for x in ls])
                 dec.reset(st);torch.cuda.synchronize();self._static_diag['packed_warmup_s']=round(time.perf_counter()-t0,3)
+                if bool(getattr(n,'static_decode_packed_graphs',False)):
+                    # P4: capture small packed prefills (k rows x L tokens) as CUDA graphs before serving.
+                    t0=time.perf_counter();pg=0
+                    for kk in range(1,min(dec.PREFILL_GRAPH_MAX_ROWS,st.batch)+1):
+                        for L in dec.PREFILL_GRAPH_LENS:
+                            if L<max_len:dec.capture_prefill_graph(st,kk,L);pg+=1
+                    dec.reset(st);torch.cuda.synchronize();self._static_diag.update(prefill_graphs=pg,prefill_graph_capture_s=round(time.perf_counter()-t0,3))
             self._lane=StaticDecodeLane(self,dec,st,spec=sp);self._static_diag.update(active=True,spec=sp is not None,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))
         except Exception as exc:
             self._lane=None;self._static_diag.update(active=False,error=f'{type(exc).__name__}: {exc}')

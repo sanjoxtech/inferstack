@@ -104,6 +104,7 @@ class NativeConfig:
     # the token budget, sampled rows under spec, prefix-cache hits) keep the Transformers prefill path.
     static_decode_packed_prefill:bool=False
     static_decode_packed_max_tokens:int=8192       # flat tokens per packed forward
+    static_decode_packed_graphs:bool=False          # P4: small packed prefills (<=8 rows x <=128 new tokens) as CUDA graphs
 
     # v1.6 Qwen forward-fusion engine. These are inference-only structural
     # optimizations installed after weights load; every path has a safe fallback.

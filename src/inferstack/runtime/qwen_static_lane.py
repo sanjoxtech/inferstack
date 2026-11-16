@@ -39,6 +39,7 @@ class StaticDecodeLane:
                       'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
                       'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
         n = engine.cfg.native
+        self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
@@ -160,7 +161,10 @@ class StaticDecodeLane:
         slots = list(range(base, base + k))
         with torch.inference_mode():
             starts = self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled else None
-            logits, hid, cu = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
+            out = self.dec.prefill_graphed(self.st, slots, prompts, starts=starts) if self.packed_graphs else None
+            if out is None:
+                out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
+            logits, hid, cu = out
             nxt = e._sampler.sample(logits, rs, 0)
             if spec:
                 win = int(getattr(e.cfg.native, 'static_decode_spec_window', 256) or 256)

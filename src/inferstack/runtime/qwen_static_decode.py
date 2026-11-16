@@ -396,6 +396,210 @@ class QwenStaticDecoder:
         o = torch.cat(outs, dim=2).transpose(1, 2).reshape(1, T, -1) * torch.sigmoid(gate)
         return a.o_proj(o)
 
+    # ---- P4: small packed prefills as CUDA graphs ------------------------------------
+    # A small packed prefill is host-bound (L4: ~21 ms of GPU work inside ~65 ms wall, ~1200
+    # launches; FLA's chunk call alone ~1.2 ms of Python per layer). FLA's varlen kernels can be
+    # captured, but read cu_seqlens on the host at capture, so a graph is only valid for the
+    # split it was captured with. Each graph therefore has a fixed shape: k rows, each padded
+    # to L tokens (split 0, L, 2L, ...). Padding tokens are inert in the delta rule (beta = 0,
+    # g = 0 leaves the state unchanged; L4 probe: outputs equal, state diff <= 3e-8), the conv
+    # final state is gathered from the real tokens, and padded K/V columns land past each
+    # row's length where the pool mask hides them until decode overwrites them.
+    PREFILL_GRAPH_LENS = (16, 32, 64, 128)
+    PREFILL_GRAPH_MAX_ROWS = 8
+
+    def prefill_graph_key(self, st, prompts, starts=None):
+        """(k, L) bucket for these prompts, or None when they do not fit a graph."""
+        k = len(prompts)
+        if not 1 <= k <= self.PREFILL_GRAPH_MAX_ROWS or self.device.type != 'cuda':
+            return None
+        starts = [0] * k if starts is None else starts
+        new = max(len(p) - s0 for p, s0 in zip(prompts, starts))
+        L = next((x for x in self.PREFILL_GRAPH_LENS if x >= new), None)
+        if L is None or any(s0 + L > st.max_len for s0 in starts):
+            return None
+        return k, L
+
+    def _pg_buffers(self, st, k, L):
+        import torch
+        dev, T = self.device, k * L
+        return {'ids': torch.zeros((1, T), dtype=torch.long, device=dev),
+                'pos': torch.zeros((T,), dtype=torch.long, device=dev),
+                'valid': torch.zeros((T,), dtype=torch.bool, device=dev),
+                'slot': torch.zeros((k,), dtype=torch.long, device=dev),
+                'cont': torch.zeros((k,), dtype=torch.bool, device=dev),
+                'nnew': torch.ones((k,), dtype=torch.long, device=dev),
+                'full': torch.ones((k,), dtype=torch.long, device=dev),
+                'cu': torch.arange(0, T + 1, L, dtype=torch.int32, device=dev)}
+
+    def _pg_fill(self, buf, k, L, slots, prompts, starts):
+        import torch
+        ids, pos, valid = [], [], []
+        for p, s0 in zip(prompts, starts):
+            new = p[s0:]
+            n = len(new)
+            ids += new + [0] * (L - n)
+            pos += list(range(s0, s0 + L))
+            valid += [True] * n + [False] * (L - n)
+        host = {'ids': torch.tensor([ids]), 'pos': torch.tensor(pos), 'valid': torch.tensor(valid),
+                'slot': torch.tensor(slots), 'cont': torch.tensor([s0 > 0 for s0 in starts]),
+                'nnew': torch.tensor([len(p) - s0 for p, s0 in zip(prompts, starts)]),
+                'full': torch.tensor([len(p) for p in prompts])}
+        for name, t in host.items():
+            buf[name].copy_(t, non_blocking=True)
+
+    def _pg_forward(self, st, buf, k, L):
+        """The graph body: fixed shapes, every per-call value read from `buf`."""
+        import torch
+        dev, T = self.device, k * L
+        slot_t = buf['slot']
+        st.mask[slot_t] = torch.arange(st.max_len, device=dev)[None] < buf['full'][:, None]
+        h = self.text.embed_tokens(buf['ids'])
+        cos, sin = self.text.rotary_emb(h, buf['pos'].view(1, 1, T).expand(3, 1, T))
+        for i, kind in enumerate(self.layer_types):
+            layer = self.text.layers[i]
+            r = h
+            h = layer.input_layernorm(h)
+            if kind == 'linear_attention':
+                h = self._gdn_graphed(i, layer.linear_attn, h, st, buf, k, L)
+            else:
+                h = self._attn_graphed(i, layer.self_attn, h, cos, sin, st, buf, k, L)
+            h = r + h
+            h = h + layer.mlp(layer.post_attention_layernorm(h))
+        h = self.text.norm(h)[0]                                         # [T, H]
+        last = torch.arange(k, device=dev) * L + buf['nnew'] - 1
+        buf['hidden'] = h
+        buf['logits'] = self.lm_head(h.index_select(0, last))
+
+    def _gdn_graphed(self, i, g, x, st, buf, k, L):
+        import torch
+        import torch.nn.functional as F
+        from fla.modules.causal_conv1d import causal_conv1d
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+        T = x.shape[1]
+        if getattr(g, 'in_proj_qkv', None) is None:
+            qkv, z = F.linear(x, g._inferstack_qkvz_weight).split([g.conv_dim, g.value_dim], dim=-1)
+            b, a = F.linear(x, g._inferstack_ba_weight).split([g.num_v_heads, g.num_v_heads], dim=-1)
+        else:
+            qkv, z = g.in_proj_qkv(x), g.in_proj_z(x)
+            b, a = g.in_proj_b(x), g.in_proj_a(x)
+        w = g.conv1d.weight.squeeze(1)                                   # [C, W]
+        W = w.shape[-1]
+        valid = buf['valid'].view(1, T, 1)
+        beta = b.sigmoid() * valid                                       # padding: beta = 0
+        gate = (-g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)) * valid   # and g = 0
+        slot_t, cont = buf['slot'], buf['cont'].view(k, 1, 1)
+        init_conv = st.conv[i].index_select(0, slot_t).to(qkv.dtype) * cont           # [k, C, W]
+        init_rec = st.rec[i].index_select(0, slot_t).float() * cont.unsqueeze(-1)
+        mixed, _ = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=init_conv,
+                                 output_final_state=False, activation=g.activation,
+                                 backend='triton', cu_seqlens=buf['cu'])
+        # conv final state = the last W inputs up to each row's last real token
+        seq = torch.cat([init_conv, qkv[0].view(k, L, -1).transpose(1, 2)], dim=-1)   # [k, C, W+L]
+        cols = (buf['nnew'].view(k, 1) + torch.arange(W, device=x.device)).view(k, 1, W)
+        conv_final = seq.gather(2, cols.expand(k, seq.shape[1], W))
+        q, kk, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
+        o, rec_final = chunk_gated_delta_rule(q.reshape(1, T, -1, g.head_k_dim), kk.reshape(1, T, -1, g.head_k_dim),
+                                              v.reshape(1, T, -1, g.head_v_dim), g=gate, beta=beta,
+                                              scale=g.head_k_dim ** -0.5, initial_state=init_rec,
+                                              output_final_state=True, use_qk_l2norm_in_kernel=True,
+                                              cu_seqlens=buf['cu'])
+        st.conv[i].index_copy_(0, slot_t, conv_final.to(st.conv[i].dtype))
+        st.rec[i].index_copy_(0, slot_t, rec_final.float())
+        o = g.norm(o.to(x.dtype).reshape(-1, g.head_v_dim), z.reshape(-1, g.head_v_dim)).reshape(1, T, -1)
+        return g.out_proj(o)
+
+    def _attn_graphed(self, i, a, x, cos, sin, st, buf, k, L):
+        import torch
+        import torch.nn.functional as F
+        mod = self.mod
+        T = x.shape[1]
+        if getattr(a, 'q_proj', None) is None:
+            qraw, kraw, vraw = F.linear(x, a._inferstack_qkv_weight, a._inferstack_qkv_bias).split(
+                a._inferstack_qkv_splits, dim=-1)
+        else:
+            qraw, kraw, vraw = a.q_proj(x), a.k_proj(x), a.v_proj(x)
+        q, gate = torch.chunk(qraw.view(1, T, -1, a.head_dim * 2), 2, dim=-1)
+        gate = gate.reshape(1, T, -1)
+        q = a.q_norm(q.reshape(1, T, -1, a.head_dim)).transpose(1, 2)    # [1, Hq, T, D]
+        kx = a.k_norm(kraw.view(1, T, -1, a.head_dim)).transpose(1, 2)   # [1, Hkv, T, D]
+        v = vraw.view(1, T, -1, a.head_dim).transpose(1, 2)
+        q, kx = mod.apply_rotary_pos_emb(q, kx, cos, sin)
+        kc, vc = st.kv[i]
+        rows = buf['slot'].repeat_interleave(L)                          # [T]
+        cols = buf['pos']                                                # [T]
+        kc[rows, :, cols] = kx[0].transpose(0, 1).to(kc.dtype)           # [T, Hkv, D]
+        vc[rows, :, cols] = v[0].transpose(0, 1).to(vc.dtype)
+        ks, vs = kc.index_select(0, buf['slot']), vc.index_select(0, buf['slot'])     # [k, Hkv, S, D]
+        qs = q[0].view(q.shape[1], k, L, -1).transpose(0, 1)             # [k, Hq, L, D]
+        S = st.max_len
+        msk = (torch.arange(S, device=x.device).view(1, 1, 1, S) <= buf['pos'].view(k, 1, L, 1))
+        if self._sdpa_gqa:
+            o = F.scaled_dot_product_attention(qs, ks, vs, attn_mask=msk, scale=a.scaling,
+                                               enable_gqa=a.num_key_value_groups > 1)
+        else:
+            o = F.scaled_dot_product_attention(qs, mod.repeat_kv(ks, a.num_key_value_groups),
+                                               mod.repeat_kv(vs, a.num_key_value_groups),
+                                               attn_mask=msk, scale=a.scaling)
+        o = o.transpose(1, 2).reshape(1, T, -1) * torch.sigmoid(gate)   # [k, L, Hq*D] -> [1, T, .]
+        return a.o_proj(o)
+
+    def capture_prefill_graph(self, st, k, L):
+        """Capture the (k, L) prefill graph. The warm-up runs write pool slots 0..k-1, so call
+        this only while no request is live (engine warm-up), then reset the pool."""
+        import torch
+        key = (id(st), 'prefill', k, L)
+        if key in self.graphs:
+            return self.graphs[key]
+        buf = self._pg_buffers(st, k, L)
+        # warm-up (Triton autotune / compile) on scratch rows, then capture; the pool state the
+        # warm-up touches is overwritten by every real call, which writes all it reads
+        buf['slot'].copy_(torch.arange(k, device=self.device))
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.inference_mode(), torch.cuda.stream(stream):
+            for _ in range(2):
+                self._pg_forward(st, buf, k, L)
+        torch.cuda.current_stream().wait_stream(stream)
+        if getattr(self, '_pg_pool', None) is None:   # one pool for all prefill graphs
+            self._pg_pool = torch.cuda.graph_pool_handle()
+        graph = torch.cuda.CUDAGraph()
+        with torch.inference_mode(), torch.cuda.graph(graph, pool=self._pg_pool):
+            self._pg_forward(st, buf, k, L)
+        self.graphs[key] = (graph, buf)
+        self.stats['prefill_captures'] = self.stats.get('prefill_captures', 0) + 1
+        return self.graphs[key]
+
+    def prefill_graphed(self, st, slots, prompts, *, starts=None, capture=False):
+        """prefill_packed for small cohorts through a captured graph. Same return contract
+        (logits [k, V], hidden [T_new, H] of the real tokens, cu list). Returns None when the
+        prompts do not fit a bucket, or the bucket has no graph and capture=False."""
+        import torch
+        slots, prompts = [int(s) for s in slots], [list(map(int, p)) for p in prompts]
+        starts = [0] * len(prompts) if starts is None else [int(x) for x in starts]
+        key = self.prefill_graph_key(st, prompts, starts)
+        if key is None:
+            return None
+        k, L = key
+        entry = self.graphs.get((id(st), 'prefill', k, L))
+        if entry is None:
+            if not capture:
+                return None
+            entry = self.capture_prefill_graph(st, k, L)
+        graph, buf = entry
+        self._pg_fill(buf, k, L, slots, prompts, starts)
+        graph.replay()
+        nnew = [len(p) - s0 for p, s0 in zip(prompts, starts)]
+        cu = [0]
+        for n in nnew:
+            cu.append(cu[-1] + n)
+        real = torch.cat([torch.arange(j * L, j * L + n, device=self.device) for j, n in enumerate(nnew)])
+        self.stats['packed_prefills'] = self.stats.get('packed_prefills', 0) + 1
+        self.stats['packed_rows'] = self.stats.get('packed_rows', 0) + k
+        self.stats['packed_tokens'] = self.stats.get('packed_tokens', 0) + cu[-1]
+        self.stats['prefill_replays'] = self.stats.get('prefill_replays', 0) + 1
+        return buf['logits'].clone(), buf['hidden'].index_select(0, real), cu
+
     # ---- one decode step (static shapes; graph-capturable) --------------------------
     def _gdn(self, i, g, x, st):
         import torch

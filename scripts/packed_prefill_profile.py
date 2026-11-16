@@ -26,6 +26,7 @@ def main():
     ap.add_argument('--model-ref', default='foundry://factorylm-2b@candidate')
     ap.add_argument('--device', default='cuda:0')
     ap.add_argument('--iters', type=int, default=10)
+    ap.add_argument('--graphs', action='store_true', help='P4: use prefill_graphed where a bucket fits')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     import torch
@@ -59,6 +60,13 @@ def main():
         ('c8_med_300', [toks(300) for _ in range(8)], None),
     ]
     rows = []
+    if a.graphs:   # capture every bucket the shapes need before timing (writes slots 0..k-1)
+        for name, prompts, starts in shapes:
+            key = dec.prefill_graph_key(st, prompts, starts)
+            if key:
+                with torch.inference_mode():
+                    dec.capture_prefill_graph(st, *key)
+        dec.reset(st)
     for name, prompts, starts in shapes:
         slots = list(range(len(prompts)))
         if starts:   # put the prefix state into the slots once
@@ -74,7 +82,8 @@ def main():
             t0 = time.perf_counter()
             e0.record()
             with torch.inference_mode():
-                dec.prefill_packed(st, slots, prompts, starts=starts)
+                if not (a.graphs and dec.prefill_graphed(st, slots, prompts, starts=starts) is not None):
+                    dec.prefill_packed(st, slots, prompts, starts=starts)
             e1.record()
             torch.cuda.synchronize()
             if it >= 2:
@@ -84,6 +93,7 @@ def main():
                                                                         zip(prompts, starts or [0] * len(prompts))),
                'wall_ms': statistics.median(walls), 'gpu_ms': statistics.median(gpus)}
         row['host_gap_ms'] = row['wall_ms'] - row['gpu_ms']
+        row['graphed'] = bool(a.graphs and dec.prefill_graph_key(st, prompts, starts))
         print(json.dumps(row), flush=True)
         rows.append(row)
 
@@ -145,7 +155,7 @@ def main():
         conv_check = {'ok': False, 'error': f'{type(e).__name__}: {e}'[:400]}
     print(json.dumps({'fla_varlen_conv_initial_state': conv_check}), flush=True)
 
-    out = {'version': 1, 'gpu': torch.cuda.get_device_name(0), 'iters': a.iters, 'shapes': rows,
+    out = {'version': 1, 'graphs': a.graphs, 'decoder_stats': dict(dec.stats), 'gpu': torch.cuda.get_device_name(0), 'iters': a.iters, 'shapes': rows,
            'decode': steps, 'profile_cuda_kernel_launches': n_kernels, 'conv_varlen_init': conv_check,
            'profile_cpu_top': cpu_top, 'profile_cuda_top': cuda_top}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
