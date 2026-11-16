@@ -442,6 +442,13 @@ def test_prefill_graphed_fla_matches_eager_on_cuda():
     sg = dg.new_state(4, 512)
     with torch.inference_mode():
         dg.capture_prefill_graph(sg, 3, 64)
+        dg.capture_prefill_graph(sg, 1, 16)
+        # churn FLA's identity caches and the allocator with eager varlen calls on fresh
+        # cu_seqlens tensors: graphs must not depend on tensors the caches drop (the v1.16 smoke
+        # crashed with an illegal address this way while a single-graph test passed)
+        for n in range(6):
+            dg.prefill_packed(sg, [0, 1], [rnd(9 + n), rnd(30 + 2 * n)])
+            torch.empty(1 << 20, device='cuda').fill_(float('nan'))
     dg.reset(sg)
     for prompts, starts in cases:
         de = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)

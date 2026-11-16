@@ -88,6 +88,29 @@ class StaticDecodeState:
     rec: dict = field(default_factory=dict)       # layer -> [slots, Hv, dk, dv] fp32
 
 
+def _fla_cached_tensors() -> list:
+    """Every result currently held by FLA's tensor_cache-decorated helpers (identity-keyed
+    memo deques reached through each wrapper's closure)."""
+    import sys
+    from collections import deque
+    keep, seen = [], set()
+    for name, mod in list(sys.modules.items()):
+        if not name.startswith('fla') or mod is None:
+            continue
+        for obj in list(vars(mod).values()):
+            if not callable(obj) or getattr(obj, '__wrapped__', None) is None or id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            for cell in getattr(obj, '__closure__', None) or ():
+                try:
+                    val = cell.cell_contents
+                except ValueError:
+                    continue
+                if isinstance(val, deque):
+                    keep.extend(entry[-1] for entry in list(val) if isinstance(entry, tuple))
+    return keep
+
+
 class QwenStaticDecoder:
     def __init__(self, model, device, dtype=None, gdn_backend='auto', attn_backend='sdpa'):
         """gdn_backend: 'torch' (reference math), 'triton' (the repo's grouped GDN decode
@@ -566,6 +589,11 @@ class QwenStaticDecoder:
         graph = torch.cuda.CUDAGraph()
         with torch.inference_mode(), torch.cuda.graph(graph, pool=self._pg_pool):
             self._pg_forward(st, buf, k, L)
+        # FLA memoises cu_seqlens-derived index tensors (chunk indices etc.) in small identity
+        # caches (fla.utils tensor_cache, 4 entries). The capture hit those caches, so the graph
+        # reads tensors it does not own; once evicted they were freed and reused, and replay
+        # hit an illegal address (L4, v1.16 smoke). Keep every cached result alive with the graph.
+        buf['_fla_keep'] = _fla_cached_tensors()
         self.graphs[key] = (graph, buf)
         self.stats['prefill_captures'] = self.stats.get('prefill_captures', 0) + 1
         return self.graphs[key]
