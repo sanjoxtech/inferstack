@@ -510,3 +510,8 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 - 3 rounds, equal work, 100% success. v1.16 ≥ v1.15 tok/s in all 16 cells (13 ahead, 3 overlap).
 - vs vLLM/SGLang: ahead 12/16; behind prefill_heavy c4/c8/c16 + shared_prefix c16 (decode stalls behind long prefill: 61 vs 21.6 ms/tok at prefill_heavy c16).
 - Next: P5 chunked prefill interleaved with decode (rival study first). Doc: docs/verification/V116_SCORECARD_L4_2026-11-16.md
+
+## 2026-11-16 ~22:50 IST — P5 v1.17 (125e923): KEEP as candidate
+- Rival study: SGLang offline prefill within 5% of ours; prefill_heavy gap = cross-cell prompt repeats served by rivals' radix/APC caches.
+- v1.17 = per-layer sync removal + first-sight prefix snapshots (128 entries / 3 GB). vs v1.16: prefill_heavy c4/c8/c16 +28/+19/+20% tok/s; prefill_heavy c1 −3%, cold c1 TTFT +16–24 ms (two-pass snapshot).
+- Next: single-pass snapshot (record GDN state at block boundary inside the one prefill). Doc: docs/verification/V117_RADIX_SCORECARD_L4_2026-11-16.md

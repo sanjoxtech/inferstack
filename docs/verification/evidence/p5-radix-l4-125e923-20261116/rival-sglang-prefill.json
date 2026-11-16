@@ -1,0 +1,58 @@
+{
+  "spec": "sglang[all]==0.5.23",
+  "shapes": [
+    {
+      "batch": 1,
+      "input_len": 300,
+      "exit": 0,
+      "prefill_latency_ms_runs": [
+        393.78000000000003,
+        42.56999999999999
+      ],
+      "tail": "",
+      "result_lines": [
+        "{\"run_name\": \"1x300\", \"batch_size\": 1, \"input_len\": 300, \"output_len\": 2, \"prefill_latency\": 0.04256713199993101, \"prefill_throughput\": 7047.691162291278, \"median_decode_latency\": 0.01830876899998657, \"median_decode_throughput\": 54.618636567031544, \"total_latency\": 0.060875900999917576, \"overall_throughput\": 4960.912200714843}"
+      ]
+    },
+    {
+      "batch": 1,
+      "input_len": 1200,
+      "exit": 0,
+      "prefill_latency_ms_runs": [
+        276.9,
+        80.03
+      ],
+      "tail": "",
+      "result_lines": [
+        "{\"run_name\": \"1x1200\", \"batch_size\": 1, \"input_len\": 1200, \"output_len\": 2, \"prefill_latency\": 0.08003320000000258, \"prefill_throughput\": 14993.77758230286, \"median_decode_latency\": 0.018379023000079542, \"median_decode_throughput\": 54.40985627993785, \"total_latency\": 0.09841222300008212, \"overall_throughput\": 12213.929970863446}"
+      ]
+    },
+    {
+      "batch": 8,
+      "input_len": 300,
+      "exit": 0,
+      "prefill_latency_ms_runs": [
+        367.42,
+        156.29000000000002
+      ],
+      "tail": "",
+      "result_lines": [
+        "{\"run_name\": \"8x300\", \"batch_size\": 8, \"input_len\": 300, \"output_len\": 2, \"prefill_latency\": 0.15628740599993307, \"prefill_throughput\": 15356.323720677965, \"median_decode_latency\": 0.02056304099994577, \"median_decode_throughput\": 389.04751490896206, \"total_latency\": 0.17685044699987884, \"overall_throughput\": 13661.26035294474}"
+      ]
+    },
+    {
+      "batch": 16,
+      "input_len": 1200,
+      "exit": 0,
+      "prefill_latency_ms_runs": [
+        2243.42,
+        1295.1699999999998
+      ],
+      "tail": "",
+      "result_lines": [
+        "{\"run_name\": \"16x1200\", \"batch_size\": 16, \"input_len\": 1200, \"output_len\": 2, \"prefill_latency\": 1.295174975000009, \"prefill_throughput\": 14824.25183516217, \"median_decode_latency\": 0.02305692499999168, \"median_decode_throughput\": 693.9346855665174, \"total_latency\": 1.3182319000000007, \"overall_throughput\": 14589.238812988815}"
+      ]
+    }
+  ],
+  "version": "0.5.23"
+}
