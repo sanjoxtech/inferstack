@@ -70,7 +70,8 @@ def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=F
         pre += ("assert logged([PY,'-m','pip','install','--no-deps','fla-core==0.6.0','flash-linear-attention==0.6.0',"
                 "'einops'],'install-fla.log',env=ENV,timeout=1800)==0\n")
         if tests:   # the CUDA FLA-vs-oracle check only runs once FLA is present
-            pre += "run_tests(['tests/test_gdn_primitive.py', 'tests/test_gdn_conv.py'], 'pytest-fla.log', '-k', 'fla')\n"
+            pre += ("run_tests(['tests/test_gdn_primitive.py', 'tests/test_gdn_conv.py', 'tests/test_qwen_static_decode.py'],"
+                    " 'pytest-fla.log', '-k', 'fla')\n")
     if gdn_check:
         pre += ("print('gdn backend check exit:', logged([PY,'-u','scripts/gdn_backend_check.py','--out',"
                 "str(OUT/'gdn-backend-check.json')],'gdn-backend-check.log',env=ENV,timeout=3600), flush=True)\n")
