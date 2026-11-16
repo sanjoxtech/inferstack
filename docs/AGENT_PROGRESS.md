@@ -498,3 +498,10 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 - prefill_graphed: k<=8 rows x L in {16,32,64,128}, captured at warm-up. Tests incl. graphed-vs-eager (logits, hidden, K/V, conv/rec, mask; fresh, continuation, 2nd replay) pass on L4.
 - Wall ms eager -> graphed: c1 40 tok 62 -> 24; c1 hit 1152+48 68 -> 25; c4 40 tok 67 -> 40; c4 hit 74 -> 41; c8 hit 83 -> 66. Unbucketed shapes unchanged.
 - Next: 1-round scorecard native_packed vs native_graphs (equal-work check), then full scorecard.
+
+## 2026-11-16 P4 crash fix + 1-round scorecard (L4, 9ac7fb1)
+- v1.16 smoke crashed (illegal address on the first graphed prefill). Cause: FLA's identity tensor_cache (4 entries) held cu_seqlens-derived index tensors the graphs read but did not own; eager calls evicted them, memory was reused. Fix: each graph keeps the cached tensors alive. Test now captures 2 graphs, churns caches/allocator, then compares graphed vs eager. Scheduler crashes now print a traceback.
+- 1 round, native_packed (v1.15) -> native_graphs (v1.16), equal work in all 16 cells, 100% success:
+  TTFT p50 interactive c1 71->31, c8 78->42; shared_prefix c1 81->39, c4 88->50, c8 88->48, c16 128->90; prefill_heavy c8 228->153.
+  tok/s up in 14/16 cells, shared_prefix c4/c8/c16 +20/+24/+20%. moderate c1 unchanged (prompts > 128-token bucket).
+- Next: full 3-round scorecard with vLLM/SGLang (needs approval, ~10 CU); rival study (how vLLM/SGLang graph GDN prefill).

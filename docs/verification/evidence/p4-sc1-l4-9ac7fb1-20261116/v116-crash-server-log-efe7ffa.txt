@@ -1,0 +1,77 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 6368.12it/s]
+INFO:     Started server process [3328]
+INFO:     Waiting for application startup.
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:35501 (Press CTRL+C to quit)
+INFO:     127.0.0.1:41826 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41828 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41828 - "GET /version HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:41828 - "GET /get_server_info HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:41828 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41832 - "POST /v1/completions HTTP/1.1" 200 OK
+Traceback (most recent call last):
+  File "/content/inferstack/src/inferstack/runtime/qwen_continuous.py", line 177, in _loop_guarded
+    try:await self._loop()
+        ^^^^^^^^^^^^^^^^^^
+  File "/content/inferstack/src/inferstack/runtime/qwen_continuous.py", line 511, in _loop
+    did=await self._advance_one_prefill() or did;ad=await self._admit_one();did=ad or did
+                                                    ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/inferstack/src/inferstack/runtime/qwen_continuous.py", line 500, in _admit_one
+    n0=len(cohort);cohort=await self._gpu(self._packed_admit,cohort)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/content/inferstack/src/inferstack/runtime/qwen_continuous.py", line 55, in _gpu
+    loop=asyncio.get_running_loop();return await loop.run_in_executor(self._gpu_executor,functools.partial(fn,*args))
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/content/inferstack/src/inferstack/runtime/qwen_continuous.py", line 302, in _packed_admit
+    return self._lane.admit_packed(live) if live else []
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/content/inferstack/src/inferstack/runtime/qwen_static_lane.py", line 168, in admit_packed
+    nxt = e._sampler.sample(logits, rs, 0)
+  File "/content/inferstack/src/inferstack/runtime/sampler.py", line 31, in sample
+    before=diagnostics()['triton_calls'];out=greedy_argmax(logits);after=diagnostics()['triton_calls']
+                                             ~~~~~~~~~~~~~^^^^^^^^
+  File "/content/inferstack/src/inferstack/kernels/sampler_triton.py", line 26, in greedy_argmax
+    return torch.argmax(logits,dim=-1)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+The CUDA driver logged these messages, which may provide useful details:
+Sticky error detected
+Returning 700 (CUDA_ERROR_ILLEGAL_ADDRESS) from cuMemsetD8Async
+
+
+INFO:     127.0.0.1:41838 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41850 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41864 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41872 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41874 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41878 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41882 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41894 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41918 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41900 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41916 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41932 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41934 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41940 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41956 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41964 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41966 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41976 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41986 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41988 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42002 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:41994 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:42012 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:42004 - "POST /v1/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:42014 - "GET /v1/native/status HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3328]
