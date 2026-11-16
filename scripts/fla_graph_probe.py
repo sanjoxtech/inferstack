@@ -104,6 +104,34 @@ def main():
             out[f'{name}_ms'] = (time.perf_counter() - t0) * 1e3 / 20
     except Exception as e:  # noqa: BLE001
         out['capture'] = f'failed: {type(e).__name__}: {e}'[:600]
+    # 4. Padding with inert tokens: a row of n real tokens right-padded to L with beta=0 and g=0
+    #    (state update S <- S*exp(0) + 0) should leave outputs[:n] and the final state equal to
+    #    the unpadded run. If so, graphs can use a fixed per-bucket split [0, L, 2L, ...].
+    try:
+        pads = []
+        for n, L in ((5, 16), (48, 64), (64, 64), (70, 128), (1, 128)):
+            q = torch.randn(1, n, H, dk, device=dev, dtype=dt)
+            k = torch.randn(1, n, H, dk, device=dev, dtype=dt)
+            v = torch.randn(1, n, Hv, dv, device=dev, dtype=dt)
+            gg = -torch.rand(1, n, Hv, device=dev) * 0.5
+            bb = torch.rand(1, n, Hv, device=dev, dtype=dt)
+            r0 = torch.randn(1, Hv, dk, dv, device=dev) * 0.1
+
+            def padto(x, fill=0.0):
+                p = torch.full((1, L - n, *x.shape[2:]), fill, device=dev, dtype=x.dtype)
+                return torch.cat([x, p], 1)
+            with torch.inference_mode():
+                o1, f1 = chunk_gated_delta_rule(q, k, v, g=gg, beta=bb, scale=dk ** -0.5, initial_state=r0,
+                                                output_final_state=True, use_qk_l2norm_in_kernel=True)
+                kp = torch.cat([k, torch.randn(1, L - n, H, dk, device=dev, dtype=dt)], 1)   # junk keys
+                o2, f2 = chunk_gated_delta_rule(padto(q), kp, padto(v), g=padto(gg), beta=padto(bb),
+                                                scale=dk ** -0.5, initial_state=r0, output_final_state=True,
+                                                use_qk_l2norm_in_kernel=True)
+            pads.append({'n': n, 'L': L, 'o': float((o1 - o2[:, :n]).abs().max()),
+                         'rec_final': float((f1 - f2).abs().max()), 'rec_scale': float(f1.abs().max())})
+        out['inert_padding'] = pads
+    except Exception as e:  # noqa: BLE001
+        out['inert_padding'] = f'failed: {type(e).__name__}: {e}'[:600]
     print(json.dumps(out, indent=2))
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2) + '\n')
