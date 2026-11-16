@@ -1,0 +1,252 @@
+{
+  "version": 1,
+  "profile": "configs/profiles/production-v1.15.0.toml",
+  "steps": 64,
+  "gpu": "NVIDIA L4",
+  "summary": {
+    "shared_prefix": {
+      "old": {
+        "full_match": 6,
+        "rows": 8,
+        "mean_agree": 56.0,
+        "max_first_maxdiff": 0.1328125
+      },
+      "packed": {
+        "full_match": 5,
+        "rows": 8,
+        "mean_agree": 43.375,
+        "max_first_maxdiff": 0.140625
+      }
+    },
+    "prefill_heavy": {
+      "old": {
+        "full_match": 3,
+        "rows": 4,
+        "mean_agree": 48.5,
+        "max_first_maxdiff": 0.140625
+      },
+      "packed": {
+        "full_match": 2,
+        "rows": 4,
+        "mean_agree": 33.0,
+        "max_first_maxdiff": 0.125
+      }
+    },
+    "interactive": {
+      "old": {
+        "full_match": 7,
+        "rows": 8,
+        "mean_agree": 56.125,
+        "max_first_maxdiff": 0.140625
+      },
+      "packed": {
+        "full_match": 7,
+        "rows": 8,
+        "mean_agree": 56.125,
+        "max_first_maxdiff": 0.15625
+      }
+    }
+  },
+  "rows": [
+    {
+      "case": "shared_prefix",
+      "i": 0,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.140625,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "shared_prefix",
+      "i": 1,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "shared_prefix",
+      "i": 2,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 31,
+      "packed_agree": 9,
+      "old_vs_packed_agree": 9
+    },
+    {
+      "case": "shared_prefix",
+      "i": 3,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.1328125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 33,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 33
+    },
+    {
+      "case": "shared_prefix",
+      "i": 4,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "shared_prefix",
+      "i": 5,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.140625,
+      "old_agree": 64,
+      "packed_agree": 9,
+      "old_vs_packed_agree": 9
+    },
+    {
+      "case": "shared_prefix",
+      "i": 6,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 9,
+      "old_vs_packed_agree": 9
+    },
+    {
+      "case": "shared_prefix",
+      "i": 7,
+      "prompt_tokens": 1250,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "prefill_heavy",
+      "i": 0,
+      "prompt_tokens": 1570,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "prefill_heavy",
+      "i": 1,
+      "prompt_tokens": 1551,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 2,
+      "old_vs_packed_agree": 2
+    },
+    {
+      "case": "prefill_heavy",
+      "i": 2,
+      "prompt_tokens": 1557,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "prefill_heavy",
+      "i": 3,
+      "prompt_tokens": 1557,
+      "old_first_maxdiff": 0.140625,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 2,
+      "packed_agree": 2,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 0,
+      "prompt_tokens": 55,
+      "old_first_maxdiff": 0.1328125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 1,
+      "prompt_tokens": 53,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.1328125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 2,
+      "prompt_tokens": 56,
+      "old_first_maxdiff": 0.140625,
+      "packed_first_maxdiff": 0.140625,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 3,
+      "prompt_tokens": 53,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.140625,
+      "old_agree": 1,
+      "packed_agree": 1,
+      "old_vs_packed_agree": 1
+    },
+    {
+      "case": "interactive",
+      "i": 4,
+      "prompt_tokens": 55,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.15625,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 5,
+      "prompt_tokens": 52,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 6,
+      "prompt_tokens": 53,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.125,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    },
+    {
+      "case": "interactive",
+      "i": 7,
+      "prompt_tokens": 52,
+      "old_first_maxdiff": 0.125,
+      "packed_first_maxdiff": 0.140625,
+      "old_agree": 64,
+      "packed_agree": 64,
+      "old_vs_packed_agree": 64
+    }
+  ]
+}

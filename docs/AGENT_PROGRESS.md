@@ -428,3 +428,23 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   prefill 416 ms. The extra decode steps between prepare and the first token are 1.5–2.6.
 - **Decision:** P1 (packed prefill into the pool, own forward) is the main lever. It also cuts
   launches, the c1 cost. P3 scheduling follows for queue/wait.
+
+## 2026-11-16 — P1 packed prefill into the static pool (v1.15 `native_packed`), L4
+
+- Code: `QwenStaticDecoder.prefill_packed` (flat tokens; FLA varlen conv + chunked delta rule
+  with cu_seqlens; per-segment sdpa writing pool K/V) and `StaticDecodeLane.admit_packed`,
+  behind `static_decode_packed_prefill`. Profile `production-v1.15.0.toml` = v1.14 + P1.
+- Tests (L4): CPU suite 23 passed (tiny model, packed vs Transformers logits within 1e-4,
+  plain and spec engine paths greedy-equal); FLA suite 21 passed incl. FLA varlen vs
+  per-segment reference.
+- Fast scorecard, 1 round, @b3490e9 (measurement only). TTFT p50 native_spec → native_packed:
+  interactive c16 786 → 89 ms, moderate c16 769 → 136, prefill_heavy c16 887 → 359,
+  moderate c1 125 → 73. Out tok/s at c16 +19–32%. **Regression:** shared_prefix c16 TTFT
+  133 → 466 ms, tok/s 419 → 245, because packed rows store no prefix snapshots (P2).
+- shared_prefix outputs differed in length (equal_work False at c16). Real-model check
+  (`scripts/packed_prefill_check.py`, 64 greedy tokens vs unpadded Transformers): rows fully
+  matching, old vs packed: interactive 7/8 vs 7/8, shared_prefix 6/8 vs 5/8, prefill_heavy
+  3/4 vs 2/4; first-token max |logit diff| 0.13–0.14 vs 0.13–0.16. Same error scale: bf16
+  near-tie flips, not a bug. Packed may drift slightly earlier on long prompts (small sample).
+- Evidence: docs/verification/evidence/p1-packed-prefill-l4-20261116/.
+- Next: P2 (prefix cache in pool format) to recover shared_prefix, then a 3-round scorecard.
