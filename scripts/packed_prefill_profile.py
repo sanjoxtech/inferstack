@@ -29,6 +29,8 @@ def main():
     ap.add_argument('--graphs', action='store_true', help='P4: use prefill_graphed where a bucket fits')
     ap.add_argument('--prof-shape', default='c1_hit_1152+48',
                     help='shape name for the torch.profiler table (P5: c8_med_300 / c1_long_1200)')
+    ap.add_argument('--sync-check', action='store_true',
+                    help='P5: count stream syncs per prefill (torch sync debug mode) and where they come from')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     import torch
@@ -99,6 +101,39 @@ def main():
         print(json.dumps(row), flush=True)
         rows.append(row)
 
+    sync = {}
+    if a.sync_check:   # P5: every host<->device sync inside one prefill, by call site
+        import traceback
+        import warnings
+        for name, prompts, starts in shapes:
+            slots = list(range(len(prompts)))
+            if starts:
+                with torch.inference_mode():
+                    dec.prefill_packed(st, slots, [p[:starts[0]] for p in prompts])
+            torch.cuda.synchronize()
+            sites = {}
+            orig = warnings.showwarning
+
+            def show(message, category, filename, lineno, file=None, line=None):
+                fr = [f for f in traceback.extract_stack()[:-1]
+                      if ('inferstack' in f.filename or '/fla/' in f.filename) and 'packed_prefill_profile' not in f.filename]
+                key = ' <- '.join(f'{Path(f.filename).name}:{f.lineno}' for f in fr[-3:][::-1]) or f'{filename}:{lineno}'
+                sites[key] = sites.get(key, 0) + 1
+            warnings.showwarning = show
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('always')
+                    warnings.showwarning = show
+                    torch.cuda.set_sync_debug_mode('warn')
+                    with torch.inference_mode():
+                        if not (a.graphs and dec.prefill_graphed(st, slots, prompts, starts=starts) is not None):
+                            dec.prefill_packed(st, slots, prompts, starts=starts)
+                    torch.cuda.set_sync_debug_mode('default')
+            finally:
+                warnings.showwarning = orig
+            sync[name] = {'total': sum(sites.values()), 'sites': sites}
+            print(json.dumps({'sync': name, **sync[name]}), flush=True)
+
     # decode step for scale (graph replay, B=1 and 8)
     steps = {}
     for B in (1, 8):
@@ -161,7 +196,7 @@ def main():
     print(json.dumps({'fla_varlen_conv_initial_state': conv_check}), flush=True)
 
     out = {'version': 1, 'graphs': a.graphs, 'decoder_stats': dict(dec.stats), 'gpu': torch.cuda.get_device_name(0), 'iters': a.iters, 'shapes': rows,
-           'decode': steps, 'profile_shape': a.prof_shape, 'profile_cuda_kernel_launches': n_kernels, 'conv_varlen_init': conv_check,
+           'decode': steps, 'profile_shape': a.prof_shape, 'syncs': sync, 'profile_cuda_kernel_launches': n_kernels, 'conv_varlen_init': conv_check,
            'profile_cpu_top': cpu_top, 'profile_cuda_top': cuda_top}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2) + '\n')

@@ -291,6 +291,13 @@ class QwenStaticDecoder:
         slot_t = torch.tensor(slots, dtype=torch.long, device=dev)
         n_t = torch.tensor(full, dtype=torch.long, device=dev)
         st.mask[slot_t] = torch.arange(st.max_len, device=dev)[None] < n_t[:, None]
+        # P5: per-prefill device tensors are built once here, not per layer. A host list copied to
+        # the GPU inside the layer loop (or a boolean-mask assignment) synchronises the stream, so
+        # the GPU drained and then idled while FLA's ~1.6 ms of Python per call launched the next
+        # layer (about 30 ms per long prefill on L4).
+        keep = None
+        if any(starts):   # 1.0 for rows continuing from the slot's state, 0.0 for fresh rows
+            keep = torch.tensor([float(s0 > 0) for s0 in starts], device=dev)
         h = self.text.embed_tokens(ids)
         cos, sin = self.text.rotary_emb(h, pos.view(1, 1, T).expand(3, 1, T))
         for i, kind in enumerate(self.layer_types):
@@ -298,7 +305,8 @@ class QwenStaticDecoder:
             r = h
             h = layer.input_layernorm(h)
             if kind == 'linear_attention':
-                h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend, starts)
+                h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend, starts,
+                                     slot_t=slot_t, keep=keep)
             else:
                 h = self._attn_packed(i, layer.self_attn, h, cos, sin, st, slots, cu, starts)
             h = r + h
@@ -311,7 +319,7 @@ class QwenStaticDecoder:
         self.stats['packed_tokens'] = self.stats.get('packed_tokens', 0) + T
         return logits, h, cu
 
-    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend, starts):
+    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend, starts, *, slot_t=None, keep=None):
         import torch
         import torch.nn.functional as F
         T = x.shape[1]
@@ -329,17 +337,23 @@ class QwenStaticDecoder:
         if backend == 'fla':
             from fla.modules.causal_conv1d import causal_conv1d
             from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-            slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
+            if slot_t is None:
+                slot_t = torch.tensor(slots, dtype=torch.long, device=x.device)
             init_conv = init_rec = None
             if cont:
                 # Continuing rows start from the slot's conv/recurrent state, fresh rows from zeros.
                 # FLA's varlen conv takes one initial state per sequence (P4: checked equal to
                 # per-segment calls on L4, max diff 0.0), so this stays a single call.
-                fresh = torch.tensor([s0 == 0 for s0 in starts], device=x.device)
+                # Zeroed with torch.where, not a boolean-mask assignment (that one syncs the stream);
+                # where() also keeps a stale non-finite value in a fresh slot from leaking in.
+                if keep is None:
+                    keep = torch.tensor([float(s0 > 0) for s0 in starts], device=x.device)
+                live = keep > 0
                 init_conv = st.conv[i].index_select(0, slot_t).to(qkv.dtype)
-                init_conv[fresh] = 0
+                init_conv = torch.where(live[:, None, None], init_conv, torch.zeros((), dtype=init_conv.dtype,
+                                                                                     device=x.device))
                 init_rec = st.rec[i].index_select(0, slot_t).float()
-                init_rec[fresh] = 0
+                init_rec = torch.where(live[:, None, None, None], init_rec, torch.zeros((), device=x.device))
             mixed, conv_final = causal_conv1d(qkv, weight=w, bias=g.conv1d.bias, initial_state=init_conv,
                                               output_final_state=True, activation=g.activation,
                                               backend='triton', cu_seqlens=cu_t)
