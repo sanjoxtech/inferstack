@@ -44,6 +44,8 @@ class StaticDecodeLane:
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
             self.pcache = PoolPrefixCache(n.prefix_state_cache_max_entries, n.prefix_cache_min_tokens,
                                           n.prefix_cache_block_tokens, int(n.prefix_state_cache_max_mb) * 2 ** 20)
+        from collections import deque
+        self._recent = deque(maxlen=64)            # recent packed prompts: a prefix seen twice gets stored
 
     @property
     def rows(self) -> int:
@@ -207,6 +209,8 @@ class StaticDecodeLane:
                 i += 1
             return i
         todo = [j for j in range(k) if not starts[j] and pc.boundary(len(prompts[j]))]
+        recent = list(self._recent)
+        self._recent.extend(tuple(p) for p in prompts)
         groups = []                                  # (leader, [members], b)
         while todo:
             j0 = todo.pop(0)
@@ -218,8 +222,12 @@ class StaticDecodeLane:
                 members = [l for l, b in shared.items() if b >= bc]
                 todo = [l for l in todo if l not in members]
                 groups.append((j0, members, bc))
-            else:
-                groups.append((j0, [], b0))
+                continue
+            # Alone in this cohort: only pay the extra prefix pass when a recent prompt shared
+            # the prefix (it is hot). Cold prompts stay one pass with no snapshot.
+            bs = max((min(lcp(prompts[j0], q) // blk * blk, b0) for q in recent), default=0)
+            if bs >= pc.min_tokens:
+                groups.append((j0, [], bs))
         if not groups:
             return starts
         dec.prefill_packed(st, [slots[j] for j, _, _ in groups], [prompts[j][:b] for j, _, b in groups])

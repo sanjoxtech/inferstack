@@ -175,12 +175,13 @@ def test_packed_prefill_lane_matches_transformers(spec):
 
 def test_packed_prefill_with_prefix_cache_on():
     shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
-    plan = [(0.0, 'p1', shared + [1, 2], 6), (0.3, 'p2', shared + [3, 3, 3], 6)]
+    plan = [(0.0, 'p1', shared + [1, 2], 6), (0.3, 'p2', shared + [3, 3, 3], 6), (0.6, 'p3', shared + [5], 6)]
     ref, _ = run(False, plan, prefix=True)
     got, d = run(True, plan, prefix=True, packed=True)
     assert got == ref
     pp = d['static_decode']['pool_prefix_cache']
-    assert pp['stores'] >= 1 and pp['hits'] >= 1, pp          # p1 stores its prefix, p2 hits it
+    # p1 is cold (no snapshot); p2 shares its prefix with p1, so p2 stores it; p3 hits it.
+    assert pp['stores'] == 1 and pp['hits'] >= 1, pp
 
 
 @pytest.mark.parametrize('spec', [False, True])
