@@ -27,6 +27,8 @@ def main():
     ap.add_argument('--device', default='cuda:0')
     ap.add_argument('--iters', type=int, default=10)
     ap.add_argument('--graphs', action='store_true', help='P4: use prefill_graphed where a bucket fits')
+    ap.add_argument('--prof-shape', default='c1_hit_1152+48',
+                    help='shape name for the torch.profiler table (P5: c8_med_300 / c1_long_1200)')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     import torch
@@ -114,15 +116,18 @@ def main():
         steps[f'decode_step_B{B}_ms'] = (time.perf_counter() - t0) * 1e3 / 20
     print(json.dumps(steps), flush=True)
 
-    # torch.profiler on the c1 cache-hit shape
+    # torch.profiler on one shape (default: the c1 cache-hit shape)
     from torch.profiler import ProfilerActivity, profile
-    prompts, starts = [prefix + toks(48)], [1152]
-    with torch.inference_mode():
-        dec.prefill_packed(st, [0], [prefix])
+    by_name = {n: (p, s) for n, p, s in shapes}
+    prompts, starts = by_name[a.prof_shape]
+    slots = list(range(len(prompts)))
+    if starts:
+        with torch.inference_mode():
+            dec.prefill_packed(st, slots, [p[:starts[0]] for p in prompts])
     torch.cuda.synchronize()
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
         with torch.inference_mode():
-            dec.prefill_packed(st, [0], prompts, starts=starts)
+            dec.prefill_packed(st, slots, prompts, starts=starts)
         torch.cuda.synchronize()
     ka = prof.key_averages()
     cpu_top = ka.table(sort_by='self_cpu_time_total', row_limit=25)
@@ -156,7 +161,7 @@ def main():
     print(json.dumps({'fla_varlen_conv_initial_state': conv_check}), flush=True)
 
     out = {'version': 1, 'graphs': a.graphs, 'decoder_stats': dict(dec.stats), 'gpu': torch.cuda.get_device_name(0), 'iters': a.iters, 'shapes': rows,
-           'decode': steps, 'profile_cuda_kernel_launches': n_kernels, 'conv_varlen_init': conv_check,
+           'decode': steps, 'profile_shape': a.prof_shape, 'profile_cuda_kernel_launches': n_kernels, 'conv_varlen_init': conv_check,
            'profile_cpu_top': cpu_top, 'profile_cuda_top': cuda_top}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=2) + '\n')
