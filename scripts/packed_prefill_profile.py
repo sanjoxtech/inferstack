@@ -62,6 +62,7 @@ def main():
         ('c4_hit_1152+48', [prefix + toks(48) for _ in range(4)], [1152] * 4),
         ('c8_hit_1152+48', [prefix + toks(48) for _ in range(8)], [1152] * 8),
         ('c8_med_300', [toks(300) for _ in range(8)], None),
+        ('c16_long_1200', [toks(1200) for _ in range(16)], None),   # P5: prefill_heavy c16 burst
     ]
     rows = []
     if a.graphs:   # capture every bucket the shapes need before timing (writes slots 0..k-1)
