@@ -448,3 +448,19 @@ native_static serving scorecard; only then should the N3 implementation treatmen
   near-tie flips, not a bug. Packed may drift slightly earlier on long prompts (small sample).
 - Evidence: docs/verification/evidence/p1-packed-prefill-l4-20261116/.
 - Next: P2 (prefix cache in pool format) to recover shared_prefix, then a 3-round scorecard.
+
+## 2026-11-16 — P2 prefix cache in pool format, L4 @6cc1d88
+
+- Code: `runtime/pool_prefix_cache.py` (slot K/V + GDN conv/rec snapshot at 128-token block
+  boundaries), `prefill_packed(starts=)` continuation, cohort prefix sharing in
+  `StaticDecodeLane._prefix_plan`. A lone prompt stores its prefix only if one of the last 64
+  packed prompts shared it (first P2 @aeac3dd stored every cold prompt: moderate c1 TTFT 73 →
+  144 ms; fixed).
+- Tests (L4): CPU suite and FLA suite pass (continuation vs from-scratch, snapshot restore,
+  slot copy, cohort sharing, plain and spec engine paths greedy-equal).
+- Fast scorecard, 1 round, TTFT p50 native_spec → native_packed (v1.15 = P1+P2):
+  interactive c1 67 → 73, c16 805 → 99; moderate c1 132 → 82, c16 772 → 164;
+  prefill_heavy c1 172 → 138, c16 864 → 366; shared_prefix c1 76 → 86, c16 141 → 166
+  (was 466 with P1 alone). Out tok/s c16: +38%, +11%, +17%, −6% (shared_prefix).
+- Evidence: docs/verification/evidence/p2-pool-prefix-l4-6cc1d88-20261116/.
+- Next: 3-round scorecard with vLLM/SGLang to decide keep v1.15.
