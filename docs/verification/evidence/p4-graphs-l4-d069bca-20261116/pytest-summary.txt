@@ -1,0 +1,4 @@
+SKIPPED [1] tests/test_qwen_static_decode.py:280: flash-linear-attention not installed
+SKIPPED [1] tests/test_qwen_static_decode.py:360: flash-linear-attention not installed
+SKIPPED [1] tests/test_qwen_static_decode.py:406: flash-linear-attention not installed
+.......................                                                  [100%]

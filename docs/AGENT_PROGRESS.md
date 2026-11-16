@@ -492,3 +492,9 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 - FLA varlen causal_conv1d takes per-sequence initial_state (equal to per-segment calls, diff 0.0). Continuation path now one conv call: c4 hit 96 -> 74 ms, c8 hit 133 -> 83 ms. FLA tests pass on L4.
 - FLA under torch.cuda.graph: capture works, replay 0.09 ms vs eager 1.58 ms, but cu_seqlens is read on host (ops/utils/index.py tolist) so the segment split is frozen at capture. Graphs need a fixed split per bucket (rows padded to a bucket length).
 - Evidence: docs/verification/evidence/p4-profile-l4-f6164b6-20261116/
+
+## 2026-11-16 P4 graphed small prefills (L4, d069bca)
+- Inert padding (beta=0, g=0) probe: outputs equal, final state diff <= 3e-8.
+- prefill_graphed: k<=8 rows x L in {16,32,64,128}, captured at warm-up. Tests incl. graphed-vs-eager (logits, hidden, K/V, conv/rec, mask; fresh, continuation, 2nd replay) pass on L4.
+- Wall ms eager -> graphed: c1 40 tok 62 -> 24; c1 hit 1152+48 68 -> 25; c4 40 tok 67 -> 40; c4 hit 74 -> 41; c8 hit 83 -> 66. Unbucketed shapes unchanged.
+- Next: 1-round scorecard native_packed vs native_graphs (equal-work check), then full scorecard.
