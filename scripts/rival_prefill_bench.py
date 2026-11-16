@@ -2,7 +2,7 @@
 """P5 rival study: SGLang's prefill latency on the same shapes as packed_prefill_profile.py.
 
 Installs SGLang (pinned) into /content/venv-sglang if it is missing, then runs SGLang's own
-offline single-batch benchmark (python -m sglang.bench_one_batch, no HTTP, no scheduler) for
+offline single-batch benchmark (python -m sglang.benchmark.one_batch, no HTTP, no scheduler) for
 each (batch, input_len) shape with output_len 2, and records its reported prefill latency.
 Compared with our prefill_packed timings for the same shapes this says whether the scorecard's
 prefill_heavy gap is per-token prefill cost (kernel + host) or scheduling.
@@ -55,7 +55,7 @@ def main():
     for bs, n in SHAPES:
         rf = out.parent / f'sglang-bench-{bs}x{n}.jsonl'
         text_log = out.parent / f'sglang-bench-{bs}x{n}.log'
-        cmd = [py, '-m', 'sglang.bench_one_batch', '--model-path', 'Qwen/Qwen3.5-2B-Base', '--revision', REV,
+        cmd = [py, '-m', 'sglang.benchmark.one_batch', '--model-path', 'Qwen/Qwen3.5-2B-Base', '--revision', REV,
                '--dtype', 'bfloat16', '--context-length', '8192', '--batch-size', bs, '--input-len', n,
                '--output-len', 2, '--run-name', f'{bs}x{n}', '--result-filename', rf]
         with open(text_log, 'w') as f:
