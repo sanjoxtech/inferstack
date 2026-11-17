@@ -9,6 +9,10 @@ from inferstack.core.request import Request, RequestState
 from inferstack.runtime.hybrid_prefix_cache import HybridPrefixStateCache, fork_cache_cow, merge_cache_rows, repeat_cache_rows, select_cache_rows
 from inferstack.runtime.sampler import FastSampler
 
+
+def _deliver(items):
+    for q,x in items:q.put_nowait(x)
+
 class NativeQwenContinuousError(RuntimeError): pass
 
 @dataclass
@@ -36,7 +40,7 @@ class QwenHybridContinuousEngine:
         self._supports_logits_to_keep=self._detect_logits_to_keep(model);self._compiled=False;self._compiled_model=None;self._compile_error=None;self._graph_shapes=set();self._graph_first=0;self._graph_reuse=0;self._graph_bucket_rows=0;self._graph_static_cache_uses=0;self._graph_mark_steps=0
         self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots','prefill_tokens')}
         self._ttft={k:0.0 for k in ('requests','queue_ms','wait_ms','prefill_ms','total_ms','decode_steps','other_prefill_forwards')}
-        self._lane=None;self._static_diag={'enabled':bool(getattr(cfg.native,'static_decode',False)),'active':False};self._gdn_diag={};self._forward_fusion_diag={};self._profile={'enabled':bool(getattr(cfg.native,'profile_decode',False)),'decode_calls':0,'decode_wall_ms':0.0,'model_gpu_ms':0.0,'sampler_gpu_ms':0.0,'accept_wall_ms':0.0,'compact_wall_ms':0.0,'syncs':0}
+        self._emit_batched=bool(getattr(cfg.native,'emit_batched',False));self._lane=None;self._static_diag={'enabled':bool(getattr(cfg.native,'static_decode',False)),'active':False};self._gdn_diag={};self._forward_fusion_diag={};self._profile={'enabled':bool(getattr(cfg.native,'profile_decode',False)),'decode_calls':0,'decode_wall_ms':0.0,'model_gpu_ms':0.0,'sampler_gpu_ms':0.0,'accept_wall_ms':0.0,'compact_wall_ms':0.0,'syncs':0}
     @staticmethod
     def _detect_logits_to_keep(model):
         try:
@@ -51,6 +55,19 @@ class QwenHybridContinuousEngine:
         loop=self._loop_ref
         if loop is None or loop.is_closed():return
         loop.call_soon_threadsafe(q.put_nowait,item)
+    def _emit_many(self,items):
+        """P6: deliver a step's (queue, item) pairs with one event-loop wakeup instead of one per
+        token. Each call_soon_threadsafe wakes the loop thread, which then contends for the GIL with
+        the GPU thread; at 16 rows that cost ~9 ms of host time per spec step (L4, prefill_heavy c16).
+        Per-queue order is kept."""
+        if not items:return
+        if not self._emit_batched:
+            for q,x in items:self._emit(q,x)
+            return
+        self._stats['threadsafe_queue_emits']+=len(items);self._stats['threadsafe_batches']=self._stats.get('threadsafe_batches',0)+1
+        loop=self._loop_ref
+        if loop is None or loop.is_closed():return
+        loop.call_soon_threadsafe(_deliver,items)
     async def _gpu(self,fn,*args):
         loop=asyncio.get_running_loop()
         if self._lane is None:return await loop.run_in_executor(self._gpu_executor,functools.partial(fn,*args))
@@ -391,15 +408,19 @@ class QwenHybridContinuousEngine:
         return lane.dec.text.norm.register_forward_hook(keep)
     def _accept(self,state,tokens_gpu):
         self._accept_host(state,tokens_gpu.detach().cpu().tolist())
-    def _accept_host(self,state,toks):
-        """Emit one token per row from a host list; None skips the row (spec lane second tokens)."""
+    def _accept_host(self,state,toks,buf=None):
+        """Emit one token per row from a host list; None skips the row (spec lane second tokens).
+        buf (P6): collect (queue, item) pairs for the caller to deliver with _emit_many; without
+        it the pairs are delivered at the end of this call in one wakeup."""
+        out=[] if buf is None else buf;now=time.perf_counter()
         for i,t in enumerate(toks):
             r=state.requests[i]
             if t is None or r.state!=RequestState.RUNNING:continue
-            t=int(t);r.token_emission_times.append(time.perf_counter());r.generated_token_ids.append(t);state.generated[i]+=1;self._emit(state.queues[i],t);self._stats['tokens_emitted']+=1
+            t=int(t);r.token_emission_times.append(now);r.generated_token_ids.append(t);state.generated[i]+=1;out.append((state.queues[i],t));self._stats['tokens_emitted']+=1
             if state.generated[i]==1:self._ttft_record(r)
             if t in state.stop_sets[i] or state.generated[i]>=r.sampling.max_new_tokens:
-                r.finish_reason='stop' if t in state.stop_sets[i] else 'length';r.state=RequestState.FINISHED;self._emit(state.queues[i],None);self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
+                r.finish_reason='stop' if t in state.stop_sets[i] else 'length';r.state=RequestState.FINISHED;out.append((state.queues[i],None));self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None)
+        if buf is None:self._emit_many(out)
     def _compact(self,state):
         import torch
         keep=[i for i,r in enumerate(state.requests) if r.state==RequestState.RUNNING]

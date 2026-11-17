@@ -315,8 +315,10 @@ class StaticDecodeLane:
         t1 = time.perf_counter()
         self.stats['spec_step_ms'] += (t1 - t0) * 1000   # launch + GPU step + sync
         e = self.e
-        e._accept_host(self.batch, [r[0] for r in yh])
-        e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)])
+        buf = []   # P6: one event-loop wakeup per step for all rows' tokens
+        e._accept_host(self.batch, [r[0] for r in yh], buf)
+        e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)], buf)
+        e._emit_many(buf)
         self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
         k = sum(map(bool, ah))
         self.stats['decode_steps'] += 1

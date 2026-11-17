@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -44,6 +44,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=F
     n.static_decode_packed_max_tokens = budget
     n.prefix_cache_store_first_sight = first_sight
     n.prefix_cache_single_pass_snapshot = single
+    n.emit_batched = emit
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -61,11 +62,11 @@ async def drain(q, timeout=60):
 
 
 def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False,
-        single=False):
+        single=False, emit=False):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -229,3 +230,15 @@ def test_packed_prefill_shares_prefix_within_a_cohort(spec):
     assert got == ref
     sd = d['static_decode']
     assert sd['packed_prefix_groups'] >= 1 and sd['packed_prefix_shared_rows'] >= 1, sd
+
+
+@pytest.mark.parametrize('spec', [False, True])
+def test_batched_emission_keeps_streams_identical(spec):
+    """P6: emit_batched delivers a step's tokens in one event-loop wakeup; every stream must be
+    token-for-token what the per-token path gives (order, stop, length)."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'q1', shared + [1, 2], 9), (0.0, 'q2', [3, 3, 3], 5), (0.05, 'q3', shared + [7], 12),
+            (0.1, 'q4', [5, 1], 3)]
+    ref, _ = run(True, plan, packed=True, spec=spec, budget=64)
+    got, _ = run(True, plan, packed=True, spec=spec, budget=64, emit=True)
+    assert got == ref

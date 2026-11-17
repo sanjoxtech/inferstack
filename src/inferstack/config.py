@@ -67,6 +67,7 @@ class NativeConfig:
     # call per admission with cold prompts; a repeat then restores instead of recomputing.
     prefix_cache_store_first_sight:bool=False
     prefix_cache_single_pass_snapshot:bool=False   # P5: record a lone prompt's snapshot inside its one prefill (FLA chunk-start states)
+    emit_batched:bool=False   # P6: deliver each decode step's tokens to the event loop in one wakeup
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True
