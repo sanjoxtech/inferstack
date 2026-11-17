@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False, tail=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -45,6 +45,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=F
     n.prefix_cache_store_first_sight = first_sight
     n.prefix_cache_single_pass_snapshot = single
     n.emit_batched = emit
+    n.static_decode_compact_from_tail = tail
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -62,11 +63,11 @@ async def drain(q, timeout=60):
 
 
 def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False,
-        single=False, emit=False):
+        single=False, emit=False, tail=False):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit, tail), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -242,3 +243,17 @@ def test_batched_emission_keeps_streams_identical(spec):
     ref, _ = run(True, plan, packed=True, spec=spec, budget=64)
     got, _ = run(True, plan, packed=True, spec=spec, budget=64, emit=True)
     assert got == ref
+
+
+@pytest.mark.parametrize('spec', [False, True])
+def test_tail_fill_compaction_keeps_outputs(spec):
+    """P6: with compact_from_tail, finished rows' slots are refilled from the tail (rows reorder).
+    Every request's greedy output must still equal the Transformers path, with rows finishing
+    at different steps so holes open in the middle of the batch."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'r1', shared + [1, 2], 2), (0.0, 'r2', [3, 3, 3], 9), (0.0, 'r3', shared + [7], 3),
+            (0.0, 'r4', [5, 1, 4], 11), (0.15, 'r5', [2, 6, 2, 6], 4), (0.2, 'r6', shared[:9], 7)]
+    ref, _ = run(False, plan)
+    got, d = run(True, plan, packed=True, spec=spec, budget=64, tail=True)
+    assert got == ref
+    assert d['static_decode']['decoder'].get('row_moves', 0) >= 1, d['static_decode']['decoder']

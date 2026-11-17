@@ -42,6 +42,7 @@ class StaticDecodeLane:
         self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
         self.single_pass_snapshot = bool(getattr(n, 'prefix_cache_single_pass_snapshot', False))
+        self.compact_from_tail = bool(getattr(n, 'static_decode_compact_from_tail', False))
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
@@ -331,7 +332,8 @@ class StaticDecodeLane:
         self.stats['spec_host_ms'] += (time.perf_counter() - t1) * 1000
 
     def compact(self):
-        """Drop finished/cancelled rows and pack survivors into slots 0..k-1 (order kept)."""
+        """Drop finished/cancelled rows and pack survivors into slots 0..k-1 (order kept, or with
+        compact_from_tail the tail rows fill the holes)."""
         import torch
         b = self.batch
         live = [i for i, r in enumerate(b.requests) if r.state == RequestState.RUNNING]
@@ -342,6 +344,18 @@ class StaticDecodeLane:
                 self.e._emit(b.queues[i], None)
                 self.e._requests.pop(r.request_id, None)
                 self.e._queues.pop(r.request_id, None)
+        if self.compact_from_tail:
+            # P6: fill each hole below k with a live row from the tail: one row move per finished
+            # row instead of shifting every survivor after it. A move copies the row's KV, conv,
+            # recurrent (and spec) state per layer, ~1 ms of launches at 1.6k tokens on L4, so the
+            # order-keeping shift cost ~9 ms per step in prefill_heavy c16. Row order is not used.
+            k = len(live)
+            alive = set(live)
+            holes = [i for i in range(k) if i not in alive]
+            order = list(range(k))
+            for h, src in zip(holes, [i for i in live if i >= k]):
+                order[h] = src
+            live = order
         for j, src in enumerate(live):
             if src != j:
                 if self.sp is not None:
