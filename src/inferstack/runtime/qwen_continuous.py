@@ -52,7 +52,16 @@ class QwenHybridContinuousEngine:
         if loop is None or loop.is_closed():return
         loop.call_soon_threadsafe(q.put_nowait,item)
     async def _gpu(self,fn,*args):
-        loop=asyncio.get_running_loop();return await loop.run_in_executor(self._gpu_executor,functools.partial(fn,*args))
+        loop=asyncio.get_running_loop()
+        if self._lane is None:return await loop.run_in_executor(self._gpu_executor,functools.partial(fn,*args))
+        return await loop.run_in_executor(self._gpu_executor,functools.partial(self._timed_gpu,fn,*args))
+    def _timed_gpu(self,fn,*args):
+        # P6 diagnosis: time the GPU thread spends inside work items (launch + host code + syncs).
+        # Cell wall minus this is time the GPU thread sat idle (event-loop hops, HTTP, scheduling).
+        t=time.perf_counter()
+        try:return fn(*args)
+        finally:
+            st=self._lane.stats;st['gpu_thread_ms']=st.get('gpu_thread_ms',0.0)+(time.perf_counter()-t)*1000;st['gpu_thread_calls']=st.get('gpu_thread_calls',0)+1
     def _model_call(self,**kw):
         if self._supports_logits_to_keep:kw['logits_to_keep']=1
         # Compile only the single-token decode graph. Prefill remains eager so the

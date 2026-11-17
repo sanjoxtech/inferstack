@@ -252,7 +252,7 @@ async def one(client, base, model, prompt, max_tokens, temperature, timeout):
 
 SPEC_KEYS = ('spec_steps', 'spec_row_steps', 'spec_accepted', 'spec_step_ms', 'decode_steps',
              'packed_prefills', 'packed_rows', 'packed_prefix_hits', 'packed_prefix_groups', 'packed_tokens_saved',
-             'packed_ms')
+             'packed_ms', 'gpu_thread_ms', 'gpu_thread_calls', 'spec_host_ms')
 
 
 async def ttft_breakdown(base):
@@ -290,7 +290,13 @@ def breakdown_delta(before, after):
                    **{k: d.get('lane_' + k, 0) for k in ('packed_prefills', 'packed_rows', 'packed_prefix_hits',
                                                          'packed_prefix_groups', 'packed_tokens_saved')},
                    'packed_ms_per_prefill': round(d.get('lane_packed_ms', 0) / d['lane_packed_prefills'], 3)
-                   if d.get('lane_packed_prefills') else None}
+                   if d.get('lane_packed_prefills') else None,
+                   # P6: totals over the cell (ms); compare with the cell's wall_s
+                   'packed_ms_total': round(d.get('lane_packed_ms', 0), 1),
+                   'spec_step_ms_total': round(d.get('lane_spec_step_ms', 0), 1),
+                   'spec_host_ms_total': round(d.get('lane_spec_host_ms', 0), 1),
+                   'gpu_thread_ms_total': round(d.get('lane_gpu_thread_ms', 0), 1),
+                   'gpu_thread_calls': d.get('lane_gpu_thread_calls', 0)}
     return out
 
 

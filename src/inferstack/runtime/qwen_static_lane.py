@@ -37,7 +37,7 @@ class StaticDecodeLane:
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
                       'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
                       'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
-                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_prefix_single_pass': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
+                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_prefix_single_pass': 0, 'spec_host_ms': 0.0, 'gpu_thread_ms': 0.0, 'gpu_thread_calls': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
         n = engine.cfg.native
         self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
@@ -312,7 +312,8 @@ class StaticDecodeLane:
         t0 = time.perf_counter()
         y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + 2)
         yh, ah = y.tolist(), acc.tolist()            # the step's only host sync
-        self.stats['spec_step_ms'] += (time.perf_counter() - t0) * 1000   # launch + GPU step + sync
+        t1 = time.perf_counter()
+        self.stats['spec_step_ms'] += (t1 - t0) * 1000   # launch + GPU step + sync
         e = self.e
         e._accept_host(self.batch, [r[0] for r in yh])
         e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)])
@@ -324,6 +325,8 @@ class StaticDecodeLane:
         self.stats['spec_accepted'] += k
         e._stats['decode_forward_calls'] += 1
         self.compact()
+        # P6: host work after the step's sync (accept, emit, compact); the GPU idles through it
+        self.stats['spec_host_ms'] += (time.perf_counter() - t1) * 1000
 
     def compact(self):
         """Drop finished/cancelled rows and pack survivors into slots 0..k-1 (order kept)."""
