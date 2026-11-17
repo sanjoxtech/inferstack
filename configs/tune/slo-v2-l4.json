@@ -1,0 +1,210 @@
+{
+  "version": 2,
+  "objective": "output_tps",
+  "cells": [
+    [
+      "interactive",
+      1
+    ],
+    [
+      "interactive",
+      4
+    ],
+    [
+      "interactive",
+      8
+    ],
+    [
+      "interactive",
+      16
+    ],
+    [
+      "moderate",
+      1
+    ],
+    [
+      "moderate",
+      4
+    ],
+    [
+      "moderate",
+      8
+    ],
+    [
+      "moderate",
+      16
+    ],
+    [
+      "prefill_heavy",
+      1
+    ],
+    [
+      "prefill_heavy",
+      4
+    ],
+    [
+      "prefill_heavy",
+      8
+    ],
+    [
+      "prefill_heavy",
+      16
+    ],
+    [
+      "shared_prefix",
+      1
+    ],
+    [
+      "shared_prefix",
+      4
+    ],
+    [
+      "shared_prefix",
+      8
+    ],
+    [
+      "shared_prefix",
+      16
+    ]
+  ],
+  "min_success_rate": 1.0,
+  "cell_limits": {
+    "interactive@1": {
+      "ttft_p95_ms": 43.2,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "interactive@4": {
+      "ttft_p95_ms": 92.3,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "interactive@8": {
+      "ttft_p95_ms": 91.4,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "interactive@16": {
+      "ttft_p95_ms": 131.1,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "moderate@1": {
+      "ttft_p95_ms": 46.6,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "moderate@4": {
+      "ttft_p95_ms": 137.1,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "moderate@8": {
+      "ttft_p95_ms": 250,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "moderate@16": {
+      "ttft_p95_ms": 250,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "prefill_heavy@1": {
+      "ttft_p95_ms": 122.0,
+      "ttft_p99_ms": 1000,
+      "client_decode_p95_ms": 40
+    },
+    "prefill_heavy@4": {
+      "ttft_p95_ms": 426.2,
+      "ttft_p99_ms": 1000,
+      "client_decode_p95_ms": 40
+    },
+    "prefill_heavy@8": {
+      "ttft_p95_ms": 500,
+      "ttft_p99_ms": 1000,
+      "client_decode_p95_ms": 40
+    },
+    "prefill_heavy@16": {
+      "ttft_p95_ms": 500,
+      "ttft_p99_ms": 1000,
+      "client_decode_p95_ms": 40
+    },
+    "shared_prefix@1": {
+      "ttft_p95_ms": 77.8,
+      "ttft_p99_ms": 600,
+      "client_decode_p95_ms": 30
+    },
+    "shared_prefix@4": {
+      "ttft_p95_ms": 92.6,
+      "ttft_p99_ms": 600,
+      "client_decode_p95_ms": 30
+    },
+    "shared_prefix@8": {
+      "ttft_p95_ms": 109.5,
+      "ttft_p99_ms": 600,
+      "client_decode_p95_ms": 30
+    },
+    "shared_prefix@16": {
+      "ttft_p95_ms": 150.5,
+      "ttft_p99_ms": 600,
+      "client_decode_p95_ms": 30
+    }
+  },
+  "cell_floors": {
+    "interactive@1": {
+      "output_tps": 63.4
+    },
+    "interactive@4": {
+      "output_tps": 231.0
+    },
+    "interactive@8": {
+      "output_tps": 440.4
+    },
+    "interactive@16": {
+      "output_tps": 805.1
+    },
+    "moderate@1": {
+      "output_tps": 63.7
+    },
+    "moderate@4": {
+      "output_tps": 232.4
+    },
+    "moderate@8": {
+      "output_tps": 434.8
+    },
+    "moderate@16": {
+      "output_tps": 776.9
+    },
+    "prefill_heavy@1": {
+      "output_tps": 52.7
+    },
+    "prefill_heavy@4": {
+      "output_tps": 159.6
+    },
+    "prefill_heavy@8": {
+      "output_tps": 241.5
+    },
+    "prefill_heavy@16": {
+      "output_tps": 323.9
+    },
+    "shared_prefix@1": {
+      "output_tps": 60.5
+    },
+    "shared_prefix@4": {
+      "output_tps": 195.3
+    },
+    "shared_prefix@8": {
+      "output_tps": 295.4
+    },
+    "shared_prefix@16": {
+      "output_tps": 556.4
+    }
+  },
+  "layers": {
+    "industry": "per workload class, absolute: MLPerf Inference Llama3.1-8B Interactive (p99 TTFT 500 ms, TPOT 30 ms; github.com/mlcommons/inference_policies inference_rules.adoc), DistServe chatbot p90 TTFT 250 ms (arXiv 2401.09670), MLPerf-8B -> 2B on L4 so not relaxed; prefill_heavy (~2k-token prompts) uses the 1-4k class (TTFT p95 500 / p99 1000, TPOT 40); shared_prefix uses the RAG-with-cache-hit class (300 / 600 / 30)",
+    "dominance": "TTFT p95 <= best of vLLM 0.33.0 / SGLang 0.5.23 and output tok/s >= best rival, per cell (medians of 3 rounds, L4, run p4-full-l4-3d08aa0-20261116)"
+  },
+  "limit_rule": "each cell: ttft_p95_ms = min(industry, best rival); ttft_p99_ms and client_decode_p95_ms = industry; output_tps >= best rival",
+  "goodput_next": "goodput (max Poisson req/s with >=99% of requests meeting TTFT and TPOT together, also reported at 90%) needs an open-loop arrival mode in the scorecard; not measured yet",
+  "notes": "client_decode_p95_ms is per-request mean inter-token time at p95 over requests (close to TPOT p95). Re-measure rivals before any public claim."
+}

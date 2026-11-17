@@ -411,6 +411,9 @@ def _round_metrics(rows, cell):
         'e2e_p50_ms': pct([r['e2e_ms'] for r in ok], .5),
         'e2e_p95_ms': pct([r['e2e_ms'] for r in ok], .95),
         'client_decode_p50_ms': pct([r['client_decode_ms'] for r in ok if r['client_decode_ms'] is not None], .5),
+        # SLO v2: MLPerf-style tails (TTFT p99, per-token decode p95) for the SLO tuner
+        'ttft_p99_ms': pct([r['ttft_ms'] for r in ok if r['ttft_ms'] is not None], .99),
+        'client_decode_p95_ms': pct([r['client_decode_ms'] for r in ok if r['client_decode_ms'] is not None], .95),
         'output_tps': sum(tokens) / cell['wall_s'] if complete_usage and cell and cell.get('wall_s') else None,
         'mean_output_tokens': statistics.mean(tokens) if complete_usage else None,
         'attained_mean_concurrency': (cell or {}).get('attained_mean_concurrency'),
@@ -420,6 +423,7 @@ def _round_metrics(rows, cell):
 
 METRICS_BETTER = {'ttft_p50_ms': 'min', 'ttft_p95_ms': 'min', 'e2e_p50_ms': 'min', 'e2e_p95_ms': 'min',
                   'client_decode_p50_ms': 'min', 'output_tps': 'max', 'success_rate': 'max',
+                  'ttft_p99_ms': 'min', 'client_decode_p95_ms': 'min',
                   'peak_memory_mb': 'min'}
 
 
