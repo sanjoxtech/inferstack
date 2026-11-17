@@ -204,6 +204,12 @@ def main():
         if state is None:          # network or CLI hiccup: the job keeps running on the VM
             misses += 1
             print(f'poll failed ({misses}); retrying', flush=True)
+            if misses >= 3:   # a reclaimed VM looks like poll failures forever (seen 2026-11-17): check it exists
+                listing = sh(colab, 'sessions', capture=True, check=False, timeout=120).stdout or ''
+                if ('No active sessions' in listing or '[' in listing) and f'[{args.session}]' not in listing:
+                    print(f'session {args.session} no longer exists (VM reclaimed); giving up, nothing to download',
+                          flush=True)
+                    sys.exit(3)
             continue
         misses = 0
         (out / 'job.log.tail').write_text(state['tail'])
