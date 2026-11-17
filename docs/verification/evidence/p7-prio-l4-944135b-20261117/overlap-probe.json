@@ -1,0 +1,52 @@
+{
+  "gpu": "NVIDIA L4",
+  "rows": 16,
+  "prompt_tokens": 2000,
+  "decode_alone_ms": 34.78638749999163,
+  "cases": [
+    {
+      "decode_priority": "default",
+      "prefill_rows": 1,
+      "prefill_alone_ms": 133.34189400006835,
+      "overlap_prefill_ms": 168.55183000006946,
+      "overlap_decode_steps": 2,
+      "overlap_decode_step_ms_p50": 86.84051850002561,
+      "overlap_decode_step_ms_p95": 88.27046800001881,
+      "sequential_stall_ms": 133.34189400006835,
+      "prefill_slowdown": 1.264057566183836
+    },
+    {
+      "decode_priority": "default",
+      "prefill_rows": 2,
+      "prefill_alone_ms": 276.5305319999243,
+      "overlap_prefill_ms": 318.4533950000059,
+      "overlap_decode_steps": 3,
+      "overlap_decode_step_ms_p50": 121.0840559999724,
+      "overlap_decode_step_ms_p95": 132.13675800000146,
+      "sequential_stall_ms": 276.5305319999243,
+      "prefill_slowdown": 1.1516030172035148
+    },
+    {
+      "decode_priority": "high",
+      "prefill_rows": 1,
+      "prefill_alone_ms": 136.11162000006516,
+      "overlap_prefill_ms": 211.1453589999428,
+      "overlap_decode_steps": 5,
+      "overlap_decode_step_ms_p50": 39.62219850001247,
+      "overlap_decode_step_ms_p95": 77.31313100009629,
+      "sequential_stall_ms": 136.11162000006516,
+      "prefill_slowdown": 1.551266225468786
+    },
+    {
+      "decode_priority": "high",
+      "prefill_rows": 2,
+      "prefill_alone_ms": 275.34753899999487,
+      "overlap_prefill_ms": 451.4568460000419,
+      "overlap_decode_steps": 11,
+      "overlap_decode_step_ms_p50": 41.43732199997885,
+      "overlap_decode_step_ms_p95": 71.42018199999711,
+      "sequential_stall_ms": 275.34753899999487,
+      "prefill_slowdown": 1.6395891811477215
+    }
+  ]
+}
