@@ -12,10 +12,10 @@ candidate. L4 evidence identified prefill as the largest remaining gap, and the
 `production-v1.7.0` candidate adds a served static-decode/CUDA-graph lane that still
 requires a full scorecard acceptance run.
 
-Start with the [target architecture](docs/ARCHITECTURE.md), the
-[inference harness plan](docs/INFERENCE_HARNESS_PLAN.md), the
-[portable experiment plan](docs/PORTABLE_EXPERIMENT_EXECUTION_PLAN.md), and the
-[llama.cpp v1 integration plan](docs/LLAMA_CPP_INTEGRATION_PLAN.md). Historical
+Start with the [target architecture](ARCHITECTURE.md), the
+[inference harness plan](INFERENCE_HARNESS_PLAN.md), the
+[portable experiment plan](PORTABLE_EXPERIMENT_EXECUTION_PLAN.md), and the
+[llama.cpp v1 integration plan](LLAMA_CPP_INTEGRATION_PLAN.md). Historical
 audits and implementation plans remain useful for provenance but may describe older
 checkpoints.
 
@@ -23,7 +23,7 @@ checkpoints.
 
 - Develop and review source changes here.
 - Download **Code → Download ZIP** while signed in to GitHub, then follow
-  [the Colab guide](COLAB_V1_6.md). No separately packaged release ZIP is needed.
+  [the Colab guide](../COLAB_V1_6.md). No separately packaged release ZIP is needed.
 - Record the tested commit SHA alongside benchmark results. Download results
   before ending a Colab runtime; generated results and model weights are not tracked.
 
@@ -179,8 +179,4 @@ A fusion is kept only if it:
 
 ## Integrated v2 development
 
-See [build status](docs/V2_BUILD.md) and [control-plane runbook](docs/CONTROL_RUNBOOK.md). The integrated control, optimization and release path is under development; this checkpoint is not the completed v2.0 release.
-
-## License
-
-InferStack is licensed under the [Apache License 2.0](LICENSE).
+See [build status](V2_BUILD.md) and [control-plane runbook](CONTROL_RUNBOOK.md). The integrated control, optimization and release path is under development; this checkpoint is not the completed v2.0 release.
