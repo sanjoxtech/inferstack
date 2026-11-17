@@ -1,0 +1,13 @@
+{
+  "objective": "output_tps",
+  "cells": [["interactive", 1], ["interactive", 16], ["moderate", 1], ["moderate", 16],
+            ["prefill_heavy", 1], ["prefill_heavy", 16], ["shared_prefix", 1], ["shared_prefix", 16]],
+  "min_success_rate": 1.0,
+  "limits": {"ttft_p95_ms": 250},
+  "cell_limits": {
+    "prefill_heavy@1": {"ttft_p95_ms": 300},
+    "prefill_heavy@16": {"ttft_p95_ms": 700},
+    "shared_prefix@16": {"ttft_p95_ms": 400}
+  },
+  "notes": "Starting SLO, not the principal's: TTFT p95 limits set ~20-40% above v1.18 L4 values so the tuner trades throughput against first-token wait. Replace with the real SLO."
+}

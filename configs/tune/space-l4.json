@@ -1,0 +1,8 @@
+[
+  {"name": "native.max_requests_per_batch", "choices": [2, 4, 8, 16]},
+  {"name": "native.batch_wait_ms", "choices": [0.0, 1.0, 3.0, 6.0]},
+  {"name": "native.static_decode_compact_from_tail", "choices": [true, false]},
+  {"name": "native.decode_quantum", "choices": [1, 2]},
+  {"name": "native.prefix_state_cache_max_entries", "choices": [64, 128, 256]},
+  {"name": "native.static_decode_spec", "choices": [true, false]}
+]
