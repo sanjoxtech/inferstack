@@ -155,8 +155,10 @@ class QwenHybridContinuousEngine:
                 if bool(getattr(n,'static_decode_packed_graphs',False)):
                     # P4: capture small packed prefills (k rows x L tokens) as CUDA graphs before serving.
                     t0=time.perf_counter();pg=0
+                    ll=tuple(int(x) for x in (getattr(n,'static_decode_prefill_graph_long_lens',()) or ()));lr=int(getattr(n,'static_decode_prefill_graph_long_rows',0) or 0)
+                    if ll and lr:dec.PREFILL_GRAPH_LONG=(ll,lr)   # P8: longer graph buckets for a few rows
                     for kk in range(1,min(dec.PREFILL_GRAPH_MAX_ROWS,st.batch)+1):
-                        for L in dec.PREFILL_GRAPH_LENS:
+                        for L in dec.prefill_graph_lens(kk):
                             if L<max_len:dec.capture_prefill_graph(st,kk,L);pg+=1
                     dec.reset(st);torch.cuda.synchronize();self._static_diag.update(prefill_graphs=pg,prefill_graph_capture_s=round(time.perf_counter()-t0,3))
             self._lane=StaticDecodeLane(self,dec,st,spec=sp);self._static_diag.update(active=True,spec=sp is not None,gdn_backend=dec.gdn_backend,graphs_captured=graphs,capture_s=round(time.perf_counter()-t,3),pool_bytes=sum(x.numel()*x.element_size() for x in [st.mask,st.logits]+[y for kv in st.kv.values() for y in kv]+list(st.conv.values())+list(st.rec.values())))

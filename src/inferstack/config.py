@@ -72,6 +72,8 @@ class NativeConfig:
     static_decode_overlap_prefill:bool=False   # P7: long packed prefills run on a low-priority stream/thread into spare slots while decode continues
     static_decode_overlap_slots:int=0          # P7: spare slots above static_decode_slots for in-flight overlap prefills
     static_decode_overlap_min_tokens:int=512   # P7: overlap only when the longest admitted prompt has at least this many tokens
+    static_decode_prefill_graph_long_lens:tuple[int,...]=()   # P8: extra prefill graph buckets (tokens per row), e.g. (256, 512)
+    static_decode_prefill_graph_long_rows:int=0       # P8: up to this many rows use the long buckets
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True

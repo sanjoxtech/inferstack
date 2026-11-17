@@ -561,3 +561,55 @@ def test_prefill_graphed_fla_matches_eager_on_cuda():
     with torch.inference_mode():
         assert dg.prefill_graphed(sg, [0], [rnd(200)]) is None
         assert dg.prefill_graphed(sg, [0, 1], [rnd(5), rnd(5)]) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='prefill graphs need CUDA')
+def test_long_prefill_graph_records_snapshot_like_eager_on_cuda():
+    """P8: a long bucket (L=256, k<=2) replays a cold prompt and records its prefix-cache
+    snapshot inside the graph; logits and the snapshot conv/recurrent state match eager
+    prefill_packed(snap=...), and a plain replay of the same graph (no snap) still matches."""
+    from inferstack.kernels.gdn import fla_available
+    from inferstack.kernels import fla_gdr_states
+    if not fla_available() or not fla_gdr_states.available():
+        pytest.skip('flash-linear-attention 0.6.0 not installed')
+    torch.manual_seed(12)
+    cfg = Qwen3_5TextConfig(
+        vocab_size=97, hidden_size=128, intermediate_size=192, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=32,
+        linear_conv_kernel_dim=4, linear_key_head_dim=32, linear_value_head_dim=32,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        layer_types=['linear_attention', 'linear_attention', 'full_attention', 'linear_attention'],
+        max_position_embeddings=1024, rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0,
+                                                       'partial_rotary_factor': 0.5, 'mrope_section': [4, 2, 2]},
+        attn_implementation='sdpa')
+    model = qwen.Qwen3_5ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.05)
+    model = model.cuda()
+    g = torch.Generator().manual_seed(3)
+    rnd = lambda n: torch.randint(0, 97, (n,), generator=g).tolist()   # noqa: E731
+    dg = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+    dg.PREFILL_GRAPH_LONG = ((256,), 2)
+    sg = dg.new_state(4, 768)
+    with torch.inference_mode():
+        dg.capture_prefill_graph(sg, 2, 256)
+    dg.reset(sg)
+    for prompts, snap in (([rnd(200), rnd(250)], [128, 128]), ([rnd(140), rnd(90)], [128, 0]),
+                          ([rnd(256), rnd(30)], None)):
+        de = QwenStaticDecoder(model, 'cuda', dtype=torch.float32)
+        se = de.new_state(4, 768)
+        so_e, so_g = {}, {}
+        with torch.inference_mode():
+            le, _, _ = de.prefill_packed(se, [0, 1], prompts, snap=snap, snap_out=so_e if snap else None)
+            out = dg.prefill_graphed(sg, [0, 1], prompts, snap=snap, snap_out=so_g if snap else None)
+        assert out is not None
+        torch.testing.assert_close(out[0].float(), le.float(), rtol=1e-3, atol=1e-3)
+        if snap:
+            assert so_g['rows'] == so_e['rows']
+            for i in se.conv:
+                torch.testing.assert_close(so_g['conv'][i].float(), so_e['conv'][i].float(), rtol=1e-4, atol=1e-4)
+                torch.testing.assert_close(so_g['rec'][i], so_e['rec'][i], rtol=1e-3, atol=1e-3)
+        for i in se.rec:   # final states land in the slots either way
+            torch.testing.assert_close(sg.rec[i][:2], se.rec[i][:2], rtol=1e-3, atol=1e-3)
+    assert dg.stats.get('prefill_snap_replays', 0) == 2

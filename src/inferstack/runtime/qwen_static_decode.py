@@ -511,6 +511,15 @@ class QwenStaticDecoder:
     PREFILL_GRAPH_LENS = (16, 32, 64, 128)
     PREFILL_GRAPH_MAX_ROWS = 8
 
+    # P8: longer buckets (e.g. 256, 512 tokens) for a few rows; these graphs also record the
+    # prefix-cache snapshot of cold rows inside the graph (FLA chunk-start states), so a cold
+    # ~500-token prompt no longer falls back to the eager prefill and its per-layer host work.
+    PREFILL_GRAPH_LONG = ((), 0)
+
+    def prefill_graph_lens(self, k):
+        lens, rows = self.PREFILL_GRAPH_LONG
+        return tuple(self.PREFILL_GRAPH_LENS) + (tuple(lens) if k <= rows else ())
+
     def prefill_graph_key(self, st, prompts, starts=None):
         """(k, L) bucket for these prompts, or None when they do not fit a graph."""
         k = len(prompts)
@@ -518,7 +527,7 @@ class QwenStaticDecoder:
             return None
         starts = [0] * k if starts is None else starts
         new = max(len(p) - s0 for p, s0 in zip(prompts, starts))
-        L = next((x for x in self.PREFILL_GRAPH_LENS if x >= new), None)
+        L = next((x for x in self.prefill_graph_lens(k) if x >= new), None)
         if L is None or any(s0 + L > st.max_len for s0 in starts):
             return None
         return k, L
@@ -533,10 +542,15 @@ class QwenStaticDecoder:
                 'cont': torch.zeros((k,), dtype=torch.bool, device=dev),
                 'nnew': torch.ones((k,), dtype=torch.long, device=dev),
                 'full': torch.ones((k,), dtype=torch.long, device=dev),
-                'cu': torch.arange(0, T + 1, L, dtype=torch.int32, device=dev)}
+                'cu': torch.arange(0, T + 1, L, dtype=torch.int32, device=dev),
+                **({'snap_rel': torch.zeros((k,), dtype=torch.long, device=dev)}
+                   if L in self.PREFILL_GRAPH_LONG[0] and L % 64 == 0 else {})}
 
-    def _pg_fill(self, buf, k, L, slots, prompts, starts):
+    def _pg_fill(self, buf, k, L, slots, prompts, starts, snap=None):
         import torch
+        if 'snap_rel' in buf:   # P8: per-row snapshot boundary relative to the row's start (0 = none)
+            rel = [max(0, int(b) - s0) if b else 0 for b, s0 in zip(snap or [0] * k, starts)]
+            buf['snap_rel'].copy_(torch.tensor(rel), non_blocking=True)
         ids, pos, valid = [], [], []
         for p, s0 in zip(prompts, starts):
             new = p[s0:]
@@ -602,11 +616,23 @@ class QwenStaticDecoder:
         cols = (buf['nnew'].view(k, 1) + torch.arange(W, device=x.device)).view(k, 1, W)
         conv_final = seq.gather(2, cols.expand(k, seq.shape[1], W))
         q, kk, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
-        o, rec_final = chunk_gated_delta_rule(q.reshape(1, T, -1, g.head_k_dim), kk.reshape(1, T, -1, g.head_k_dim),
-                                              v.reshape(1, T, -1, g.head_v_dim), g=gate, beta=beta,
-                                              scale=g.head_k_dim ** -0.5, initial_state=init_rec,
-                                              output_final_state=True, use_qk_l2norm_in_kernel=True,
-                                              cu_seqlens=buf['cu'])
+        if 'snap_rel' in buf:   # P8: also keep the chunk-start states h for the snapshot boundary
+            from inferstack.kernels.fla_gdr_states import CHUNK, chunk_gdr_with_states
+            o, rec_final, hs = chunk_gdr_with_states(q.reshape(1, T, -1, g.head_k_dim), kk.reshape(1, T, -1, g.head_k_dim),
+                                                     v.reshape(1, T, -1, g.head_v_dim), gate, beta,
+                                                     g.head_k_dim ** -0.5, init_rec, buf['cu'])
+            rel = buf['snap_rel']
+            hix = torch.arange(k, device=x.device) * (L // CHUNK) + rel // CHUNK
+            tok = (torch.arange(k, device=x.device) * L + rel - W).view(k, 1) + torch.arange(W, device=x.device)
+            buf[f'snap_rec{i}'] = hs[0].index_select(0, hix).float()
+            buf[f'snap_conv{i}'] = qkv[0].index_select(0, tok.clamp(min=0).view(-1)).view(k, W, -1).transpose(1, 2) \
+                .to(st.conv[i].dtype)
+        else:
+            o, rec_final = chunk_gated_delta_rule(q.reshape(1, T, -1, g.head_k_dim), kk.reshape(1, T, -1, g.head_k_dim),
+                                                  v.reshape(1, T, -1, g.head_v_dim), g=gate, beta=beta,
+                                                  scale=g.head_k_dim ** -0.5, initial_state=init_rec,
+                                                  output_final_state=True, use_qk_l2norm_in_kernel=True,
+                                                  cu_seqlens=buf['cu'])
         st.conv[i].index_copy_(0, slot_t, conv_final.to(st.conv[i].dtype))
         st.rec[i].index_copy_(0, slot_t, rec_final.float())
         o = g.norm(o.to(x.dtype).reshape(-1, g.head_v_dim), z.reshape(-1, g.head_v_dim)).reshape(1, T, -1)
@@ -678,7 +704,7 @@ class QwenStaticDecoder:
         self.stats['prefill_captures'] = self.stats.get('prefill_captures', 0) + 1
         return self.graphs[key]
 
-    def prefill_graphed(self, st, slots, prompts, *, starts=None, capture=False):
+    def prefill_graphed(self, st, slots, prompts, *, starts=None, capture=False, snap=None, snap_out=None):
         """prefill_packed for small cohorts through a captured graph. Same return contract
         (logits [k, V], hidden [T_new, H] of the real tokens, cu list). Returns None when the
         prompts do not fit a bucket, or the bucket has no graph and capture=False."""
@@ -689,14 +715,31 @@ class QwenStaticDecoder:
         if key is None:
             return None
         k, L = key
+        want_snap = snap is not None and any(snap)
+        if want_snap:   # same rules as prefill_packed(snap=...); otherwise the caller goes eager
+            from inferstack.kernels.fla_gdr_states import CHUNK
+            if snap_out is None or len(snap) != k or any(
+                    b and not (s0 < int(b) < len(p) and (int(b) - s0) % CHUNK == 0)
+                    for b, s0, p in zip(snap, starts, prompts)):
+                return None
         entry = self.graphs.get((id(st), 'prefill', k, L))
         if entry is None:
             if not capture:
                 return None
             entry = self.capture_prefill_graph(st, k, L)
         graph, buf = entry
-        self._pg_fill(buf, k, L, slots, prompts, starts)
+        if want_snap and 'snap_rel' not in buf:
+            return None
+        self._pg_fill(buf, k, L, slots, prompts, starts, snap=snap)
         graph.replay()
+        if want_snap:
+            rows = [j for j, b in enumerate(snap) if b]
+            rt = torch.tensor(rows, dtype=torch.long, device=self.device)
+            snap_out.clear()
+            snap_out.update(rows=rows,
+                            conv={i: buf[f'snap_conv{i}'].index_select(0, rt).clone() for i in st.conv},
+                            rec={i: buf[f'snap_rec{i}'].index_select(0, rt).clone() for i in st.rec})
+            self.stats['prefill_snap_replays'] = self.stats.get('prefill_snap_replays', 0) + 1
         nnew = [len(p) - s0 for p, s0 in zip(prompts, starts)]
         cu = [0]
         for n in nnew:

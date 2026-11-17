@@ -200,7 +200,10 @@ class StaticDecodeLane:
             out = None
             if snap:   # P5: cold prompts leave their snapshot from this single pass
                 so = {}
-                out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts, snap=snap, snap_out=so)
+                if self.packed_graphs:   # P8: long graphs record the snapshot inside the graph
+                    out = self.dec.prefill_graphed(self.st, slots, prompts, starts=starts, snap=snap, snap_out=so)
+                if out is None:
+                    out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts, snap=snap, snap_out=so)
                 for r, j in enumerate(so['rows']):
                     self.pcache.put(prompts[j][:snap[j]], self.st, slots[j],
                                     conv={i: c[r] for i, c in so['conv'].items()},
