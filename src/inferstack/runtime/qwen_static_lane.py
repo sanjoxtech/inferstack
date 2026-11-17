@@ -156,11 +156,14 @@ class StaticDecodeLane:
         budget = int(getattr(e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
         pc = e._prefix_cache
         free = self.top - self.rows - self.reserved
-        if self.overlap and self.rows:
+        if self.overlap and (self.rows or self._job is not None):
             # P7 v2: long prompts go to the overlap job (or wait for the next one); short ones
-            # keep the normal synchronous path below, into slots not reserved for the job.
-            longs = [(r, q) for r, q in items if len(r.prompt_token_ids) >= self.overlap_min]
-            items = [(r, q) for r, q in items if len(r.prompt_token_ids) < self.overlap_min]
+            # keep the normal synchronous path below, into slots not reserved for the job, but only
+            # when no job is running: Triton's autotuner (FLA kernels) is not thread-safe, so two
+            # threads must never prefill at once (crash seen on L4, run b1af725).
+            busy = self._job is not None
+            longs = [(r, q) for r, q in items if busy or len(r.prompt_token_ids) >= self.overlap_min]
+            items = [(r, q) for r, q in items if not busy and len(r.prompt_token_ids) < self.overlap_min]
             self.long_queue.extend(longs)
             if self._job is None and self.long_queue:
                 self._start_overlap()
