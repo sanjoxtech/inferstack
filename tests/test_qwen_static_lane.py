@@ -275,6 +275,10 @@ def test_overlap_prefill_keeps_outputs(spec, prefix):
             (0.3, 'l4', shared + [4], 3)]
     ref, _ = run(False, plan)
     got, d = run(True, plan, packed=True, spec=spec, budget=64, overlap=2, prefix=prefix)
+    got3, _ = run(True, plan + [(0.06, 's1', [2, 2], 4), (0.07, 'l5', shared + [5, 5], 4)], packed=True, spec=spec,
+                  budget=64, overlap=3, prefix=prefix)   # v2: a short prompt and another long one during a job
+    ref3, _ = run(False, plan + [(0.06, 's1', [2, 2], 4), (0.07, 'l5', shared + [5, 5], 4)])
+    assert got3 == ref3
     assert got == ref
     sd = d['static_decode']
     assert sd.get('overlap_jobs', 0) >= 1 and sd['slots'] == 6, sd

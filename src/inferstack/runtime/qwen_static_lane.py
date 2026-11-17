@@ -52,6 +52,7 @@ class StaticDecodeLane:
         self.top = state.batch - extra if self.overlap else state.batch
         self._job = None
         self.deferred = []
+        self.long_queue = []                       # P7 v2: long prompts waiting for the next overlap job
         self._hi = self._lo = None
         if self.overlap:
             from concurrent.futures import ThreadPoolExecutor
@@ -89,7 +90,7 @@ class StaticDecodeLane:
             greedy = [i for i in fit if float(state.requests[i].sampling.temperature) <= 0]
             self.stats['rows_rejected_sampling'] += len(fit) - len(greedy)
             fit = greedy
-        free = self.top - self.rows
+        free = self.top - self.rows - self.reserved
         if len(fit) > free:
             self.stats['rows_rejected_full'] += len(fit) - free
             fit = fit[:free]
@@ -154,7 +155,18 @@ class StaticDecodeLane:
         extra = 2 if spec else 0
         budget = int(getattr(e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
         pc = e._prefix_cache
-        free = self.top - self.rows
+        free = self.top - self.rows - self.reserved
+        if self.overlap and self.rows:
+            # P7 v2: long prompts go to the overlap job (or wait for the next one); short ones
+            # keep the normal synchronous path below, into slots not reserved for the job.
+            longs = [(r, q) for r, q in items if len(r.prompt_token_ids) >= self.overlap_min]
+            items = [(r, q) for r, q in items if len(r.prompt_token_ids) < self.overlap_min]
+            self.long_queue.extend(longs)
+            if self._job is None and self.long_queue:
+                self._start_overlap()
+                free = self.top - self.rows - self.reserved
+            if not items:
+                return []
         take, rest, T = [], [], 0
         for r, q in items:
             n = len(r.prompt_token_ids)
@@ -166,9 +178,6 @@ class StaticDecodeLane:
                 rest.append((r, q))
         if not take:
             return rest
-        if self.overlap and self.rows and self._job is None and \
-                max(len(r.prompt_token_ids) for r, _ in take) >= self.overlap_min:
-            return self._start_overlap(take) + rest
         rs, qs = [x[0] for x in take], [x[1] for x in take]
         now = time.perf_counter()
         t_admit = now
@@ -230,20 +239,35 @@ class StaticDecodeLane:
 
     # ---- P7: prefill/decode overlap -------------------------------------------------------
     def overlap_busy(self) -> bool:
-        return self._job is not None
+        return self._job is not None or bool(self.long_queue)
 
-    def _start_overlap(self, take):
-        """Launch the packed prefill of `take` into the spare top slots on the prefill thread.
-        Rows beyond the spare slots or not greedy are deferred (the engine re-queues them).
-        Returns [] (the engine must not send anything to the Transformers path)."""
+    @property
+    def reserved(self) -> int:
+        """Slots below `top` promised to the in-flight overlap job's rows."""
+        return len(self._job[0]) if self._job is not None else 0
+
+    def _start_overlap(self):
+        """Launch the packed prefill of up to `spare` queued long prompts into the top slots on
+        the prefill thread. Prompts that cannot fit the pool after the job lands, are not greedy,
+        or exceed the packed token budget wait (non-greedy ones go back to the engine)."""
         import time
         spare = self.st.batch - self.top
-        go, later = [], []
-        for r, q in take:
-            (go if len(go) < spare and float(r.sampling.temperature) <= 0 else later).append((r, q))
-        self.deferred.extend(later)
+        budget = int(getattr(self.e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
+        room = self.top - self.rows
+        extra = 2 if self.sp is not None else 0
+        go, keep, T = [], [], 0
+        for r, q in self.long_queue:
+            n = len(r.prompt_token_ids)
+            if float(r.sampling.temperature) > 0 or n + r.sampling.max_new_tokens + extra > self.st.max_len:
+                self.deferred.append((r, q))
+            elif len(go) < min(spare, room) and T + n <= budget:
+                go.append((r, q))
+                T += n
+            else:
+                keep.append((r, q))
+        self.long_queue = keep
         if not go:
-            return []
+            return
         e, st = self.e, self.e._stats
         now = time.perf_counter()
         for r, _ in go:
@@ -255,7 +279,6 @@ class StaticDecodeLane:
         self._job = (go, slots, now, self._prefill_pool.submit(self._overlap_prefill, go, slots))
         self.stats['overlap_jobs'] = self.stats.get('overlap_jobs', 0) + 1
         self.stats['overlap_rows'] = self.stats.get('overlap_rows', 0) + len(go)
-        return []
 
     def _overlap_prefill(self, go, slots):
         """Prefill thread: same work as admit_packed's prefill, into the top slots, on the
@@ -333,6 +356,8 @@ class StaticDecodeLane:
         self.stats['packed_ms'] += (time.perf_counter() - t0) * 1000
         e._accept_host(b, [None] * base + res['firsts'])
         self.compact()
+        if self.long_queue:                              # P7 v2: next job starts right away
+            self._start_overlap()
         return True
 
     def take_deferred(self):
@@ -422,6 +447,8 @@ class StaticDecodeLane:
 
     def decode(self):
         """One decode step for every live row (runs on the engine's GPU thread)."""
+        if self.overlap and not self.rows and self._job is None and self.long_queue:
+            self._start_overlap()                        # P7 v2: queued long prompts, nothing decoding
         self.poll_overlap(wait=not self.rows)          # P7: nothing to decode -> wait for the prefill
         self.compact()
         n = self.rows

@@ -524,7 +524,6 @@ class QwenHybridContinuousEngine:
     async def _admit_one(self):
         if len(self._active)+len(self._prefill_jobs)>=self.cfg.native.max_active_cohorts:return False
         if self._decode_work() and not self.cfg.native.dynamic_admission:return False
-        if self._lane is not None and self._lane.overlap_busy():return False   # P7: one overlap prefill at a time
         if self._pending.empty():return False
         cohort=await self._gather(wait=not (self._decode_work() or self._prefill_jobs))
         if not cohort:return False
