@@ -36,6 +36,8 @@ def main():
     ap.add_argument('--prompt-tokens', type=int, default=2000)
     ap.add_argument('--prefill-rows', type=int, nargs='*', default=[1, 2])
     ap.add_argument('--reps', type=int, default=5)
+    ap.add_argument('--decode-priority', choices=['default', 'high'], nargs='*', default=['default', 'high'],
+                    help='decode stream priority variants to measure (high = CUDA stream priority -1)')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     import torch
@@ -86,8 +88,11 @@ def main():
 
     res = {'gpu': torch.cuda.get_device_name(0), 'rows': R, 'prompt_tokens': a.prompt_tokens,
            'decode_alone_ms': statistics.median(time_decode()), 'cases': []}
-    side = torch.cuda.Stream()
-    for k in a.prefill_rows:
+    side = torch.cuda.Stream(priority=0)
+    hi = torch.cuda.Stream(priority=-1)   # CUDA: lower number = higher priority; blocks scheduled first
+    variants = [(pr, k) for pr in a.decode_priority for k in a.prefill_rows]
+    for prio, k in variants:
+        dstream = hi if prio == 'high' else torch.cuda.current_stream()
         slots = list(range(R, R + k))
         alone, walls, steps_during, step_ms = [], [], [], []
         for _ in range(a.reps):
@@ -115,18 +120,18 @@ def main():
             th.start()
             ts = []
             i = 0
-            with torch.inference_mode():
+            with torch.inference_mode(), torch.cuda.stream(dstream):
                 while not done.is_set():
                     t = time.perf_counter()
                     step(i)
-                    torch.cuda.current_stream().synchronize()
+                    dstream.synchronize()
                     ts.append((time.perf_counter() - t) * 1e3)
                     i += 1
             th.join()
             walls.append(box['ms'])
             steps_during.append(len(ts))
             step_ms += ts
-        row = {'prefill_rows': k, 'prefill_alone_ms': statistics.median(alone),
+        row = {'decode_priority': prio, 'prefill_rows': k, 'prefill_alone_ms': statistics.median(alone),
                'overlap_prefill_ms': statistics.median(walls), 'overlap_decode_steps': statistics.median(steps_during),
                'overlap_decode_step_ms_p50': statistics.median(step_ms) if step_ms else None,
                'overlap_decode_step_ms_p95': sorted(step_ms)[int(0.95 * (len(step_ms) - 1))] if step_ms else None,

@@ -1,0 +1,28 @@
+{
+  "gpu": "NVIDIA L4",
+  "rows": 16,
+  "prompt_tokens": 2000,
+  "decode_alone_ms": 34.29188199993405,
+  "cases": [
+    {
+      "prefill_rows": 1,
+      "prefill_alone_ms": 133.70165499998166,
+      "overlap_prefill_ms": 170.58248599994386,
+      "overlap_decode_steps": 2,
+      "overlap_decode_step_ms_p50": 87.435983999967,
+      "overlap_decode_step_ms_p95": 89.66476599994166,
+      "sequential_stall_ms": 133.70165499998166,
+      "prefill_slowdown": 1.2758442369316016
+    },
+    {
+      "prefill_rows": 2,
+      "prefill_alone_ms": 278.80345500000203,
+      "overlap_prefill_ms": 320.17360999998346,
+      "overlap_decode_steps": 3,
+      "overlap_decode_step_ms_p50": 122.98533099999531,
+      "overlap_decode_step_ms_p95": 133.08041599998433,
+      "sequential_stall_ms": 278.80345500000203,
+      "prefill_slowdown": 1.148384656854346
+    }
+  ]
+}
