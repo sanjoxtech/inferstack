@@ -5,7 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "inferstack"
 dynamic = ["version"]
-description = "InferStack v1.6 Qwen forward-fusion inference engine"
+description = "InferStack: open-source LLM inference engine and native vs vLLM vs SGLang benchmark harness"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2.8", "httpx>=0.27", "packaging>=23", "numpy>=1.26", "tomli>=2.0; python_version < '3.11'"]
 
