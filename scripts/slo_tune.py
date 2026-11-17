@@ -155,7 +155,49 @@ def run_profiles(profiles: dict, workload, out: Path, rounds: int, baseline=None
     return card
 
 
+def rescore(tune_dir: Path, slo: dict):
+    """Re-judge a finished tune run against another SLO without a GPU: re-aggregate each trial's
+    saved requests (engine_scorecard.aggregate) and score it. Returns rows sorted best first."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('engine_scorecard', Path(__file__).with_name('engine_scorecard.py'))
+    es = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(es)
+    trials = {}
+    for line in (tune_dir / 'trials.jsonl').read_text().splitlines():
+        r = json.loads(line)
+        trials[r['name']] = r
+    rows = []
+    for name, r in sorted(trials.items()):
+        runs = [p.parent for p in (tune_dir / 'runs' / name).rglob('manifest.json')]
+        card = es.aggregate([str(x) for x in runs], min_rounds=1) if runs else {'cells': []}
+        obj, viol, detail = score(card, name, slo)
+        rows.append({'trial': r['trial'], 'name': name, 'params': r['params'], 'objective': obj,
+                     'cells_met': _cells_met(detail, slo), 'feasible': feasible(viol), 'cells': detail})
+    rows.sort(key=lambda r: (r['feasible'], r['cells_met'], r['objective']), reverse=True)
+    return rows
+
+
+def _cells_met(detail, slo):
+    n = 0
+    for cell, d in detail.items():
+        if not isinstance(d, dict):
+            continue
+        lim = {**(slo.get('limits') or {}), **((slo.get('cell_limits') or {}).get(cell) or {})}
+        flo = (slo.get('cell_floors') or {}).get(cell) or {}
+        ok = all(d.get(m) is not None and d[m] <= v for m, v in lim.items()) and \
+            all(d.get(m) is not None and d[m] >= v for m, v in flo.items()) and \
+            (d.get('success_rate') or 0) >= slo.get('min_success_rate', 1.0)
+        n += ok
+    return n
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'rescore':   # slo_tune.py rescore TUNE_DIR SLO.json
+        rows = rescore(Path(sys.argv[2]), json.loads(Path(sys.argv[3]).read_text()))
+        for r in rows:
+            print(f"trial {r['trial']:>2} | cells met {r['cells_met']:>2}/{len(r['cells'])} | feasible {r['feasible']} | "
+                  f"geo tok/s {r['objective']:6.1f} | {json.dumps(r['params'])}")
+        return
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--base', required=True, help='base profile TOML')
     ap.add_argument('--space', required=True, help='JSON list of knobs')

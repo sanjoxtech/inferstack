@@ -90,3 +90,10 @@ def test_floors_require_beating_a_rival_throughput():
                        ('b', 16): {'output_tps': 400, 'success_rate': 1.0, 'ttft_p95_ms': 250}})
     obj, viol, detail = slo_tune.score(card, 't', slo)
     assert viol[-1] == pytest.approx(50 / 450) and not slo_tune.feasible(viol)   # 11% short of the floor
+
+
+def test_cells_met_counts_limits_and_floors():
+    slo = {**SLO, 'cell_floors': {'b@16': {'output_tps': 450}}}
+    detail = {'a@1': {'output_tps': 100, 'success_rate': 1.0, 'ttft_p95_ms': 90},
+              'b@16': {'output_tps': 400, 'success_rate': 1.0, 'ttft_p95_ms': 250}, 'c@1': 'missing'}
+    assert slo_tune._cells_met(detail, slo) == 1          # a@1 meets; b@16 misses its floor; c missing
