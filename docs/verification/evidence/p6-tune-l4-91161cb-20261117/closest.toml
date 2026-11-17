@@ -1,0 +1,93 @@
+name = "production-v1.18.0-closest"
+
+[scheduler]
+max_num_batched_tokens = 8192
+max_running_requests = 128
+max_prefill_chunk_tokens = 128
+decode_priority = true
+async_overlap = false
+
+[kernels]
+attention = "auto"
+rmsnorm = "auto"
+rope = "auto"
+cuda_graphs = false
+torch_compile = false
+compile_mode = "reduce-overhead"
+
+[native]
+enabled = true
+max_pending_requests = 512
+max_requests_per_batch = 8
+max_batch_tokens = 8192
+batch_wait_ms = 0.0
+dynamic_admission = true
+live_batch_refill = true
+active_batch_compaction = true
+max_active_cohorts = 4
+decode_quantum = 1
+prefill_chunk_tokens = 128
+prefill_chunks_per_turn = 1
+prefill_token_budget_idle = 16384
+prefill_token_budget_busy = 1024
+gdn_prefill_backend = "fla"
+prefill_backlog_drain_steps = 1
+gdn_conv_backend = "fla"
+gdn_conv_fla_min_tokens = 1024
+prefill_warmup = true
+prefix_state_cache = true
+prefix_state_cache_max_entries = 128
+prefix_state_cache_max_mb = 3072
+prefix_cache_min_tokens = 128
+prefix_cache_block_tokens = 128
+custom_gdn_triton = true
+strict_custom_kernels = false
+fused_sampler = true
+compile_model = false
+compile_dynamic = true
+strict_compile = false
+explicit_cuda_graph = false
+cuda_graph_batch_sizes = [1, 2, 4, 8, 16]
+kv_padding_interval_size = 8192
+quantization = "none"
+quantization_group_size = 128
+use_hf_kernels = false
+graph_static_cache = false
+graph_cache_max_tokens = 256
+graph_generation_cloning = true
+profile_decode = false
+static_decode = true
+static_decode_slots = 16
+static_decode_max_tokens = 4096
+static_decode_batch_buckets = [1, 2, 4, 8, 16]
+static_decode_len_buckets = [256, 512, 1024, 2048, 4096]
+static_decode_gdn_backend = "auto"
+static_decode_attention = "triton"
+static_decode_cuda_graph = true
+static_decode_strict = true
+static_decode_spec = true
+static_decode_spec_mtp = "Qwen/Qwen3.5-2B-Base@b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+static_decode_spec_draft_vocab = 65536
+static_decode_spec_window = 256
+static_decode_packed_prefill = true
+static_decode_packed_max_tokens = 16384
+static_decode_packed_graphs = true
+prefix_cache_store_first_sight = true
+prefix_cache_single_pass_snapshot = true
+forward_fusion = true
+fuse_rmsnorm = true
+fuse_add_rmsnorm = true
+fuse_gated_rmsnorm = true
+fuse_mlp_gate_up = true
+fuse_mlp_activation = true
+fuse_gdn_projections = true
+fuse_gdn_beta_g = true
+grouped_gdn_decode = true
+fuse_attention_qkv = true
+forward_fusion_strict = false
+static_decode_compact_from_tail = true
+
+[hardware]
+device = "auto"
+dtype = "bf16"
+adaptive = true
