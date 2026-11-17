@@ -519,3 +519,4 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 ## 2026-11-17 — P5 v1.18 single-pass snapshot (134f3d1): on L4
 - Pushed v1.17 (26bed35). v1.18 = v1.17 + `prefix_cache_single_pass_snapshot`: a lone cold prompt's snapshot is recorded inside its one prefill (FLA chunk-start state h at the block boundary; `kernels/fla_gdr_states.py` mirrors fla-core 0.6.0 forward, MIT).
 - Local suite: 476 passed (Qwen3.5 tests skip locally). Colab run `p5-sp-134f3d1`: FLA tests + native_radix vs native_single, 3 rounds.
+- 2026-11-17 ~08:00 IST — v1.18 run `p5-sp-0aed0e2` done: FLA tests pass on L4; vs v1.17 TTFT down in 9 cells (moderate c1 95→75, prefill_heavy c16 262→219), tok/s ahead 7 / overlap 8 / behind ×0.99 1. KEEP. Doc: docs/verification/V118_SINGLE_PASS_SNAPSHOT_L4_2026-11-17.md
