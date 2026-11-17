@@ -247,7 +247,19 @@ class QwenStaticDecoder:
         self.stats['row_moves'] += 1
 
     # ---- P1: packed prefill straight into the pool -----------------------------------
-    def prefill_packed(self, st: StaticDecodeState, slots, prompts, *, starts=None, backend='auto'):
+    def snap_align(self, backend='auto'):
+        """P5: block boundaries prefill_packed(snap=...) can record must be multiples of this
+        (FLA keeps chunk-start states every 64 tokens; the reference path records any boundary)."""
+        if backend == 'auto':
+            from inferstack.kernels.gdn import fla_available
+            backend = 'fla' if self.device.type == 'cuda' and fla_available() else 'reference'
+        if backend != 'fla':
+            return 1
+        from inferstack.kernels import fla_gdr_states
+        return fla_gdr_states.CHUNK if fla_gdr_states.available() else 0
+
+    def prefill_packed(self, st: StaticDecodeState, slots, prompts, *, starts=None, backend='auto',
+                       snap=None, snap_out=None):
         """Prefill several prompts as one flat token batch and write the results straight
         into pool slots (no padding, no Transformers cache, no load_rows copy).
 
@@ -262,6 +274,12 @@ class QwenStaticDecoder:
         snapshot). Only prompt[s:] is computed, from that state. Default all 0.
 
         backend: 'auto' (FLA on CUDA when importable), 'fla' or 'reference'.
+
+        snap (P5): per row, a block boundary b (starts[j] < b < len(prompt), b - starts[j] a multiple
+        of snap_align()) at which to record the GDN conv/recurrent state in this same pass, or 0.
+        snap_out (a dict) receives {'rows': [j...], 'conv': {layer: [R, D, W]}, 'rec': {layer:
+        [R, HV, K, V] fp32}} for those rows; K/V for columns < b are in the slot after the call.
+        Lets a cold prompt leave a prefix-cache snapshot without a second prefill of its prefix.
         Returns (logits [k, vocab] at each prompt's last token, post-norm hidden [T, H] of the
         computed tokens, cu_seqlens list of k+1 offsets into them)."""
         import torch
@@ -295,6 +313,34 @@ class QwenStaticDecoder:
         # the GPU inside the layer loop (or a boolean-mask assignment) synchronises the stream, so
         # the GPU drained and then idled while FLA's ~1.6 ms of Python per call launched the next
         # layer (about 30 ms per long prefill on L4).
+        sn = None
+        if snap is not None and any(snap):
+            if snap_out is None or len(snap) != len(prompts):
+                raise ValueError('snap needs one boundary per prompt and a snap_out dict')
+            al = self.snap_align(backend)
+            rows = [j for j, b in enumerate(snap) if b]
+            for j in rows:
+                b, s0 = int(snap[j]), starts[j]
+                if not al or not s0 < b < full[j] or (b - s0) % al:
+                    raise ValueError(f'snap boundary {b} not recordable for row {j} (start {s0}, len {full[j]}, align {al})')
+            K0 = None
+            for g0 in (self.text.layers[i].linear_attn for i, kd in enumerate(self.layer_types) if kd == 'linear_attention'):
+                K0 = g0.conv1d.weight.shape[-1]
+                break
+            # token rows (in the packed batch) of the W conv inputs before each boundary, and each
+            # boundary's chunk index in FLA's h; one host->device copy per prefill
+            tok = [cu[j] + int(snap[j]) - starts[j] - K0 + w for j in rows for w in range(K0)]
+            if backend == 'fla':
+                from inferstack.kernels.fla_gdr_states import CHUNK, chunk_offsets
+                off = chunk_offsets(lens)
+                hix = [off[j] + (int(snap[j]) - starts[j]) // CHUNK for j in rows]
+            else:
+                hix = []
+            idx = torch.tensor(tok + hix, dtype=torch.long, device=dev)
+            sn = {'rows': rows, 'b': [int(snap[j]) - starts[j] for j in rows], 'W': K0,
+                  'tok': idx[:len(tok)], 'h': idx[len(tok):]}
+            snap_out.clear()
+            snap_out.update(rows=rows, conv={}, rec={})
         keep = None
         if any(starts):   # 1.0 for rows continuing from the slot's state, 0.0 for fresh rows
             keep = torch.tensor([float(s0 > 0) for s0 in starts], device=dev)
@@ -306,7 +352,7 @@ class QwenStaticDecoder:
             h = layer.input_layernorm(h)
             if kind == 'linear_attention':
                 h = self._gdn_packed(i, layer.linear_attn, h, st, slots, cu, cu_t, backend, starts,
-                                     slot_t=slot_t, keep=keep)
+                                     slot_t=slot_t, keep=keep, sn=sn, snap_out=snap_out)
             else:
                 h = self._attn_packed(i, layer.self_attn, h, cos, sin, st, slots, cu, starts)
             h = r + h
@@ -319,7 +365,8 @@ class QwenStaticDecoder:
         self.stats['packed_tokens'] = self.stats.get('packed_tokens', 0) + T
         return logits, h, cu
 
-    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend, starts, *, slot_t=None, keep=None):
+    def _gdn_packed(self, i, g, x, st, slots, cu, cu_t, backend, starts, *, slot_t=None, keep=None, sn=None,
+                    snap_out=None):
         import torch
         import torch.nn.functional as F
         T = x.shape[1]
@@ -361,9 +408,17 @@ class QwenStaticDecoder:
             q = q.reshape(1, T, -1, g.head_k_dim)
             k = k.reshape(1, T, -1, g.head_k_dim)
             v = v.reshape(1, T, -1, g.head_v_dim)
-            o, rec_final = chunk_gated_delta_rule(q, k, v, g=gate, beta=beta, scale=g.head_k_dim ** -0.5,
-                                                  initial_state=init_rec, output_final_state=True,
-                                                  use_qk_l2norm_in_kernel=True, cu_seqlens=cu_t)
+            if sn is None:
+                o, rec_final = chunk_gated_delta_rule(q, k, v, g=gate, beta=beta, scale=g.head_k_dim ** -0.5,
+                                                      initial_state=init_rec, output_final_state=True,
+                                                      use_qk_l2norm_in_kernel=True, cu_seqlens=cu_t)
+            else:   # P5: same math, plus FLA's chunk-start states h; the boundary state is h at b's chunk
+                from inferstack.kernels.fla_gdr_states import chunk_gdr_with_states
+                o, rec_final, hs = chunk_gdr_with_states(q, k, v, gate, beta, g.head_k_dim ** -0.5, init_rec, cu_t)
+                R, W = len(sn['rows']), sn['W']
+                snap_out['conv'][i] = qkv[0].index_select(0, sn['tok']).view(R, W, -1).transpose(1, 2) \
+                    .to(st.conv[i].dtype).contiguous()
+                snap_out['rec'][i] = hs[0].index_select(0, sn['h']).float()
             st.conv[i].index_copy_(0, slot_t, conv_final.to(st.conv[i].dtype))
             st.rec[i].index_copy_(0, slot_t, rec_final.float())
             o = o.to(x.dtype)
@@ -371,23 +426,34 @@ class QwenStaticDecoder:
             from inferstack.kernels.gdn import gdn
             from inferstack.kernels.gdn_conv import causal_conv_prefill
             outs = []
+            snaps = {} if sn is None else dict(zip(sn['rows'], sn['b']))
+            sc, sr = [], []
             for j, s in enumerate(slots):
                 a0, a1 = cu[j], cu[j + 1]
-                mixed, cf = causal_conv_prefill(qkv[:, a0:a1], w, g.conv1d.bias,
-                                                st.conv[i][s:s + 1] if starts[j] else None,
-                                                activation=g.activation, backend='reference')
-                q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
-                n = a1 - a0
-                q = q.reshape(1, n, -1, g.head_k_dim)
-                k = k.reshape(1, n, -1, g.head_k_dim)
-                v = v.reshape(1, n, -1, g.head_v_dim)
-                o, rf = gdn(q, k, v, gate[:, a0:a1], beta[:, a0:a1],
-                            st.rec[i][s:s + 1].clone() if starts[j] else None, output_state=True,
-                            qk_l2norm=True, backend='recurrent_reference')
+                cf = st.conv[i][s:s + 1] if starts[j] else None
+                rf = st.rec[i][s:s + 1].clone() if starts[j] else None
+                # P5 snap: run the segment in two pieces at the boundary (exact; reference path only)
+                cuts = [a0] + ([a0 + snaps[j]] if j in snaps else []) + [a1]
+                for c0, c1 in zip(cuts, cuts[1:]):
+                    mixed, cf = causal_conv_prefill(qkv[:, c0:c1], w, g.conv1d.bias, cf,
+                                                    activation=g.activation, backend='reference')
+                    q, k, v = torch.split(mixed, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
+                    n = c1 - c0
+                    q = q.reshape(1, n, -1, g.head_k_dim)
+                    k = k.reshape(1, n, -1, g.head_k_dim)
+                    v = v.reshape(1, n, -1, g.head_v_dim)
+                    o, rf = gdn(q, k, v, gate[:, c0:c1], beta[:, c0:c1], rf, output_state=True,
+                                qk_l2norm=True, backend='recurrent_reference')
+                    if j in snaps and c1 != a1:
+                        sc.append(cf[0].to(st.conv[i].dtype).clone())
+                        sr.append(rf[0].float().clone())
+                    outs.append(o)
                 st.conv[i][s].copy_(cf[0])
                 st.rec[i][s].copy_(rf[0])
-                outs.append(o)
             o = torch.cat(outs, dim=1)
+            if sn is not None:
+                snap_out['conv'][i] = torch.stack(sc)
+                snap_out['rec'][i] = torch.stack(sr)
         o = g.norm(o.reshape(-1, g.head_v_dim), z.reshape(-1, g.head_v_dim)).reshape(1, T, -1)
         return g.out_proj(o)
 

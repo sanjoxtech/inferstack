@@ -395,6 +395,89 @@ def test_packed_continuation_fla_matches_reference_on_cuda():
     torch.testing.assert_close(lf[0], ff[0], rtol=2e-2, atol=2e-2)   # continuation == from scratch
 
 
+def test_packed_prefill_snap_records_boundary_state():
+    """P5 single-pass snapshot: prefill_packed(snap=...) records, for the snapped rows, the GDN
+    conv/recurrent state at the boundary inside the full prefill. It must equal the state a
+    separate prefill of the prefix leaves, the logits must equal the call without snap, and the
+    snapshot (with the slot's K/V columns) must serve a continuation."""
+    from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
+    model = tiny_model(seed=8)
+    pre = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    prompts = [pre + [1, 2, 3], [6, 1, 2, 5, 5], pre + [4, 4]]
+    dec = QwenStaticDecoder(model, 'cpu', dtype=torch.float32)
+    assert dec.snap_align() == 1
+    st = dec.new_state(6, 40)
+    with torch.inference_mode():
+        plain, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts)
+        so = {}
+        snapped, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts, snap=[16, 0, 8], snap_out=so)
+        torch.testing.assert_close(snapped, plain, rtol=1e-5, atol=1e-5)
+        assert so['rows'] == [0, 2] and set(so['conv']) == set(st.conv) and set(so['rec']) == set(st.rec)
+        dec.prefill_packed(st, [4, 5], [pre, pre[:8]])
+        for i in st.conv:
+            for r, s in enumerate((4, 5)):
+                torch.testing.assert_close(so['conv'][i][r], st.conv[i][s], rtol=1e-5, atol=1e-5)
+                torch.testing.assert_close(so['rec'][i][r], st.rec[i][s].float(), rtol=1e-5, atol=1e-5)
+        dec.prefill_packed(st, [0], [prompts[0]], snap=[16], snap_out=so)
+        pc = PoolPrefixCache(8, min_tokens=8, block_tokens=8, max_bytes=1 << 26)
+        assert pc.put(pre, st, 0, conv={i: c[0] for i, c in so['conv'].items()},
+                      rec={i: x[0] for i, x in so['rec'].items()})
+        pc.restore(pc.longest(prompts[2]), st, 3)
+        cont, _, _ = dec.prefill_packed(st, [3], [prompts[2]], starts=[16])
+    torch.testing.assert_close(cont[0], plain[2], rtol=1e-4, atol=1e-4)
+    with pytest.raises(ValueError):
+        dec.prefill_packed(st, [0], [pre], snap=[16], snap_out={})   # boundary must be inside the prompt
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='FLA varlen kernels need CUDA')
+@pytest.mark.parametrize('dtype', ['float32', 'bfloat16'])
+def test_packed_prefill_snap_fla_matches_prefix_prefill_on_cuda(dtype):
+    """P5: on FLA the boundary state comes from the delta-rule kernel's chunk-start states h
+    (stored in the model dtype). It must match the state a prefill of the prefix alone leaves
+    (bf16: within rounding), with logits unchanged versus the plain call."""
+    from inferstack.kernels.gdn import fla_available
+    from inferstack.kernels import fla_gdr_states
+    if not fla_available() or not fla_gdr_states.available():
+        pytest.skip('flash-linear-attention 0.6.0 not installed')
+    dt = getattr(torch, dtype)
+    torch.manual_seed(9)
+    cfg = Qwen3_5TextConfig(
+        vocab_size=97, hidden_size=128, intermediate_size=192, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=32,
+        linear_conv_kernel_dim=4, linear_key_head_dim=32, linear_value_head_dim=32,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        layer_types=['linear_attention', 'linear_attention', 'full_attention', 'linear_attention'],
+        max_position_embeddings=512, rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0,
+                                                      'partial_rotary_factor': 0.5, 'mrope_section': [4, 2, 2]},
+        attn_implementation='sdpa')
+    model = qwen.Qwen3_5ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.05)
+    model = model.cuda().to(dt)
+    g = torch.Generator().manual_seed(1)
+    rnd = lambda n: torch.randint(0, 97, (n,), generator=g).tolist()   # noqa: E731
+    prompts = [rnd(200), rnd(90), rnd(129)]
+    dec = QwenStaticDecoder(model, 'cuda', dtype=dt)
+    assert dec.snap_align() == 64
+    st = dec.new_state(6, 256)
+    tol = dict(rtol=1e-4, atol=1e-4) if dt == torch.float32 else dict(rtol=3e-2, atol=3e-2)
+    with torch.inference_mode():
+        plain, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts)
+        so = {}
+        snapped, _, _ = dec.prefill_packed(st, [0, 1, 2], prompts, snap=[128, 0, 128], snap_out=so)
+        assert so['rows'] == [0, 2]
+        torch.testing.assert_close(snapped.float(), plain.float(), **tol)
+        dec.prefill_packed(st, [3, 4], [prompts[0][:128], prompts[2][:128]])
+        for i in st.conv:
+            for r, s in enumerate((3, 4)):
+                torch.testing.assert_close(so['conv'][i][r].float(), st.conv[i][s].float(), rtol=0, atol=0)
+                torch.testing.assert_close(so['rec'][i][r], st.rec[i][s].float(), **tol)
+        with pytest.raises(ValueError):
+            dec.prefill_packed(st, [0], [prompts[0]], snap=[96], snap_out={})   # not a chunk start
+
+
+
 # ---- P4: small packed prefills as CUDA graphs -------------------------------------------
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='prefill graphs need CUDA')
 def test_prefill_graphed_fla_matches_eager_on_cuda():

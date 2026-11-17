@@ -66,6 +66,7 @@ class NativeConfig:
     # SGLang/vLLM) instead of only once a recent prompt shared it. Costs one extra packed prefill
     # call per admission with cold prompts; a repeat then restores instead of recomputing.
     prefix_cache_store_first_sight:bool=False
+    prefix_cache_single_pass_snapshot:bool=False   # P5: record a lone prompt's snapshot inside its one prefill (FLA chunk-start states)
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True

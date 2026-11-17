@@ -66,9 +66,10 @@ class PoolPrefixCache:
     def has(self, tokens) -> bool:
         return tuple(tokens) in self._entries
 
-    def put(self, tokens, st, slot: int) -> bool:
+    def put(self, tokens, st, slot: int, conv=None, rec=None) -> bool:
         """Snapshot slot's first len(tokens) columns and its GDN state (call right after the
-        slot was prefilled with exactly these tokens)."""
+        slot was prefilled with exactly these tokens). P5: conv/rec ({layer: tensor}) give the
+        GDN state at len(tokens) when the slot was prefilled past it (single-pass snapshot)."""
         tokens = tuple(tokens)
         b = len(tokens)
         if not self.enabled or b < self.min_tokens or b % self.block_tokens or tokens in self._entries:
@@ -77,9 +78,9 @@ class PoolPrefixCache:
         for i, (k, v) in st.kv.items():
             e.kv[i] = (k[slot, :, :b].clone(), v[slot, :, :b].clone())
         for i, c in st.conv.items():
-            e.conv[i] = c[slot].clone()
+            e.conv[i] = conv[i].clone() if conv is not None else c[slot].clone()
         for i, r in st.rec.items():
-            e.rec[i] = r[slot].clone()
+            e.rec[i] = rec[i].clone() if rec is not None else r[slot].clone()
         e.bytes = sum(_nbytes(x) for kv in e.kv.values() for x in kv) + \
             sum(_nbytes(x) for x in e.conv.values()) + sum(_nbytes(x) for x in e.rec.values())
         self._entries[tokens] = e

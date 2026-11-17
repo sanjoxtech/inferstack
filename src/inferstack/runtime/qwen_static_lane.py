@@ -37,10 +37,11 @@ class StaticDecodeLane:
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
                       'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
                       'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
-                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
+                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_prefix_single_pass': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
         n = engine.cfg.native
         self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
+        self.single_pass_snapshot = bool(getattr(n, 'prefix_cache_single_pass_snapshot', False))
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
@@ -161,8 +162,19 @@ class StaticDecodeLane:
         prompts = [r.prompt_token_ids for r in rs]
         slots = list(range(base, base + k))
         with torch.inference_mode():
-            starts = self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled else None
-            out = self.dec.prefill_graphed(self.st, slots, prompts, starts=starts) if self.packed_graphs else None
+            starts, snap = (self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled
+                            else (None, None))
+            out = None
+            if snap:   # P5: cold prompts leave their snapshot from this single pass
+                so = {}
+                out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts, snap=snap, snap_out=so)
+                for r, j in enumerate(so['rows']):
+                    self.pcache.put(prompts[j][:snap[j]], self.st, slots[j],
+                                    conv={i: c[r] for i, c in so['conv'].items()},
+                                    rec={i: x[r] for i, x in so['rec'].items()})
+                    self.stats['packed_prefix_single_pass'] += 1
+            elif self.packed_graphs:
+                out = self.dec.prefill_graphed(self.st, slots, prompts, starts=starts)
             if out is None:
                 out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
             logits, hid, cu = out
@@ -197,7 +209,10 @@ class StaticDecodeLane:
 
     def _prefix_plan(self, slots, prompts):
         """Fill slots from the pool prefix cache; compute and store missing shared prefixes.
-        Returns per-row start columns for the continuation prefill."""
+        Returns (per-row start columns for the continuation prefill, per-row snapshot boundaries
+        for that same prefill or None). P5: a row alone in its cohort is snapshotted inside the
+        main prefill (single pass) when the decoder can record its boundary; shared prefixes
+        still take the prefix pass, since members copy the leader's state before continuing."""
         pc, st, dec = self.pcache, self.st, self.dec
         k = len(slots)
         starts = [0] * k
@@ -241,8 +256,17 @@ class StaticDecodeLane:
                 bs = max((min(lcp(prompts[j0], q) // blk * blk, b0) for q in recent), default=0)
             if bs >= pc.min_tokens:
                 groups.append((j0, [], bs))
+        snap = None
+        al = dec.snap_align() if self.single_pass_snapshot else 0
+        if al:
+            alone = [(j, b) for j, m, b in groups if not m and b % al == 0]
+            if alone:
+                snap = [0] * k
+                for j, b in alone:
+                    snap[j] = b
+                groups = [x for x in groups if x[1] or x[2] % al]
         if not groups:
-            return starts
+            return starts, snap
         dec.prefill_packed(st, [slots[j] for j, _, _ in groups], [prompts[j][:b] for j, _, b in groups])
         for j0, members, b in groups:
             pc.put(prompts[j0][:b], st, slots[j0])
@@ -253,7 +277,7 @@ class StaticDecodeLane:
             starts[j0] = b
             self.stats['packed_prefix_groups'] += 1
             self.stats['packed_prefix_shared_rows'] += len(members)
-        return starts
+        return starts, snap
 
     def _sample(self, logits):
         import torch

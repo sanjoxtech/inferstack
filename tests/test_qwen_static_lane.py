@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -43,6 +43,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=F
     n.static_decode_packed_prefill = packed
     n.static_decode_packed_max_tokens = budget
     n.prefix_cache_store_first_sight = first_sight
+    n.prefix_cache_single_pass_snapshot = single
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -59,11 +60,12 @@ async def drain(q, timeout=60):
         out.append(x)
 
 
-def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False):
+def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False,
+        single=False):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -198,6 +200,22 @@ def test_packed_prefill_first_sight_snapshot_serves_exact_repeat():
     assert pp['stores'] == 1 and pp['hits'] >= 1, pp
     _, d0 = run(True, plan, prefix=True, packed=True)
     assert d0['static_decode']['pool_prefix_cache']['hits'] == 0, d0['static_decode']['pool_prefix_cache']
+
+
+@pytest.mark.parametrize('spec', [False, True])
+def test_packed_prefill_single_pass_snapshot_serves_exact_repeat(spec):
+    """P5: with single_pass_snapshot the cold prompt's snapshot is recorded inside its one
+    prefill (no prefix pass), its exact repeat restores from it, and greedy outputs stay equal
+    to the Transformers path."""
+    long = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1]
+    plan = [(0.0, 'a1', long, 6), (0.6, 'a2', list(long), 6)]
+    ref, _ = run(False, plan, prefix=True)
+    got, d = run(True, plan, prefix=True, packed=True, first_sight=True, single=True, spec=spec)
+    assert got == ref
+    sd = d['static_decode']
+    pp = sd['pool_prefix_cache']
+    assert pp['stores'] == 1 and pp['hits'] >= 1, pp
+    assert sd['packed_prefix_single_pass'] == 1 and sd['packed_prefix_groups'] == 0, sd
 
 
 @pytest.mark.parametrize('spec', [False, True])
