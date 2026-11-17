@@ -95,7 +95,10 @@ def score(card: dict, profile: str, slo: dict):
     slo: {'cells': [[case, conc], ...], 'objective': 'output_tps',
           'limits': {'ttft_p95_ms': 400, ...},              # every cell
           'cell_limits': {'prefill_heavy@16': {'ttft_p95_ms': 600}},   # per cell, overrides limits
-          'min_success_rate': 1.0}"""
+          'cell_floors': {'prefill_heavy@16': {'output_tps': 324}},    # per cell, metric must be >= floor
+          'min_success_rate': 1.0}
+    Violations are relative ((value - limit) / limit, or (floor - value) / floor), so a 10% miss
+    on latency and a 10% miss on throughput weigh the same; <= 0 means met."""
     want = {(c, int(n)) for c, n in slo['cells']}
     got = {(c['case'], c['concurrency']): c['metrics'] for c in card.get('cells', []) if c['profile'] == profile}
     detail, objs, viol = {}, [], []
@@ -117,7 +120,11 @@ def score(card: dict, profile: str, slo: dict):
         for metric, limit in lim.items():
             v = val(metric)
             d[metric] = v
-            viol.append(INFEASIBLE if v is None else v - float(limit))
+            viol.append(INFEASIBLE if v is None else (v - float(limit)) / float(limit))
+        for metric, floor in ((slo.get('cell_floors') or {}).get(f'{key[0]}@{key[1]}') or {}).items():
+            v = val(metric)
+            d[metric] = v
+            viol.append(INFEASIBLE if v is None else (float(floor) - v) / float(floor))
         detail[f'{key[0]}@{key[1]}'] = d
     obj = math.exp(sum(map(math.log, objs)) / len(objs)) if objs and len(objs) == len(want) else 0.0
     return obj, viol, detail
@@ -199,6 +206,9 @@ def main():
 
     ok = [r for r in rows if r['feasible']]
     best = max(ok, key=lambda r: r['objective']) if ok else None
+    # Nothing meets the SLO yet: report the trial closest to it (smallest summed positive
+    # violation) so the gap list tells the code loop what to fix next.
+    closest = min(rows, key=lambda r: sum(max(0.0, v) for v in r['violations'])) if rows and not ok else None
     lines = ['# SLO tune', '', f'Method: {method} · trials: {len(rows)} · feasible: {len(ok)}',
              f'SLO: `{json.dumps(slo)}`', '', '| trial | feasible | objective tok/s | params |', '|---|---|---|---|']
     lines += [f"| {r['trial']} | {r['feasible']} | {r['objective']:.1f} | `{json.dumps(r['params'])}` |" for r in rows]
@@ -213,6 +223,12 @@ def main():
                       f'`{md.relative_to(out) if md else "confirm/ (no scorecard)"}`']
     else:
         lines += ['', 'No feasible trial: the SLO is not met anywhere in this space.']
+        if closest:
+            (out / 'closest.toml').write_text(dump_toml(apply_overrides(base, closest['params'],
+                                                                        base.get('name', 'base') + '-closest')))
+            lines += [f"Closest: trial {closest['trial']} → closest.toml; cells still missing the SLO:"]
+            for cell, d in closest['cells'].items():
+                lines.append(f'- {cell}: `{json.dumps(d)}`')
     (out / 'summary.md').write_text('\n'.join(lines) + '\n')
     print('\n'.join(lines))
 

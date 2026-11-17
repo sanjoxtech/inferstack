@@ -45,7 +45,7 @@ def test_score_geometric_mean_and_per_cell_limits():
                        ('b', 16): {'output_tps': 400, 'success_rate': 1.0, 'ttft_p95_ms': 250}})
     obj, viol, detail = slo_tune.score(card, 't', SLO)
     assert obj == pytest.approx(200.0)                          # sqrt(100 * 400)
-    assert viol == [pytest.approx(-10), pytest.approx(-50)]     # b@16 judged by its own 300 ms limit
+    assert viol == [pytest.approx(-0.1), pytest.approx(-50 / 300)]   # relative; b@16 judged by its own limit
     assert slo_tune.feasible(viol) and detail['b@16']['ttft_p95_ms'] == 250
 
 
@@ -82,3 +82,11 @@ def test_shipped_space_and_slo_fit_the_base_profile():
     wl = json.loads(Path('configs/scorecard/workload-fast.json').read_text())
     cases = {c['name'] for c in wl['cases']}
     assert all(c in cases and n in wl['concurrency'] for c, n in slo['cells'])
+
+
+def test_floors_require_beating_a_rival_throughput():
+    slo = {**SLO, 'cell_floors': {'b@16': {'output_tps': 450}}}
+    card = _card('t', {('a', 1): {'output_tps': 100, 'success_rate': 1.0, 'ttft_p95_ms': 90},
+                       ('b', 16): {'output_tps': 400, 'success_rate': 1.0, 'ttft_p95_ms': 250}})
+    obj, viol, detail = slo_tune.score(card, 't', slo)
+    assert viol[-1] == pytest.approx(50 / 450) and not slo_tune.feasible(viol)   # 11% short of the floor
