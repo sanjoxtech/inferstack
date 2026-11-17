@@ -74,6 +74,7 @@ class NativeConfig:
     static_decode_overlap_min_tokens:int=512   # P7: overlap only when the longest admitted prompt has at least this many tokens
     static_decode_prefill_graph_long_lens:tuple[int,...]=()   # P8: extra prefill graph buckets (tokens per row), e.g. (256, 512)
     static_decode_prefill_graph_long_rows:int=0       # P8: up to this many rows use the long buckets
+    static_decode_admit_timing:bool=False   # P8 diag: synchronised per-stage admit timing (adds syncs; diagnosis only)
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True

@@ -43,6 +43,7 @@ class StaticDecodeLane:
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
         self.single_pass_snapshot = bool(getattr(n, 'prefix_cache_single_pass_snapshot', False))
         self.compact_from_tail = bool(getattr(n, 'static_decode_compact_from_tail', False))
+        self.admit_timing = bool(getattr(n, 'static_decode_admit_timing', False))   # P8 diag: syncs per stage
         # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
         # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
         # thread while decode keeps replaying on a high-priority stream; finished rows move down.
@@ -194,9 +195,19 @@ class StaticDecodeLane:
         lengths = [len(r.prompt_token_ids) for r in rs]
         prompts = [r.prompt_token_ids for r in rs]
         slots = list(range(base, base + k))
+        tm = self.admit_timing and self.dec.device.type == 'cuda'
+
+        def lap(name, t=[time.perf_counter()]):   # P8 diag: per-stage wall time (synchronised)
+            if tm:
+                torch.cuda.synchronize()
+                now2 = time.perf_counter()
+                self.stats[name] = self.stats.get(name, 0.0) + (now2 - t[0]) * 1000
+                t[0] = now2
+        lap('admit_setup_ms')
         with torch.inference_mode():
             starts, snap = (self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled
                             else (None, None))
+            lap('admit_plan_ms')
             out = None
             if snap:   # P5: cold prompts leave their snapshot from this single pass
                 so = {}
@@ -214,12 +225,15 @@ class StaticDecodeLane:
             if out is None:
                 out = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
             logits, hid, cu = out
+            lap('admit_prefill_ms')
             nxt = e._sampler.sample(logits, rs, 0)
+            lap('admit_sample_ms')
             if spec:
                 win = int(getattr(e.cfg.native, 'static_decode_spec_window', 256) or 256)
                 ws = [min(cu[j + 1] - cu[j], win) for j in range(k)]
                 self.dec.load_spec_rows(self.st, self.sp, base, prompts,
                                         [hid[cu[j + 1] - w:cu[j + 1]] for j, w in enumerate(ws)], nxt, lengths)
+                lap('admit_spec_ms')
         self.next_ids[base:base + k].copy_(nxt)
         self.pos[base:base + k].copy_(torch.tensor(lengths, dtype=torch.long, device=self.pos.device))
         b = self.batch
@@ -241,6 +255,7 @@ class StaticDecodeLane:
         self.stats['packed_ms'] += (time.perf_counter() - t_admit) * 1000
         e._accept_host(b, [None] * base + firsts)
         self.compact()
+        lap('admit_finish_ms')
         return rest
 
     # ---- P7: prefill/decode overlap -------------------------------------------------------

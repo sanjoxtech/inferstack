@@ -252,7 +252,8 @@ async def one(client, base, model, prompt, max_tokens, temperature, timeout):
 
 SPEC_KEYS = ('spec_steps', 'spec_row_steps', 'spec_accepted', 'spec_step_ms', 'decode_steps',
              'packed_prefills', 'packed_rows', 'packed_prefix_hits', 'packed_prefix_groups', 'packed_tokens_saved',
-             'packed_ms', 'gpu_thread_ms', 'gpu_thread_calls', 'spec_host_ms')
+             'packed_ms', 'gpu_thread_ms', 'gpu_thread_calls', 'spec_host_ms',
+             'admit_setup_ms', 'admit_plan_ms', 'admit_prefill_ms', 'admit_sample_ms', 'admit_spec_ms', 'admit_finish_ms')
 
 
 async def ttft_breakdown(base):
@@ -296,7 +297,11 @@ def breakdown_delta(before, after):
                    'spec_step_ms_total': round(d.get('lane_spec_step_ms', 0), 1),
                    'spec_host_ms_total': round(d.get('lane_spec_host_ms', 0), 1),
                    'gpu_thread_ms_total': round(d.get('lane_gpu_thread_ms', 0), 1),
-                   'gpu_thread_calls': d.get('lane_gpu_thread_calls', 0)}
+                   'gpu_thread_calls': d.get('lane_gpu_thread_calls', 0),
+                   # P8 diag (only with static_decode_admit_timing): ms per admitted prefill, by stage
+                   **({k: round(d.get('lane_' + k, 0) / d['lane_packed_prefills'], 2) for k in
+                       ('admit_setup_ms', 'admit_plan_ms', 'admit_prefill_ms', 'admit_sample_ms', 'admit_spec_ms',
+                        'admit_finish_ms')} if d.get('lane_packed_prefills') and d.get('lane_admit_prefill_ms') else {})}
     return out
 
 
