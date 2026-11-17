@@ -471,7 +471,8 @@ def test_packed_prefill_snap_fla_matches_prefix_prefill_on_cuda(dtype):
         dec.prefill_packed(st, [3, 4], [prompts[0][:128], prompts[2][:128]])
         for i in st.conv:
             for r, s in enumerate((3, 4)):
-                torch.testing.assert_close(so['conv'][i][r].float(), st.conv[i][s].float(), rtol=0, atol=0)
+                # conv inputs come from a GEMM over a different T here, so equal to rounding, not bit-exact
+                torch.testing.assert_close(so['conv'][i][r].float(), st.conv[i][s].float(), **tol)
                 torch.testing.assert_close(so['rec'][i][r], st.rec[i][s].float(), **tol)
         with pytest.raises(ValueError):
             dec.prefill_packed(st, [0], [prompts[0]], snap=[96], snap_out={})   # not a chunk start
