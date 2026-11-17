@@ -515,3 +515,7 @@ native_static serving scorecard; only then should the N3 implementation treatmen
 - Rival study: SGLang offline prefill within 5% of ours; prefill_heavy gap = cross-cell prompt repeats served by rivals' radix/APC caches.
 - v1.17 = per-layer sync removal + first-sight prefix snapshots (128 entries / 3 GB). vs v1.16: prefill_heavy c4/c8/c16 +28/+19/+20% tok/s; prefill_heavy c1 −3%, cold c1 TTFT +16–24 ms (two-pass snapshot).
 - Next: single-pass snapshot (record GDN state at block boundary inside the one prefill). Doc: docs/verification/V117_RADIX_SCORECARD_L4_2026-11-16.md
+
+## 2026-11-17 — P5 v1.18 single-pass snapshot (134f3d1): on L4
+- Pushed v1.17 (26bed35). v1.18 = v1.17 + `prefix_cache_single_pass_snapshot`: a lone cold prompt's snapshot is recorded inside its one prefill (FLA chunk-start state h at the block boundary; `kernels/fla_gdr_states.py` mirrors fla-core 0.6.0 forward, MIT).
+- Local suite: 476 passed (Qwen3.5 tests skip locally). Colab run `p5-sp-134f3d1`: FLA tests + native_radix vs native_single, 3 rounds.
