@@ -69,6 +69,9 @@ class NativeConfig:
     prefix_cache_single_pass_snapshot:bool=False   # P5: record a lone prompt's snapshot inside its one prefill (FLA chunk-start states)
     emit_batched:bool=False   # P6: deliver each decode step's tokens to the event loop in one wakeup
     static_decode_compact_from_tail:bool=False   # P6: one row move per finished row (tail fills holes) instead of an order-keeping shift
+    static_decode_overlap_prefill:bool=False   # P7: long packed prefills run on a low-priority stream/thread into spare slots while decode continues
+    static_decode_overlap_slots:int=0          # P7: spare slots above static_decode_slots for in-flight overlap prefills
+    static_decode_overlap_min_tokens:int=512   # P7: overlap only when the longest admitted prompt has at least this many tokens
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True

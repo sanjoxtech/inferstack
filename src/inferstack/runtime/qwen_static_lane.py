@@ -43,6 +43,23 @@ class StaticDecodeLane:
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
         self.single_pass_snapshot = bool(getattr(n, 'prefix_cache_single_pass_snapshot', False))
         self.compact_from_tail = bool(getattr(n, 'static_decode_compact_from_tail', False))
+        # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
+        # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
+        # thread while decode keeps replaying on a high-priority stream; finished rows move down.
+        extra = int(getattr(n, 'static_decode_overlap_slots', 0) or 0)
+        self.overlap = bool(getattr(n, 'static_decode_overlap_prefill', False)) and extra > 0
+        self.overlap_min = int(getattr(n, 'static_decode_overlap_min_tokens', 512) or 512)
+        self.top = state.batch - extra if self.overlap else state.batch
+        self._job = None
+        self.deferred = []
+        self._hi = self._lo = None
+        if self.overlap:
+            from concurrent.futures import ThreadPoolExecutor
+            self._prefill_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='inferstack-prefill')
+            if decoder.device.type == 'cuda':
+                self._hi = torch.cuda.Stream(device=decoder.device, priority=-1)
+                self._lo = torch.cuda.Stream(device=decoder.device, priority=0)
+                torch.cuda.set_stream(self._hi)        # the engine's GPU thread: decode runs high priority
         self.pcache = None
         if bool(getattr(n, 'static_decode_packed_prefill', False)) and bool(getattr(n, 'prefix_state_cache', False)):
             from inferstack.runtime.pool_prefix_cache import PoolPrefixCache
@@ -72,7 +89,7 @@ class StaticDecodeLane:
             greedy = [i for i in fit if float(state.requests[i].sampling.temperature) <= 0]
             self.stats['rows_rejected_sampling'] += len(fit) - len(greedy)
             fit = greedy
-        free = self.st.batch - self.rows
+        free = self.top - self.rows
         if len(fit) > free:
             self.stats['rows_rejected_full'] += len(fit) - free
             fit = fit[:free]
@@ -137,7 +154,7 @@ class StaticDecodeLane:
         extra = 2 if spec else 0
         budget = int(getattr(e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
         pc = e._prefix_cache
-        free = self.st.batch - self.rows
+        free = self.top - self.rows
         take, rest, T = [], [], 0
         for r, q in items:
             n = len(r.prompt_token_ids)
@@ -149,6 +166,9 @@ class StaticDecodeLane:
                 rest.append((r, q))
         if not take:
             return rest
+        if self.overlap and self.rows and self._job is None and \
+                max(len(r.prompt_token_ids) for r, _ in take) >= self.overlap_min:
+            return self._start_overlap(take) + rest
         rs, qs = [x[0] for x in take], [x[1] for x in take]
         now = time.perf_counter()
         t_admit = now
@@ -207,6 +227,117 @@ class StaticDecodeLane:
         e._accept_host(b, [None] * base + firsts)
         self.compact()
         return rest
+
+    # ---- P7: prefill/decode overlap -------------------------------------------------------
+    def overlap_busy(self) -> bool:
+        return self._job is not None
+
+    def _start_overlap(self, take):
+        """Launch the packed prefill of `take` into the spare top slots on the prefill thread.
+        Rows beyond the spare slots or not greedy are deferred (the engine re-queues them).
+        Returns [] (the engine must not send anything to the Transformers path)."""
+        import time
+        spare = self.st.batch - self.top
+        go, later = [], []
+        for r, q in take:
+            (go if len(go) < spare and float(r.sampling.temperature) <= 0 else later).append((r, q))
+        self.deferred.extend(later)
+        if not go:
+            return []
+        e, st = self.e, self.e._stats
+        now = time.perf_counter()
+        for r, _ in go:
+            r.state = RequestState.RUNNING
+            r._t_prep = r._t_pf = now
+            r._ds0 = st['decode_forward_calls']
+            r._pf0 = r._pf1 = st['prefill_forward_calls']
+        slots = list(range(self.top, self.top + len(go)))
+        self._job = (go, slots, now, self._prefill_pool.submit(self._overlap_prefill, go, slots))
+        self.stats['overlap_jobs'] = self.stats.get('overlap_jobs', 0) + 1
+        self.stats['overlap_rows'] = self.stats.get('overlap_rows', 0) + len(go)
+        return []
+
+    def _overlap_prefill(self, go, slots):
+        """Prefill thread: same work as admit_packed's prefill, into the top slots, on the
+        low-priority stream. Touches only those slots (pool tensors, prefix cache, spec rows)."""
+        import contextlib
+        import torch
+        rs = [r for r, _ in go]
+        prompts = [r.prompt_token_ids for r in rs]
+        lengths = [len(p) for p in prompts]
+        ctx = torch.cuda.stream(self._lo) if self._lo is not None else contextlib.nullcontext()
+        with torch.inference_mode(), ctx:
+            starts, snap = (self._prefix_plan(slots, prompts) if self.pcache is not None and self.pcache.enabled
+                            else (None, None))
+            if snap:
+                so = {}
+                logits, hid, cu = self.dec.prefill_packed(self.st, slots, prompts, starts=starts, snap=snap, snap_out=so)
+                for r, j in enumerate(so['rows']):
+                    self.pcache.put(prompts[j][:snap[j]], self.st, slots[j],
+                                    conv={i: c[r] for i, c in so['conv'].items()},
+                                    rec={i: x[r] for i, x in so['rec'].items()})
+                    self.stats['packed_prefix_single_pass'] += 1
+            else:
+                logits, hid, cu = self.dec.prefill_packed(self.st, slots, prompts, starts=starts)
+            nxt = logits.argmax(-1)                      # overlap rows are greedy
+            if self.sp is not None:
+                win = int(getattr(self.e.cfg.native, 'static_decode_spec_window', 256) or 256)
+                ws = [min(cu[j + 1] - cu[j], win) for j in range(len(rs))]
+                self.dec.load_spec_rows(self.st, self.sp, slots[0], prompts,
+                                        [hid[cu[j + 1] - w:cu[j + 1]] for j, w in enumerate(ws)], nxt, lengths)
+            ev = None
+            if self._lo is not None:
+                ev = torch.cuda.Event()
+                ev.record(self._lo)
+            firsts = nxt.tolist()                        # syncs this (low-priority) stream only
+        return {'nxt': nxt, 'firsts': firsts, 'lengths': lengths, 'tokens': cu[-1], 'event': ev}
+
+    def poll_overlap(self, wait=False):
+        """Between decode steps: if the overlap prefill finished (or `wait`), move its rows down
+        to slots rows..rows+k-1 and emit their first tokens. True when rows were added."""
+        import time
+        import torch
+        if self._job is None or not (wait or self._job[3].done()):
+            return False
+        go, slots, t0, fut = self._job
+        self._job = None
+        res = fut.result()                               # re-raises a prefill failure here
+        if res['event'] is not None:
+            torch.cuda.current_stream().wait_event(res['event'])
+            res['nxt'].record_stream(torch.cuda.current_stream())
+        e, st = self.e, self.e._stats
+        rs, qs = [r for r, _ in go], [q for _, q in go]
+        base, k = self.rows, len(go)
+        for j, (src, n) in enumerate(zip(slots, res['lengths'])):
+            if self.sp is not None:
+                self.dec.move_spec_row(self.st, self.sp, src, base + j, n + 2)
+            else:
+                self.dec.move_row(self.st, src, base + j, n + 1)
+        self.next_ids[base:base + k].copy_(res['nxt'])
+        self.pos[base:base + k].copy_(torch.tensor(res['lengths'], dtype=torch.long, device=self.pos.device))
+        b = self.batch
+        b.requests += rs
+        b.queues += qs
+        b.generated += [0] * k
+        b.stop_sets += [e._stop_ids(r) for r in rs]
+        self.positions += res['lengths']
+        for r in rs:
+            r.prompt_cursor = len(r.prompt_token_ids)
+        st['prefill_forward_calls'] += 1
+        st['prefill_chunks'] += 1
+        st['prefill_tokens'] += res['tokens']
+        self.stats['rows_admitted'] += k
+        self.stats['packed_rows'] += k
+        self.stats['packed_prefills'] += 1
+        self.stats['max_live_rows'] = max(self.stats['max_live_rows'], self.rows)
+        self.stats['packed_ms'] += (time.perf_counter() - t0) * 1000
+        e._accept_host(b, [None] * base + res['firsts'])
+        self.compact()
+        return True
+
+    def take_deferred(self):
+        out, self.deferred = self.deferred, []
+        return out
 
     def _prefix_plan(self, slots, prompts):
         """Fill slots from the pool prefix cache; compute and store missing shared prefixes.
@@ -291,6 +422,7 @@ class StaticDecodeLane:
 
     def decode(self):
         """One decode step for every live row (runs on the engine's GPU thread)."""
+        self.poll_overlap(wait=not self.rows)          # P7: nothing to decode -> wait for the prefill
         self.compact()
         n = self.rows
         if not n:

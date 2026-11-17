@@ -142,7 +142,9 @@ class QwenHybridContinuousEngine:
                 tensors,seed=resolve_mtp(str(getattr(n,'static_decode_spec_mtp','') or ''))
                 dec=QwenSpecDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab,mtp_tensors=tensors,mtp_seed=seed,draft_vocab=int(getattr(n,'static_decode_spec_draft_vocab',0) or 0) or None)
             else:dec=QwenStaticDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab)
-            st=dec.new_state(slots,max_len,list(n.static_decode_batch_buckets),list(n.static_decode_len_buckets))
+            ov=int(getattr(n,'static_decode_overlap_slots',0) or 0) if bool(getattr(n,'static_decode_overlap_prefill',False)) else 0
+            # P7: ov spare slots above the decode buckets for overlapped prefills (decode never reaches them)
+            st=dec.new_state(slots+ov,max_len,[b for b in n.static_decode_batch_buckets if int(b)<=slots]+[slots],list(n.static_decode_len_buckets))
             if bool(getattr(n,'static_decode_spec',False)):sp=dec.new_spec_state(st)
             t=time.perf_counter();graphs=(dec.capture_spec(st,sp) if sp is not None else dec.capture(st)) if bool(n.static_decode_cuda_graph) else 0
             if bool(getattr(n,'static_decode_packed_prefill',False)) and str(self.device).startswith('cuda'):
@@ -185,7 +187,7 @@ class QwenHybridContinuousEngine:
             torch.cuda.synchronize();self._static_diag['prefill_warmup']={'shapes':cfgs,'s':round(time.perf_counter()-t,3)}
         except Exception as exc:
             self._static_diag['prefill_warmup']={'shapes':cfgs,'error':f'{type(exc).__name__}: {exc}'[:300]}
-    def _decode_work(self):return bool(self._active or (self._lane is not None and self._lane.rows))
+    def _decode_work(self):return bool(self._active or (self._lane is not None and (self._lane.rows or self._lane.overlap_busy())))
     async def start(self):
         if self.started:return
         self._loop_ref=asyncio.get_running_loop();self._maybe_patch();self._maybe_compile();await self._gpu(self._maybe_prefill_warmup);await self._gpu(self._maybe_static_lane);self._stop=False;self._fatal_error=None;self.started=True;self._task=asyncio.create_task(self._loop_guarded(),name='inferstack-qwen-native')
@@ -500,9 +502,9 @@ class QwenHybridContinuousEngine:
             self._accept(state,nxt);self._compact(state)
     async def _decode_turn(self,quantum):
         if not self._decode_work():return False
-        if self._lane is not None and self._lane.rows:
+        if self._lane is not None and (self._lane.rows or self._lane.overlap_busy()):
             for _ in range(quantum):
-                if not self._lane.rows:break
+                if not (self._lane.rows or self._lane.overlap_busy()):break
                 await self._gpu(self._lane.decode)
         if not self._active:
             self._stats['decode_priority_turns']+=1;return True
@@ -522,12 +524,14 @@ class QwenHybridContinuousEngine:
     async def _admit_one(self):
         if len(self._active)+len(self._prefill_jobs)>=self.cfg.native.max_active_cohorts:return False
         if self._decode_work() and not self.cfg.native.dynamic_admission:return False
+        if self._lane is not None and self._lane.overlap_busy():return False   # P7: one overlap prefill at a time
         if self._pending.empty():return False
         cohort=await self._gather(wait=not (self._decode_work() or self._prefill_jobs))
         if not cohort:return False
         if self._decode_work():self._stats['mid_generation_admissions']+=len(cohort)
         if self._lane is not None and bool(getattr(self.cfg.native,'static_decode_packed_prefill',False)):
             n0=len(cohort);cohort=await self._gpu(self._packed_admit,cohort)
+            for x in self._lane.take_deferred():await self._pending.put(x)   # P7: rows the overlap prefill could not take
             if len(cohort)<n0:self._stats['cohorts']+=1;self._stats['requests_batched']+=n0-len(cohort);self._stats['max_observed_batch']=max(self._stats['max_observed_batch'],n0-len(cohort))
             if not cohort:return True
         job=await self._gpu(self._prepare_prefill,cohort);self._stats['cohorts']+=1;self._stats['requests_batched']+=len(cohort);self._stats['max_observed_batch']=max(self._stats['max_observed_batch'],len(cohort))
