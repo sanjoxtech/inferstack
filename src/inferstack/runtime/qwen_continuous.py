@@ -227,6 +227,7 @@ class QwenHybridContinuousEngine:
         limit=self._context_limit()
         if limit and len(r.prompt_token_ids)+r.sampling.max_new_tokens>limit:raise ValueError(f'request exceeds context {limit}')
         q=asyncio.Queue();self._requests[r.request_id]=r;self._queues[r.request_id]=q;r._t_submit=time.perf_counter()
+        now=time.perf_counter();self._arrival_gap=now-getattr(self,'_last_arrival',-1e9);self._last_arrival=now   # P8: burst detection for the batch wait
         try:self._pending.put_nowait((r,q))
         except asyncio.QueueFull:
             self._requests.pop(r.request_id,None);self._queues.pop(r.request_id,None);raise RuntimeError('native admission queue full')
@@ -259,7 +260,14 @@ class QwenHybridContinuousEngine:
             if first[0].state!=RequestState.CANCELLED:break
             self._stats['cancelled_before_gpu']+=1;self._finish_cancelled(*first)
         out=[first]
-        if wait and self.cfg.native.batch_wait_ms>0:await asyncio.sleep(self.cfg.native.batch_wait_ms/1000)
+        if wait and self.cfg.native.batch_wait_ms>0:
+            # P8: with batch_wait_burst_ms set, wait for company only when this request arrived in a burst
+            # (another one within burst_ms before it); a lone request (c1 traffic) is admitted at once.
+            # L4: an unconditional 3 ms wait cost every c1 TTFT 3.6 ms; no wait at all lost grouping under bursts.
+            bw=float(getattr(self.cfg.native,'batch_wait_burst_ms',0) or 0)
+            if bw<=0 or getattr(self,'_arrival_gap',1e9)*1000<=bw or not self._pending.empty():
+                await asyncio.sleep(self.cfg.native.batch_wait_ms/1000)
+            else:self._stats['batch_wait_skipped']=self._stats.get('batch_wait_skipped',0)+1
         defer=[]
         while len(out)<self.cfg.native.max_requests_per_batch:
             try:item=self._pending.get_nowait()
