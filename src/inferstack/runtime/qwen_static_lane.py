@@ -44,6 +44,7 @@ class StaticDecodeLane:
         self.single_pass_snapshot = bool(getattr(n, 'prefix_cache_single_pass_snapshot', False))
         self.compact_from_tail = bool(getattr(n, 'static_decode_compact_from_tail', False))
         self.admit_timing = bool(getattr(n, 'static_decode_admit_timing', False))   # P8 diag: syncs per stage
+        self.budget_new_tokens = bool(getattr(n, 'static_decode_budget_new_tokens', False))   # P9
         # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
         # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
         # thread while decode keeps replaying on a high-priority stream; finished rows move down.
@@ -174,10 +175,14 @@ class StaticDecodeLane:
         take, rest, T = [], [], 0
         for r, q in items:
             n = len(r.prompt_token_ids)
-            if (len(take) < free and n + r.sampling.max_new_tokens + extra <= self.st.max_len and T + n <= budget
+            # P9: only uncached tokens count toward the packed budget (a cached shared prefix is restored,
+            # not recomputed); counting full prompts split a 16-row shared-prefix burst into 6+7+3 prefills
+            new = n - (self.pcache.peek(r.prompt_token_ids) if self.budget_new_tokens and self.pcache is not None
+                       and self.pcache.enabled else 0)
+            if (len(take) < free and n + r.sampling.max_new_tokens + extra <= self.st.max_len and T + new <= budget
                     and not (spec and float(r.sampling.temperature) > 0)):
                 take.append((r, q))
-                T += n
+                T += new
             else:
                 rest.append((r, q))
         if not take:

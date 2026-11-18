@@ -63,6 +63,12 @@ class PoolPrefixCache:
         self._entries.move_to_end(best.tokens)
         return best
 
+    def peek(self, tokens) -> int:
+        """Length of the longest cached prefix of tokens (shorter than tokens), with no stats or LRU
+        side effects. P9: admission counts only the uncached tokens against the packed budget."""
+        tokens = tuple(tokens)
+        return max((len(k) for k in self._entries if len(k) < len(tokens) and tokens[:len(k)] == k), default=0)
+
     def has(self, tokens) -> bool:
         return tuple(tokens) in self._entries
 

@@ -76,6 +76,7 @@ class NativeConfig:
     static_decode_prefill_graph_long_rows:int=0       # P8: up to this many rows use the long buckets
     static_decode_admit_timing:bool=False   # P8 diag: synchronised per-stage admit timing (adds syncs; diagnosis only)
     batch_wait_burst_ms:float=0.0   # P8: >0 = apply batch_wait_ms only when the request arrived within this many ms of the previous one
+    static_decode_budget_new_tokens:bool=False   # P9: count only uncached tokens against static_decode_packed_max_tokens
     custom_gdn_triton:bool=True
     strict_custom_kernels:bool=False
     fused_sampler:bool=True
