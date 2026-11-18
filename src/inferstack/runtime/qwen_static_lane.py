@@ -45,6 +45,10 @@ class StaticDecodeLane:
         self.compact_from_tail = bool(getattr(n, 'static_decode_compact_from_tail', False))
         self.admit_timing = bool(getattr(n, 'static_decode_admit_timing', False))   # P8 diag: syncs per stage
         self.budget_new_tokens = bool(getattr(n, 'static_decode_budget_new_tokens', False))   # P9
+        # P9b: rows that fit the lane wait in the queue while every slot is taken, instead of
+        # running on the Transformers path beside the lane (open-loop goodput: that side cohort
+        # slowed every decode step from ~12 to ~190 ms per token at 6 req/s)
+        self.wait_for_slot = bool(getattr(n, 'static_decode_wait_for_slot', False))
         # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
         # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
         # thread while decode keeps replaying on a high-priority stream; finished rows move down.
@@ -140,6 +144,10 @@ class StaticDecodeLane:
         state.stop_sets = [state.stop_sets[i] for i in rest]
         return False
 
+    def full(self):
+        """P9b: no slot free for a new row (the overlap path manages its own reserved slots)."""
+        return not self.overlap and self.top - self.rows - self.reserved <= 0
+
     def admit_packed(self, items):
         """P1: prefill (request, queue) pairs as one flat token batch straight into free slots
         (QwenStaticDecoder.prefill_packed) and emit their first tokens. Returns the pairs that
@@ -183,7 +191,7 @@ class StaticDecodeLane:
             if fits and len(take) < free and T + new <= budget:
                 take.append((r, q))
                 T += new
-            elif fits and take and self.budget_new_tokens:
+            elif fits and ((take and self.budget_new_tokens) or (self.wait_for_slot and len(take) >= free)):
                 # P9: over this prefill's token budget or slots, but servable here: re-queue for the next
                 # prefill instead of sending it down the Transformers path
                 self.deferred.append((r, q))

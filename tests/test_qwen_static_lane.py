@@ -312,3 +312,30 @@ def test_packed_budget_overflow_is_requeued_not_sent_to_transformers():
     assert got == ref
     sd = d['static_decode']
     assert sd['packed_rows'] == 4 and sd['packed_prefills'] >= 2, sd   # split across prefills, all in the lane
+
+
+def test_full_lane_queues_rows_instead_of_transformers_path():
+    """P9b: with static_decode_wait_for_slot, requests beyond the slot pool wait for a free slot
+    and all run in the lane (no Transformers side cohort); outputs stay greedy-equal."""
+    plan = [(0.0, f'w{i}', [3 + i, 5, 7, 11, 2 + i], 6) for i in range(7)]   # 7 rows, 4 slots
+    ref, _ = run(False, plan)
+
+    async def go():
+        model = tiny_model(seed=11).to(torch.float32)
+        c = cfg(True, packed=True, budget=64)
+        c.native.static_decode_wait_for_slot = True
+        c.native.max_batch_tokens = 1 << 16
+        e = QwenHybridContinuousEngine(model, Tok(), c, 'cpu')
+        await e.start()
+
+        async def one(delay, rid, prompt, max_new):
+            await asyncio.sleep(delay)
+            q = await e.submit(Request(rid, tuple(prompt), SamplingParams(max_new_tokens=max_new, temperature=0.0)))
+            return rid, await drain(q)
+        res = dict(await asyncio.gather(*(one(*p) for p in plan)))
+        d = e.diagnostics()
+        await e.close()
+        return res, d
+    got, d = asyncio.run(go())
+    assert got == ref
+    assert d['static_decode']['packed_rows'] == 7, d['static_decode']

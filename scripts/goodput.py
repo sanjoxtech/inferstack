@@ -86,6 +86,7 @@ async def run_profile(profile, workload, slo, rates, per_rate, min_requests, out
                 for k, rate in enumerate(rates):
                     n = max(min_requests, int(rate * per_rate))
                     texts = es.prompts({**case, 'name': f"{case['name']}:r{k}"}, n, workload['seed'])
+                    before = await es.ttft_breakdown(base)
                     rows, wall = await run_rate(base, profile['model'], texts, case['max_tokens'], rate, timeout,
                                                 seed=1000 * k + sum(map(ord, case['name'])))
                     good = sum(is_good(r, lim) for r in rows)
@@ -93,6 +94,9 @@ async def run_profile(profile, workload, slo, rates, per_rate, min_requests, out
                             'success': sum(bool(r.get('success')) for r in rows) / n, 'wall_s': wall,
                             'ttft_p50_ms': es.pct([r['ttft_ms'] for r in rows if r.get('ttft_ms') is not None], .5),
                             'ttft_p99_ms': es.pct([r['ttft_ms'] for r in rows if r.get('ttft_ms') is not None], .99)}
+                    lane = es.breakdown_delta(before, await es.ttft_breakdown(base))   # native only, else None
+                    if lane:
+                        step['engine'] = lane
                     steps.append(step)
                     for r in rows:
                         fout.write(json.dumps({'profile': profile['name'], 'case': case['name'], 'rate': rate, **r}) + '\n')
