@@ -46,7 +46,7 @@ def sh(*argv, check=True, capture=False, timeout=None):
         return subprocess.CompletedProcess(argv, 124, '', '')
 
 
-def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=(), steps=()):
+def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=(), steps=(), post_steps=()):
     """One Python script: the notebook's setup cells, optional pre-steps, stages, scorecard."""
     nb = json.loads(NOTEBOOK.read_text())
     cells = [''.join(c['source']) for c in nb['cells'][:SETUP_CELLS] if c['cell_type'] == 'code']
@@ -102,11 +102,17 @@ code = logged([PY,'-u','scripts/engine_scorecard.py','run','--profiles',PROFILES
                '--ready-timeout',str(READY_TIMEOUT)], 'scorecard-runner.log', env=SCORE_ENV, timeout=12*60*60)
 print('scorecard exit:', code, flush=True)
 (OUT/'stages.json').write_text(json.dumps(STAGE, indent=2))
-import shutil as _sh
+{{post}}import shutil as _sh
 tmp = _sh.make_archive('/content/job-evidence-tmp', 'zip', root_dir=OUT.parent, base_dir=OUT.name)
 os.replace(tmp, {ARCHIVE!r})   # atomic: the archive only appears when complete
 print('Evidence archive:', {ARCHIVE!r}, flush=True)
 '''
+    post = ''
+    for i, step in enumerate(post_steps):   # after the scorecard: rival venvs exist, GPU is free
+        argv = shlex.split(step)
+        post += (f"require_empty_gpu()\nprint('post-step {i} exit:', logged([PY,'-u',*[a.replace('{{OUT}}',str(OUT)) "
+                 f"for a in {argv!r}]],'post-step-{i}.log',env=SCORE_ENV,timeout=4*60*60), flush=True)\n")
+    tail = tail.replace('{post}', post)
     return '\n\n'.join(cells + [pre, tail])
 
 
@@ -166,6 +172,8 @@ def main():
     ap.add_argument('--keep', action='store_true', help='leave the runtime running afterwards')
     ap.add_argument('--install-fla', action='store_true', help='pip install pinned flash-linear-attention (--no-deps)')
     ap.add_argument('--gdn-check', action='store_true', help='run scripts/gdn_backend_check.py before the profiles')
+    ap.add_argument('--post-step', action='append', default=[],
+                    help='script + args run after the scorecard (rival venvs installed), e.g. "scripts/goodput.py --only ... --out {OUT}/goodput"')
     ap.add_argument('--step', action='append', default=[], help="script + args run on the runtime, e.g. \"scripts/x.py --out OUT/x.json\"")
     ap.add_argument('--tests', nargs='*', default=(), help='pytest paths to run on the runtime first (job stops on failure)')
     args = ap.parse_args()
@@ -181,7 +189,7 @@ def main():
     bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
                                                           'poll.py'))
     sh('git', 'bundle', 'create', bundle, branch)
-    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests, args.step))
+    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests, args.step, args.post_step))
     prep.write_text(
         'import subprocess as sp\n'
         f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '
