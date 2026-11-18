@@ -1,0 +1,5 @@
+{
+  "native_longgraph": "passed",
+  "vllm": "conformance failed ['ready'] (see conformance-vllm.log)",
+  "sglang": "passed"
+}
