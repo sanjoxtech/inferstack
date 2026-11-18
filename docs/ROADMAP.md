@@ -16,4 +16,4 @@ rival. Today (v1.18, L4, Qwen3.5-2B): 9 of 16 cells met.
 | P11 | shared improve engine for Model Foundry and FactoryOS; adapter layer for new models; auto-tune per (model, GPU) | planned | new model/GPU tuned without hand edits |
 
 Rules that stay: rival study before each change, A/B over 3 rounds with non-overlapping ranges,
-ask before any GPU campaign over $1, never touch sessions we did not create, push only on "push".
+ask before any GPU campaign over $10 (raised from $1 on 2026-11-18), never touch sessions we did not create, push only on "push".
