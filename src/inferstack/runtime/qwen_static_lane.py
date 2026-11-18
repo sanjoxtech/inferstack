@@ -179,10 +179,14 @@ class StaticDecodeLane:
             # not recomputed); counting full prompts split a 16-row shared-prefix burst into 6+7+3 prefills
             new = n - (self.pcache.peek(r.prompt_token_ids) if self.budget_new_tokens and self.pcache is not None
                        and self.pcache.enabled else 0)
-            if (len(take) < free and n + r.sampling.max_new_tokens + extra <= self.st.max_len and T + new <= budget
-                    and not (spec and float(r.sampling.temperature) > 0)):
+            fits = n + r.sampling.max_new_tokens + extra <= self.st.max_len and not (spec and float(r.sampling.temperature) > 0)
+            if fits and len(take) < free and T + new <= budget:
                 take.append((r, q))
                 T += new
+            elif fits and take and self.budget_new_tokens:
+                # P9: over this prefill's token budget or slots, but servable here: re-queue for the next
+                # prefill instead of sending it down the Transformers path
+                self.deferred.append((r, q))
             else:
                 rest.append((r, q))
         if not take:

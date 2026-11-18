@@ -282,3 +282,33 @@ def test_overlap_prefill_keeps_outputs(spec, prefix):
     assert got == ref
     sd = d['static_decode']
     assert sd.get('overlap_jobs', 0) >= 1 and sd['slots'] == 6, sd
+
+
+def test_packed_budget_overflow_is_requeued_not_sent_to_transformers():
+    """P9: with static_decode_budget_new_tokens, rows that fit the lane but exceed one prefill's
+    token budget are re-queued for the next packed prefill (not the Transformers path); outputs
+    stay greedy-equal."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, f'b{i}', shared + [i + 1, 2], 4) for i in range(4)]
+    ref, _ = run(False, plan)
+
+    async def go():
+        model = tiny_model(seed=11).to(torch.float32)
+        c = cfg(True, prefix=True, packed=True, budget=40)
+        c.native.static_decode_budget_new_tokens = True
+        c.native.max_batch_tokens = 1 << 16
+        e = QwenHybridContinuousEngine(model, Tok(), c, 'cpu')
+        await e.start()
+
+        async def one(delay, rid, prompt, max_new):
+            await asyncio.sleep(delay)
+            q = await e.submit(Request(rid, tuple(prompt), SamplingParams(max_new_tokens=max_new, temperature=0.0)))
+            return rid, await drain(q)
+        res = dict(await asyncio.gather(*(one(*p) for p in plan)))
+        d = e.diagnostics()
+        await e.close()
+        return res, d
+    got, d = asyncio.run(go())
+    assert got == ref
+    sd = d['static_decode']
+    assert sd['packed_rows'] == 4 and sd['packed_prefills'] >= 2, sd   # split across prefills, all in the lane
