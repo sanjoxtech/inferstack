@@ -139,3 +139,20 @@ K=6 cuts prefills per request (interactive 8 req/s: 81 prefills for 160 rows vs 
 at 0.5-1 req/s rose 44-52 -> 89-126 ms. K=3 batches too little to matter. Kept K=6 as v1.32-k6.
 
 Next, P9e (v1.33): pace only while the lane holds >= M rows (A/B M=8, M=16), to keep light-load TTFT.
+
+### P9e result (run f9a2941): pace only when busy
+
+| case | v1.32-k6 (always pace) | M=8 (v1.33-m8) | M=16 | vLLM |
+|---|---|---|---|---|
+| interactive | 8 | 8 | 8 | 12 |
+| moderate | 3 | 3 | 3 | 4 |
+| prefill_heavy | 2 | 2 | 2 | 2 |
+| shared_prefix | 8 (99.4% good at 8) | **8 (100% good)** | 6 (8 req/s: 90.6%) | 12 |
+
+TTFT p99 at light load (0.5-2 req/s): always-pace 87-166 ms (interactive), M=8 47-54 ms, M=16 47-53 ms.
+M=8 keeps every goodput of v1.32-k6 and brings light-load TTFT back to the v1.31 level; M=16 paces too
+late and loses shared_prefix at 8 req/s. Kept M=8 as v1.33.
+
+Still behind vLLM on interactive (8 vs 12) and shared_prefix (8 vs 12); at 12 req/s all three variants
+collapse (TTFT p99 10-14 s), so the next limit is raw throughput between steps. Next, P9f: vectorise the
+spec host path; then mixed prefill+decode in one forward.
