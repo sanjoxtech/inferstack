@@ -55,3 +55,12 @@ c4 for every engine, c8 fails the per-token limit), but it is the next tail to e
 
 **Result: InferStack v1.28 is the cheapest engine at the SLO in 3 of 4 workload classes and level
 in the 4th (shared_prefix).** Decision: KEEP v1.28 as the candidate.
+
+## Update: v1.29 removes the prefill_heavy c8 tail (run 3a53316, 3 rounds vs v1.28)
+
+v1.28's 8,192 uncached-token budget let 3-4 cold ~2k-token prompts share one prefill (TTFT 383-484 ms
+for the whole group). v1.29 lowers it to 4,096 (at most 2 cold rows; a cache-hit burst of ~100 new
+tokens per row still goes in one): prefill_heavy c8 TTFT p95 381 -> 246 ms, shared_prefix c16 kept
+(259 -> 257 ms, $0.0152/1k), throughput overlaps in all 16 cells. prefill_heavy c16 TTFT p95 467 -> 527 ms
+(that cell fails the per-token limit for every engine, so the cost table is unchanged).
+**Decision: v1.29 is the candidate.**
