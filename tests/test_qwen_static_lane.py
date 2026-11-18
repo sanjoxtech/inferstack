@@ -352,6 +352,7 @@ def test_admission_pacing_keeps_outputs_and_batches_arrivals():
         c = cfg(True, packed=True, budget=64)
         c.native.static_decode_wait_for_slot = True
         c.native.static_decode_admit_every_steps = 4
+        c.native.static_decode_admit_pace_min_rows = 1
         c.native.max_batch_tokens = 1 << 16
         e = QwenHybridContinuousEngine(model, Tok(), c, 'cpu')
         await e.start()

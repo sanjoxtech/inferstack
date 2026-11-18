@@ -540,7 +540,7 @@ class QwenHybridContinuousEngine:
         # P9d: while the lane decodes, admit at most once per K decode steps so Poisson arrivals share one
         # packed prefill (one prefill per arrival cost ~26-58 ms each and doubled per-token time at 12 req/s)
         k=int(getattr(self.cfg.native,'static_decode_admit_every_steps',0) or 0)
-        if k>0 and self._lane is not None and self._lane.rows and self._lane_steps-self._last_admit_step<k:self._stats['admit_paced']+=1;return False
+        if k>0 and self._lane is not None and self._lane.rows>=max(1,int(getattr(self.cfg.native,'static_decode_admit_pace_min_rows',0) or 0)) and self._lane_steps-self._last_admit_step<k:self._stats['admit_paced']+=1;return False
         cohort=await self._gather(wait=not (self._decode_work() or self._prefill_jobs))
         if not cohort:return False
         self._last_admit_step=self._lane_steps

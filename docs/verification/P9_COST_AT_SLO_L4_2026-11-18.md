@@ -124,3 +124,18 @@ time growing with rows (8.3 s in the same step).
 
 Next, P9d (v1.32): admit at most once per K decode steps while decoding, so arrivals share a prefill
 (A/B K=3 and K=6). After that: vectorise the spec host path.
+
+### P9d result (run bbc5a30): admission pacing
+
+| case | v1.31 | K=3 | K=6 (v1.32-k6) | vLLM |
+|---|---|---|---|---|
+| interactive | 6 | 6 | **8** | 12 |
+| moderate | 3 | 3 | 3 (4 req/s: 82% good vs 56%) | 4 |
+| prefill_heavy | 2 | 2 | 2 | 2 |
+| shared_prefix | 6 | 6 | 6 (8 req/s: 99.4% good vs 38%; @90 = 8) | 12 |
+
+K=6 cuts prefills per request (interactive 8 req/s: 81 prefills for 160 rows vs 134) and per-token time
+(21.6 vs 25.0 ms), but every admission waits up to six steps even when nothing else is arriving: TTFT p99
+at 0.5-1 req/s rose 44-52 -> 89-126 ms. K=3 batches too little to matter. Kept K=6 as v1.32-k6.
+
+Next, P9e (v1.33): pace only while the lane holds >= M rows (A/B M=8, M=16), to keep light-load TTFT.
