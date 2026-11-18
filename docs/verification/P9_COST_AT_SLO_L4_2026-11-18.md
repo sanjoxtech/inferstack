@@ -90,3 +90,19 @@ step. vLLM keeps 15-48 requests in flight at the same rates with per-token <= 31
 Fix under test (P9b, v1.30): `static_decode_wait_for_slot` keeps such rows queued until a slot frees.
 Expected: no collapse, but a ceiling of about 16 slots / request time (interactive ~6 req/s), so
 beating vLLM's 12 also needs more slots (P9c: 32 slots, decode graph bucket 32).
+
+### P9b result (run 7834d40, same L4 session A/B)
+
+| case | v1.29 req/s (@99) | v1.30 (wait for slot) |
+|---|---|---|
+| interactive | 4 | **6** |
+| moderate | 2 | 2 |
+| prefill_heavy | 2 | 2 |
+| shared_prefix | 6 | 6 (8 req/s: 81% good vs 9%) |
+
+The collapse is gone: past capacity the misses are now queue time (TTFT), not slow decode. Per-token
+stays at 18-19 ms (limit 30) while TTFT queueing starts once in-flight requests reach the 16 slots
+(moderate 3 req/s: 15 in flight, mean queue 307 ms; 4 req/s: 2.1 s). Engine counters: each arrival
+still gets its own packed prefill (~55 ms), and MTP acceptance is 96%. Kept as v1.30.
+
+Next, P9c (v1.31): 32 slots and decode graph buckets up to 32, to use the per-token headroom.
