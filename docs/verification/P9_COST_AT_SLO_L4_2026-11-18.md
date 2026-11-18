@@ -34,3 +34,24 @@ SGLang 0.28 / 0.96 / 1.40 / 0.40 (interactive / moderate / prefill_heavy / share
 
 Fixed concurrency, not Poisson arrivals; one GPU type; assumed price; scorecard prompts are reused
 across cells (prefix caches matter, for all engines). Open-loop goodput is the next step of P9.
+
+## Update: v1.28 closes the shared-prefix gap (run e8c590e, 3 rounds vs v1.23)
+
+The shared-prefix c16 burst was split 6+7+3 by the engine gatherer (rows x longest prompt <=
+max_batch_tokens 8192), not by the lane. v1.28 = v1.23 + max_batch_tokens 32768, a packed budget
+that counts only uncached tokens (8192), and re-queueing of rows over the budget (instead of the
+Transformers path).
+
+| shared_prefix | v1.23 | v1.28 |
+|---|---|---|
+| c16 TTFT p95 | 354 ms | **257 ms** (now under the 300 ms class limit) |
+| c16 output tok/s | 488 | **533** (+9%) |
+| c8 output tok/s | 335 | 345 |
+| $ / 1k requests at the SLO | $0.0234 (c8) | **$0.0152 (c16)**, level with vLLM ($0.0153) and SGLang ($0.0148) |
+
+Other cells: throughput overlaps in 13 of 16, SLO v2 cells met 9 / 9. Watch: prefill_heavy c8 TTFT
+p95 242 -> 480 ms (also seen with v1.27); it does not change the cost table (prefill_heavy is priced at
+c4 for every engine, c8 fails the per-token limit), but it is the next tail to explain.
+
+**Result: InferStack v1.28 is the cheapest engine at the SLO in 3 of 4 workload classes and level
+in the 4th (shared_prefix).** Decision: KEEP v1.28 as the candidate.
