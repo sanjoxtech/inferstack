@@ -339,3 +339,31 @@ def test_full_lane_queues_rows_instead_of_transformers_path():
     got, d = asyncio.run(go())
     assert got == ref
     assert d['static_decode']['packed_rows'] == 7, d['static_decode']
+
+
+def test_admission_pacing_keeps_outputs_and_batches_arrivals():
+    """P9d: with static_decode_admit_every_steps, rows arriving while the lane decodes wait up to K
+    decode steps and share a packed prefill; outputs stay greedy-equal."""
+    plan = [(0.0, 'p0', [3, 5, 7, 11, 2], 12)] + [(0.01 * i, f'p{i}', [3 + i, 5, 7, 2 + i], 6) for i in range(1, 4)]
+    ref, _ = run(False, plan)
+
+    async def go():
+        model = tiny_model(seed=11).to(torch.float32)
+        c = cfg(True, packed=True, budget=64)
+        c.native.static_decode_wait_for_slot = True
+        c.native.static_decode_admit_every_steps = 4
+        c.native.max_batch_tokens = 1 << 16
+        e = QwenHybridContinuousEngine(model, Tok(), c, 'cpu')
+        await e.start()
+
+        async def one(delay, rid, prompt, max_new):
+            await asyncio.sleep(delay)
+            q = await e.submit(Request(rid, tuple(prompt), SamplingParams(max_new_tokens=max_new, temperature=0.0)))
+            return rid, await drain(q)
+        res = dict(await asyncio.gather(*(one(*p) for p in plan)))
+        d = e.diagnostics()
+        await e.close()
+        return res, d
+    got, d = asyncio.run(go())
+    assert got == ref
+    assert d['static_decode']['packed_rows'] == 4, d['static_decode']

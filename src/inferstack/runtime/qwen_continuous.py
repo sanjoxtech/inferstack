@@ -38,7 +38,8 @@ class QwenHybridContinuousEngine:
         self._loop_ref=None;self._gpu_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='inferstack-gpu')
         self._sampler=FastSampler(device, bool(cfg.native.fused_sampler));self._prefix_cache=HybridPrefixStateCache(cfg.native.prefix_state_cache_max_entries if cfg.native.prefix_state_cache else 0,cfg.native.prefix_cache_min_tokens,cfg.native.prefix_cache_block_tokens,cfg.native.prefix_state_cache_max_mb*1024*1024)
         self._supports_logits_to_keep=self._detect_logits_to_keep(model);self._compiled=False;self._compiled_model=None;self._compile_error=None;self._graph_shapes=set();self._graph_first=0;self._graph_reuse=0;self._graph_bucket_rows=0;self._graph_static_cache_uses=0;self._graph_mark_steps=0
-        self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots','prefill_tokens','slot_waits')}
+        self._stats={k:0 for k in ('cohorts','requests_batched','max_observed_batch','max_active_batches','mid_generation_admissions','live_rebatches','rows_refilled','compactions','rows_compacted','prefill_forward_calls','prefill_chunks','decode_forward_calls','decode_priority_turns','tokens_emitted','cancellations','cancelled_before_gpu','threadsafe_queue_emits','prefix_block_snapshots','prefill_tokens','slot_waits','admit_paced')}
+        self._lane_steps=0;self._last_admit_step=0
         self._ttft={k:0.0 for k in ('requests','queue_ms','wait_ms','prefill_ms','total_ms','decode_steps','other_prefill_forwards')}
         self._emit_batched=bool(getattr(cfg.native,'emit_batched',False));self._lane=None;self._static_diag={'enabled':bool(getattr(cfg.native,'static_decode',False)),'active':False};self._gdn_diag={};self._forward_fusion_diag={};self._profile={'enabled':bool(getattr(cfg.native,'profile_decode',False)),'decode_calls':0,'decode_wall_ms':0.0,'model_gpu_ms':0.0,'sampler_gpu_ms':0.0,'accept_wall_ms':0.0,'compact_wall_ms':0.0,'syncs':0}
     @staticmethod
@@ -515,7 +516,7 @@ class QwenHybridContinuousEngine:
         if self._lane is not None and (self._lane.rows or self._lane.overlap_busy()):
             for _ in range(quantum):
                 if not (self._lane.rows or self._lane.overlap_busy()):break
-                await self._gpu(self._lane.decode)
+                await self._gpu(self._lane.decode);self._lane_steps+=1
         if not self._active:
             self._stats['decode_priority_turns']+=1;return True
         await self._gpu(self._rebatch)
@@ -536,8 +537,13 @@ class QwenHybridContinuousEngine:
         if self._decode_work() and not self.cfg.native.dynamic_admission:return False
         if self._pending.empty():return False
         if self._lane is not None and self._lane.wait_for_slot and self._lane.full():self._stats['slot_waits']+=1;return False   # P9b
+        # P9d: while the lane decodes, admit at most once per K decode steps so Poisson arrivals share one
+        # packed prefill (one prefill per arrival cost ~26-58 ms each and doubled per-token time at 12 req/s)
+        k=int(getattr(self.cfg.native,'static_decode_admit_every_steps',0) or 0)
+        if k>0 and self._lane is not None and self._lane.rows and self._lane_steps-self._last_admit_step<k:self._stats['admit_paced']+=1;return False
         cohort=await self._gather(wait=not (self._decode_work() or self._prefill_jobs))
         if not cohort:return False
+        self._last_admit_step=self._lane_steps
         if self._decode_work():self._stats['mid_generation_admissions']+=len(cohort)
         if self._lane is not None and bool(getattr(self.cfg.native,'static_decode_packed_prefill',False)):
             n0=len(cohort);cohort=await self._gpu(self._packed_admit,cohort)

@@ -106,3 +106,21 @@ stays at 18-19 ms (limit 30) while TTFT queueing starts once in-flight requests 
 still gets its own packed prefill (~55 ms), and MTP acceptance is 96%. Kept as v1.30.
 
 Next, P9c (v1.31): 32 slots and decode graph buckets up to 32, to use the per-token headroom.
+
+### P9c result (run b7eaaa8): 32 slots
+
+| case | v1.30 (16 slots) | v1.31 (32 slots) | vLLM |
+|---|---|---|---|
+| interactive | 6 | 6 (8 req/s: 83% good vs 42%) | 12 |
+| moderate | 2 | **3** | 4 |
+| prefill_heavy | 2 | 2 | 2 |
+| shared_prefix | 6 | 6 | 12 |
+
+Kept as v1.31. The miss moved from queueing to per-token time (shared_prefix 8 req/s: 32.9 ms vs the
+30 ms limit). The lane's decode step is not the limit: interactive 12 req/s runs 28 rows per step in
+30.3 ms at 1.97 tokens per row-step (~15 ms per token of GPU step), but clients see 31.6 ms. The rest is
+work between steps: one packed prefill per arrival (197 prefills x 26.5 ms in a 32 s step) and spec host
+time growing with rows (8.3 s in the same step).
+
+Next, P9d (v1.32): admit at most once per K decode steps while decoding, so arrivals share a prefill
+(A/B K=3 and K=6). After that: vectorise the spec host path.

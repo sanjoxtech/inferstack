@@ -1,0 +1,134 @@
+name = "production-v1.32.0-k3"
+
+[scheduler]
+max_num_batched_tokens = 8192
+max_running_requests = 128
+max_prefill_chunk_tokens = 128
+decode_priority = true
+async_overlap = false
+
+[kernels]
+attention = "auto"
+rmsnorm = "auto"
+rope = "auto"
+cuda_graphs = false
+torch_compile = false
+compile_mode = "reduce-overhead"
+
+[native]
+enabled = true
+max_pending_requests = 512
+max_requests_per_batch = 32   # P9c: gatherer cohort up to the slot pool
+max_batch_tokens = 32768   # P9: the gatherer capped a burst at rows x longest prompt <= 8192 (6 shared-prefix rows); the lane budget (uncached tokens) now decides, overflow is re-queued
+batch_wait_ms = 3.0
+dynamic_admission = true
+live_batch_refill = true
+active_batch_compaction = true
+max_active_cohorts = 4
+decode_quantum = 1
+prefill_chunk_tokens = 128
+prefill_chunks_per_turn = 1
+# v1.8 (N3.1): token-budget prefill. Idle GPU: up to 8192 tokens per prefill forward;
+# while requests are decoding: 1024, so decode steps are not starved.
+prefill_token_budget_idle = 16384   # v1.12: one forward can take a burst of ~10 long prompts
+prefill_token_budget_busy = 1024
+# v1.9 (N3.3): GDN prefill on FLA's fused chunked kernel (flash-linear-attention 0.6.0,
+# MIT). Strict: startup fails if it is not installed.
+gdn_prefill_backend = "fla"
+# v1.10 (N4.1): while decoding, a prefill forward may take up to ceil(queued prefill tokens / 4)
+# (between the busy and idle budgets), so a burst of long prompts drains in ~4 forwards.
+prefill_backlog_drain_steps = 1   # v1.12 (N4.3): prefill-first, drain the queue, then decode together
+# v1.11 (N4.2): GDN prefill conv on FLA fused Triton conv + SiLU over [B, T, D] (no transposes).
+gdn_conv_backend = "fla"
+# Only for forwards of >= 1024 tokens (batch x tokens): the n42 L4 fast check showed +4-15 ms
+# TTFT on short single prompts from the FLA wrapper's per-layer Python cost.
+gdn_conv_fla_min_tokens = 1024
+# Compile/autotune prefill kernels at startup (n43: a cold first large prefill stalled ~15 s).
+prefill_warmup = true
+prefix_state_cache = true
+prefix_state_cache_max_entries = 128
+prefix_state_cache_max_mb = 3072
+prefix_cache_min_tokens = 128
+prefix_cache_block_tokens = 128
+custom_gdn_triton = true
+strict_custom_kernels = false
+fused_sampler = true
+compile_model = false
+compile_dynamic = true
+strict_compile = false
+explicit_cuda_graph = false
+cuda_graph_batch_sizes = [1,2,4,8,16]
+kv_padding_interval_size = 8192
+quantization = "none"
+quantization_group_size = 128
+use_hf_kernels = false
+graph_static_cache = false
+graph_cache_max_tokens = 256
+graph_generation_cloning = true
+profile_decode = false
+
+# v1.7: decode by CUDA-graph replay over a fixed slot pool (rows that do not fit fall back)
+static_decode = true
+static_decode_slots = 32   # P9c: open-loop goodput (7834d40) was queue-bound at 16 slots with per-token 19 ms vs a 30 ms limit
+static_decode_max_tokens = 4096
+static_decode_batch_buckets = [1,2,4,8,16,24,32]
+static_decode_len_buckets = [256,512,1024,2048,4096]
+static_decode_gdn_backend = "auto"
+# v1.13 (N5.1): split-KV GQA decode attention kernel in the static lane (B16 @ ~1250 tokens:
+# 34.3 -> 21.8 ms per step on the L4, n51).
+static_decode_attention = "triton"
+static_decode_cuda_graph = true
+static_decode_strict = true
+# v1.14 (N6.2): lossless one-draft speculative decoding in the static lane with the checkpoint's
+# own MTP head (15 mtp.* tensors at the pinned revision). Greedy rows only. Draft over the first
+# 65536 token ids (same acceptance as the full vocab in N6.1b, 3 ms cheaper per step); MTP history
+# from the last 256 prefill columns (N6.1c: the window barely changes acceptance).
+static_decode_spec = true
+static_decode_spec_mtp = "Qwen/Qwen3.5-2B-Base@b1485b2fa6dfa1287294f269f5fb618e03d52d7c"
+static_decode_spec_draft_vocab = 65536
+static_decode_spec_window = 256
+# v1.15 (P1): admitted prompts prefill as one flat token batch written straight into the static
+# pool (no padding, no Transformers cache, no load_rows copy). Rows that do not fit, and
+# prefix-cache hits, keep the Transformers prefill path.
+static_decode_packed_prefill = true
+static_decode_packed_max_tokens = 4096   # P9: uncached tokens per packed prefill; at 8192 cold ~2k-token prompts went 3-4 per prefill (prefill_heavy c8 TTFT p95 242->480); 4096 = at most 2 cold rows, while a cache-hit burst (~100 new tokens each) still goes in one
+# v1.16 (P4): small packed prefills (<= 8 rows x <= 128 new tokens, incl. prefix-cache hits)
+# replay a CUDA graph captured at warm-up. Eager, they were host-bound on the L4 (~65 ms wall for
+# ~21 ms of GPU work).
+static_decode_packed_graphs = true
+# P8: prefill graphs also for 256- and 512-token rows (up to 2 rows); cold prompts record their
+# prefix-cache snapshot inside the graph, so a ~500-token single-user prompt skips the eager
+# path's per-layer host work (moderate c1 TTFT 77 ms vs rivals' 47 ms)
+static_decode_prefill_graph_long_lens = [256, 512]
+static_decode_prefill_graph_long_rows = 2
+# P9: only uncached tokens count toward the packed budget, so a burst of shared-prefix
+# requests is admitted in one prefill (was split 6+7+3 at c16: TTFT p95 ~370 ms)
+static_decode_budget_new_tokens = true
+# P9b: rows that fit the lane wait for a free slot instead of running on the Transformers path beside it
+# (open-loop goodput, run faeed5f: at 6 req/s interactive that side cohort took per-token time 12 -> ~190 ms)
+static_decode_wait_for_slot = true
+# P9d: admit at most once per 3 decode steps while decoding, so arrivals share one packed prefill
+static_decode_admit_every_steps = 3
+# v1.17 (P5): radix-style prefix snapshots on first sight, and room for 128 entries (~40 MB each
+# for a 1.5k-token prompt), so repeated long prompts restore instead of re-prefilling.
+prefix_cache_store_first_sight = true
+# P5: a cold prompt alone in its cohort records its snapshot inside its one prefill (FLA chunk-start
+# states at the block boundary) instead of a second prefill of its prefix
+prefix_cache_single_pass_snapshot = true
+
+forward_fusion = true
+fuse_rmsnorm = true
+fuse_add_rmsnorm = true
+fuse_gated_rmsnorm = true
+fuse_mlp_gate_up = true
+fuse_mlp_activation = true
+fuse_gdn_projections = true
+fuse_gdn_beta_g = true
+grouped_gdn_decode = true
+fuse_attention_qkv = true
+forward_fusion_strict = false
+
+[hardware]
+device = "auto"
+dtype = "bf16"
+adaptive = true
