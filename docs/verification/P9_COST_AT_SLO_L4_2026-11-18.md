@@ -64,3 +64,29 @@ tokens per row still goes in one): prefill_heavy c8 TTFT p95 381 -> 246 ms, shar
 (259 -> 257 ms, $0.0152/1k), throughput overlaps in all 16 cells. prefill_heavy c16 TTFT p95 467 -> 527 ms
 (that cell fails the per-token limit for every engine, so the cost table is unchanged).
 **Decision: v1.29 is the candidate.**
+
+## Open-loop goodput (Poisson arrivals), run faeed5f
+
+`scripts/goodput.py`, v1.29 (`native_bb4k`) vs vLLM 0.33.0 vs SGLang 0.5.23 on one L4. A request is good
+when TTFT <= the class p99 limit and per-token time <= the class limit; goodput@99 = highest arrival
+rate with >= 99% good requests. Evidence: `docs/verification/evidence/p9-goodput-faeed5f/`.
+
+| case | v1.29 req/s (@99) | vLLM | SGLang |
+|---|---|---|---|
+| interactive | 4 | **12** | 6 |
+| moderate | 2 | **4** | 3 |
+| prefill_heavy | 2 | 2 | 1 |
+| shared_prefix | 6 | **12** | 6 |
+
+This reverses the closed-loop ranking: under random arrivals vLLM serves 2-3x our rate. The closed-loop
+table above stays valid for fixed concurrency, but it is not the headline.
+
+Cause (from per-request rows): below the cliff v1.29 is faster per token (interactive 11.5 ms vs
+vLLM 17.5 ms at 2 req/s), then collapses in one step (interactive 4 -> 6 req/s: per-token 17 -> 94 ms
+median, TTFT p99 79 ms -> 15 s). When all 16 slots are taken, `admit_packed` returned rows that fit the
+lane to the Transformers prefill path, so a slow side cohort decoded beside the lane and stretched every
+step. vLLM keeps 15-48 requests in flight at the same rates with per-token <= 31 ms.
+
+Fix under test (P9b, v1.30): `static_decode_wait_for_slot` keeps such rows queued until a slot frees.
+Expected: no collapse, but a ceiling of about 16 slots / request time (interactive ~6 req/s), so
+beating vLLM's 12 also needs more slots (P9c: 32 slots, decode graph bucket 32).
