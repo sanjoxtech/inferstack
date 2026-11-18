@@ -206,5 +206,27 @@
   },
   "limit_rule": "each cell: ttft_p95_ms = min(industry, best rival); ttft_p99_ms and client_decode_p95_ms = industry; output_tps >= best rival",
   "goodput_next": "goodput (max Poisson req/s with >=99% of requests meeting TTFT and TPOT together, also reported at 90%) needs an open-loop arrival mode in the scorecard; not measured yet",
-  "notes": "client_decode_p95_ms is per-request mean inter-token time at p95 over requests (close to TPOT p95). Re-measure rivals before any public claim."
+  "notes": "client_decode_p95_ms is per-request mean inter-token time at p95 over requests (close to TPOT p95). Re-measure rivals before any public claim.",
+  "industry_limits": {
+    "interactive": {
+      "ttft_p95_ms": 250,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "moderate": {
+      "ttft_p95_ms": 250,
+      "ttft_p99_ms": 500,
+      "client_decode_p95_ms": 30
+    },
+    "prefill_heavy": {
+      "ttft_p95_ms": 500,
+      "ttft_p99_ms": 1000,
+      "client_decode_p95_ms": 40
+    },
+    "shared_prefix": {
+      "ttft_p95_ms": 300,
+      "ttft_p99_ms": 600,
+      "client_decode_p95_ms": 30
+    }
+  }
 }
