@@ -247,3 +247,21 @@ K=3 cuts TTFT p99 below the knee (interactive 8 req/s: 155 vs 243 ms) but makes 
 prefills per request, which costs decode time near capacity: interactive collapses earlier at 12 req/s and
 shared_prefix loses a step. Kept K=6. Same-profile spread between runs: v1.36 interactive at 12 req/s was
 66% good in 6960e08 and 77% here.
+
+## P11 result (run 8aeb648): two chained MTP drafts per step (rejected)
+
+GPU tests passed (Triton lazy T=3 + partial-accept fix-up vs stepwise oracle; lane greedy-equal with
+drafts=2, pipeline, row moves). Real model, `spec_decode_bench --drafts 1 2` (128 greedy tokens per row):
+
+| batch x words | plain ms/step | 1 draft: ms, tok/row-step, tok/s | 2 drafts: ms, tok/row-step, tok/s |
+|---|---|---|---|
+| 1 x 48 | 16.1 | 22.3, 1.97, 88 | 27.1, 1.98, 73 |
+| 16 x 48 | 20.5 | 27.8, 1.97, 1128 | 34.5, 2.43, 1125 |
+| 1 x 400 | 16.3 | 22.4, 1.92, 86 | 27.2, 2.61, 96 |
+| 16 x 400 | 20.9 | 28.3, 1.94, 1092 | 35.7, 2.21, 990 |
+
+Agreement with the plain lane is the same for both (16/16 and 14 vs 13 of 16 at 400 words; the differing
+rows split at bf16-level ties, as with one draft). The chained second draft is right only 25-65% of the time
+(the MTP head was trained for one step ahead), while the 3-token verify plus the second MTP pass costs
++5-7 ms per step. Goodput: interactive 12 req/s 40% good vs 72% for v1.36 (lane: 2.32 tokens per row-step
+but 46.4 ms steps vs 37.4 ms). Kept v1.36 (one draft); the drafts>1 code stays, off by default.
