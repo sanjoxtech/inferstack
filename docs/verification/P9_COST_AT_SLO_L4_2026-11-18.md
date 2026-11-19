@@ -180,3 +180,18 @@ every curve moved right, but no case crossed its next rate step at 99%. Kept as 
 every cell, light-load TTFT unchanged at 46-58 ms). At 12 req/s the lane holds 27 of its 32 slots with steps
 of 35 ms (Little's law: 12 req/s x ~2.3 s per 128-token request = ~28 rows), so the pool is nearly full.
 Next, P9g: 48 slots (A/B vs v1.34).
+
+### P9g result (run e42c441): 48 slots
+
+| case | v1.34 (32 slots) | v1.35-s48 | vLLM |
+|---|---|---|---|
+| interactive | 8 (12 req/s: 40%) | 8 (12 req/s: 32%) | 12 |
+| moderate | 3 (4 req/s: 86%) | **4** (100% at 4) | 4 |
+| prefill_heavy | 2 | 2 | 2 |
+| shared_prefix | 8 (12 req/s: 45%) | 8 (12 req/s: 50%) | 12 |
+
+Kept as v1.35-s48: moderate now ties vLLM, nothing lost (light-load TTFT 46-50 ms). At interactive
+12 req/s the miss changed from queueing to per-token time: the lane holds 35 rows, steps take 42 ms
+(1.97 tokens per row-step), and client per-token time is 30.3 ms p50 / 32.2 ms p95 against the 30 ms
+limit (136 of 240 requests over; TTFT p99 2.4 s vs 7.3 s at 32 slots). The decode step itself is now the
+limit at this load: 42 ms for 35 rows plus 67 packed prefills of 38 ms interleaved.
