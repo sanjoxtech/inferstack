@@ -46,7 +46,8 @@ def sh(*argv, check=True, capture=False, timeout=None):
         return subprocess.CompletedProcess(argv, 124, '', '')
 
 
-def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=(), steps=(), post_steps=()):
+def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=False, tests=(), steps=(), post_steps=(),
+              step_timeout=7200):
     """One Python script: the notebook's setup cells, optional pre-steps, stages, scorecard."""
     nb = json.loads(NOTEBOOK.read_text())
     cells = [''.join(c['source']) for c in nb['cells'][:SETUP_CELLS] if c['cell_type'] == 'code']
@@ -78,7 +79,7 @@ def build_job(commit, profiles, workload, rounds, install_fla=False, gdn_check=F
     for i, step in enumerate(steps):   # diagnosis scripts: logged, recorded, not fatal
         argv = shlex.split(step)
         pre += (f"print('step {i} exit:', logged([PY,'-u',*[a.replace('{{OUT}}',str(OUT)) for a in {argv!r}]],"
-                f"'step-{i}.log',env=ENV,timeout=7200), flush=True)\n")   # {OUT}: the evidence directory
+                f"'step-{i}.log',env=ENV,timeout={int(step_timeout)}), flush=True)\n")   # {OUT}: the evidence directory
     if not profiles:   # diagnosis only: archive and stop, no scorecard
         return '\n\n'.join(cells + [pre, f'''
 import shutil as _sh
@@ -175,6 +176,7 @@ def main():
     ap.add_argument('--post-step', action='append', default=[],
                     help='script + args run after the scorecard (rival venvs installed), e.g. "scripts/goodput.py --only ... --out {OUT}/goodput"')
     ap.add_argument('--step', action='append', default=[], help="script + args run on the runtime, e.g. \"scripts/x.py --out OUT/x.json\"")
+    ap.add_argument('--step-timeout', type=float, default=7200, help='seconds each --step may run on the runtime')
     ap.add_argument('--tests', nargs='*', default=(), help='pytest paths to run on the runtime first (job stops on failure)')
     args = ap.parse_args()
     colab = shutil.which('colab') or str(Path.home() / '.local/bin/colab')
@@ -189,7 +191,8 @@ def main():
     bundle, job, prep, launch, pollf = (tmp / n for n in ('inferstack.bundle', 'job.py', 'prep.py', 'launch.py',
                                                           'poll.py'))
     sh('git', 'bundle', 'create', bundle, branch)
-    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests, args.step, args.post_step))
+    job.write_text(build_job(commit, args.profiles, workload, args.rounds, args.install_fla, args.gdn_check, args.tests, args.step, args.post_step,
+                             args.step_timeout))
     prep.write_text(
         'import subprocess as sp\n'
         f'r=sp.run("cd /content && rm -rf inferstack && git clone -q -b {branch} inferstack.bundle inferstack '
