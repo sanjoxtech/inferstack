@@ -67,3 +67,41 @@ def test_triton_matches_reference(T, B, Hk, Hv, K, V):
     got = GB.gdn_banked(q, k, v, gate, beta, banks, sel)
     torch.testing.assert_close(got, ref, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(banks, ref_banks, atol=2e-3, rtol=2e-3)
+
+
+def _lazy_then_fixup(q, k, v, gate, beta, banks, sel, acc, backend):
+    """P10 lazy mode end to end: lazy step, fix-up of rejected rows, selector update.
+    Returns outputs and each row's current state afterwards."""
+    B = q.shape[0]
+    out = GB.gdn_banked(q, k, v, gate, beta, banks, sel, backend=backend, lazy=True)
+    GB.gdn_banked_fixup(k[:, 0], v[:, 0], gate[:, 0], beta[:, 0], banks, sel, acc, backend=backend)
+    new = torch.where(acc, 1 - sel[:B], sel[:B])
+    return out, torch.stack([banks[int(new[b]), b] for b in range(B)])
+
+
+def test_lazy_bank_with_fixup_matches_eager_banks():
+    """Accepted rows end on token 2's state, rejected rows on token 1's, as in the eager banks."""
+    q, k, v, gate, beta, banks, sel = data(B=4, T=2, slots=4)
+    acc = torch.tensor([True, False, True, False])
+    eager = banks.clone()
+    ref_out = GB.gdn_banked(q, k, v, gate, beta, eager, sel, backend='torch')
+    ref_sel = torch.where(acc, sel, 1 - sel)
+    ref_cur = torch.stack([eager[int(ref_sel[b]), b] for b in range(4)])
+    out, cur = _lazy_then_fixup(q, k, v, gate, beta, banks, sel, acc, 'torch')
+    torch.testing.assert_close(out, ref_out)
+    torch.testing.assert_close(cur, ref_cur, atol=1e-5, rtol=1e-5)
+
+
+@needs_cuda
+@pytest.mark.parametrize('B,Hk,Hv,K,V', [(1, 16, 16, 128, 128), (7, 16, 32, 128, 128), (3, 2, 4, 64, 48)])
+def test_triton_lazy_bank_and_fixup_match_reference(B, Hk, Hv, K, V):
+    q, k, v, gate, beta, banks, sel = data(B=B, T=2, Hk=Hk, Hv=Hv, K=K, V=V, slots=B + 2, seed=B, device='cuda')
+    sel = (torch.arange(B + 2, device='cuda') % 2).to(torch.int32)
+    acc = (torch.arange(B, device='cuda') % 3) != 1
+    q, k, v, beta = q.bfloat16(), k.bfloat16(), v.bfloat16(), beta.bfloat16()
+    ref_banks = banks.clone()
+    ref_out, ref_cur = _lazy_then_fixup(q, k, v, gate, beta, ref_banks, sel, acc, 'torch')
+    out, cur = _lazy_then_fixup(q, k, v, gate, beta, banks, sel, acc, 'triton')
+    torch.testing.assert_close(out, ref_out, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(cur, ref_cur, atol=2e-3, rtol=2e-3)
+    torch.testing.assert_close(banks[:, B:], ref_banks[:, B:])

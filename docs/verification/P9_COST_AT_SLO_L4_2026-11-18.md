@@ -195,3 +195,22 @@ Kept as v1.35-s48: moderate now ties vLLM, nothing lost (light-load TTFT 46-50 m
 (1.97 tokens per row-step), and client per-token time is 30.3 ms p50 / 32.2 ms p95 against the 30 ms
 limit (136 of 240 requests over; TTFT p99 2.4 s vs 7.3 s at 32 slots). The decode step itself is now the
 limit at this load: 42 ms for 35 rows plus 67 packed prefills of 38 ms interleaved.
+
+## P10: decode step profile (run 2782760, v1.35-s48, L4)
+
+Spec step GPU time by graph replay (rows x position):
+
+| rows | 1 | 8 | 16 | 24 | 32 | 40 | 48 |
+|---|---|---|---|---|---|---|---|
+| pos 200 | 19.3 | 21.7 | 25.1 | 28.1 | 31.0 | 34.1 | 36.9 ms |
+| pos 1600 | 19.4 | 22.4 | 27.3 | 32.2 | 36.4 | 40.9 | 45.1 ms |
+
+A fixed ~19 ms (weights incl. a 1 GB lm_head, near the L4 read floor) plus ~0.37 ms per row at short
+context. Eager kernel table at 48 rows: GEMMs ~21 ms, our banked GDN kernel 10.9 ms (0.74 ms at 8 rows),
+everything else ~3 ms. The GDN kernel is the row-scaling cost: per row and GDN layer it reads 1 MB of fp32
+state and writes 2 MB (states after token 1 and token 2), ~2.6 GB per step at 48 rows.
+
+P10a (v1.36, `static_decode_spec_lazy_bank`): write only token 2's state, into the other bank, keep the
+current bank, and for rejected rows (~4%) rebuild token 1's state in place after the verify from the kept
+state and token 1's k, v, gate, beta (masked loads: accepted rows cost no state traffic). 1 read + 1 write.
+A/B: v1.35-s48 vs v1.36, plus the profile of v1.36.

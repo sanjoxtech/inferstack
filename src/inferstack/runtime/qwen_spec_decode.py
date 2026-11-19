@@ -244,8 +244,11 @@ class QwenSpecDecoder(QwenStaticDecoder):
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
         from inferstack.kernels.gdn_banked import gdn_banked
+        lazy = bool(getattr(self, 'lazy_bank', False)) and T == 2
         o = gdn_banked(q, k, v, gate, beta, sp.banks[i], sp.sel,
-                       backend='triton' if self.gdn_backend == 'triton' else 'torch').to(x.dtype)
+                       backend='triton' if self.gdn_backend == 'triton' else 'torch', lazy=lazy).to(x.dtype)
+        if lazy:   # P10: token 1's inputs for the reject fix-up after the verify
+            self._t1[i] = (k[:, 0], v[:, 0], gate[:, 0], beta[:, 0])
         o = o.reshape(-1, g.head_v_dim)
         o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, T, -1)
         return g.out_proj(o)
@@ -271,6 +274,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
     # ---- the speculative step (static shapes; graph-capturable) ----------------------
     def _spec_step(self, st: StaticDecodeState, sp: SpecState, B: int, L: int):
         import torch
+        self._t1 = {}
         tok, p = sp.tok[:B], sp.pos[:B]
         cols = p[:, None] + sp.offs                                       # [B, 2]
         mask = st.mask[:B]
@@ -297,7 +301,16 @@ class QwenSpecDecoder(QwenStaticDecoder):
         keep = acc.view(B, 1, 1)
         for i in st.conv:
             st.conv[i][:B].copy_(torch.where(keep, st.conv[i][:B], sp.conv_alt[i][:B]))
-        sp.sel[:B].copy_(torch.where(acc, sp.sel[:B], 1 - sp.sel[:B]))
+        if getattr(self, 'lazy_bank', False):
+            # P10: token 2's state is in the other bank; rejected rows rebuild token 1's in place
+            from inferstack.kernels.gdn_banked import gdn_banked_fixup
+            for i, t1 in self._t1.items():
+                gdn_banked_fixup(*t1, sp.banks[i], sp.sel, acc,
+                                 backend='triton' if self.gdn_backend == 'triton' else 'torch')
+            self._t1 = {}
+            sp.sel[:B].copy_(torch.where(acc, 1 - sp.sel[:B], sp.sel[:B]))
+        else:
+            sp.sel[:B].copy_(torch.where(acc, sp.sel[:B], 1 - sp.sel[:B]))
         mask.scatter_(1, cols[:, 1:], acc[:, None])                       # rejected draft column is not real
         mmask = sp.mtp_mask[:B]
         mmask.scatter_(1, cols, True)

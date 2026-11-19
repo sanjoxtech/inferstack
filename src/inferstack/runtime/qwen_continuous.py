@@ -143,6 +143,7 @@ class QwenHybridContinuousEngine:
                 tensors,seed=resolve_mtp(str(getattr(n,'static_decode_spec_mtp','') or ''))
                 dec=QwenSpecDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab,mtp_tensors=tensors,mtp_seed=seed,draft_vocab=int(getattr(n,'static_decode_spec_draft_vocab',0) or 0) or None)
             else:dec=QwenStaticDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab)
+            dec.lazy_bank=bool(getattr(n,'static_decode_spec_lazy_bank',False))   # P10: 1 read + 1 write of GDN state per spec step
             ov=int(getattr(n,'static_decode_overlap_slots',0) or 0) if bool(getattr(n,'static_decode_overlap_prefill',False)) else 0
             # P7: ov spare slots above the decode buckets for overlapped prefills (decode never reaches them)
             st=dec.new_state(slots+ov,max_len,[b for b in n.static_decode_batch_buckets if int(b)<=slots]+[slots],list(n.static_decode_len_buckets))

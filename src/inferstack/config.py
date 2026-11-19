@@ -79,6 +79,7 @@ class NativeConfig:
     static_decode_budget_new_tokens:bool=False   # P9: count only uncached tokens against static_decode_packed_max_tokens
     static_decode_wait_for_slot:bool=False   # P9b: queue rows that fit the lane while it is full (no Transformers side cohort)
     static_decode_spec_pipeline:bool=False   # P9f: overlap spec step N+1 on the GPU with step N's host work
+    static_decode_spec_lazy_bank:bool=False   # P10: spec GDN step writes only token 2's state; rejects rebuild token 1's
     static_decode_admit_every_steps:int=0   # P9d: while the lane decodes, admit new rows at most once per K decode steps (0 = every turn)
     static_decode_admit_pace_min_rows:int=0   # P9e: pace admission only while the lane holds at least this many rows (light load admits at once)
     custom_gdn_triton:bool=True
