@@ -102,3 +102,22 @@ def test_colab_owns_only_its_sessions_and_retries_a_reclaimed_vm(tmp_path):
     assert json.loads(shlex.split(step)[2]) == {'k': 3}            # JSON survives the driver's shlex.split
     with pytest.raises(ValueError):
         RemoteJob('MF_session', ('x.py',), expected_hours=1)
+
+
+def test_attainment_sees_a_regression_between_grid_points():
+    """P10b replay on L4 (ifs-g2-proof-k3b): goodput@99 tied at 8, the 12 req/s step collapsed."""
+    from inferstack.optimization.remote_verify import judge
+
+    def trial(side, repeat, top):
+        steps = [{'rate': 4.0, 'good_frac': 1.0}, {'rate': 8.0, 'good_frac': 1.0}, {'rate': 12.0, 'good_frac': top}]
+        return {'side': side, 'repeat': repeat, 'profile': side, 'ready': True, 'check': ['a', 'b'],
+                'goodput': {'goodput99_rps': 8.0, 'goodput90_rps': 8.0, 'token_counts_missing': 0,
+                            'cases': {'interactive': {'steps': steps}}}}
+    base = [0.713, 0.642, 0.858]
+    cand = [0.167, 0.208, 0.2]
+    ab = {'commit': 'c', 'repeats': 3, 'sweep': {'rates': [4, 8, 12, 16]},
+          'trials': [trial('baseline', i, b) for i, b in enumerate(base)] +
+                    [trial('candidate', i, c) for i, c in enumerate(cand)]}
+    verdict, gates, _, _ = judge(ab)
+    assert all(gates.values()) and verdict['decision'] == 'reject'
+    assert verdict['metrics']['goodput99_rps']['gain'] == 0 and verdict['metrics']['slo_attainment']['gain'] < 0

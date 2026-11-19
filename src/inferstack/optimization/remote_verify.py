@@ -24,17 +24,32 @@ from inferstack.evaluation.judge import Objective, evaluate
 from inferstack.execution.gpu_backend import RemoteJob, run_job
 
 CODE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-DEFAULT_OBJECTIVES = (Objective('goodput99_rps', 'max'),)
+# goodput@99 alone is blind between grid points: on the L4 proof run (P10b replay) both sides scored 8 req/s
+# while the candidate's 12 req/s good fraction fell from 64-86% to 17-21%. SLO attainment (mean good fraction
+# over the whole rate grid) sees that, so a change must not regress it.
+DEFAULT_OBJECTIVES = (Objective('goodput99_rps', 'max'), Objective('slo_attainment', 'max'))
+
+
+def attainment(goodput, rates):
+    """Mean good fraction over every case and every rate in the grid; rates skipped after the sweep stopped
+    count as 0 (the sweep only stops below 50% good, so the curve is already falling there)."""
+    fracs = []
+    for case in goodput['cases'].values():
+        by_rate = {s['rate']: s['good_frac'] for s in case['steps']}
+        fracs += [by_rate.get(r, 0.0) for r in rates]
+    return sum(fracs) / len(fracs) if fracs else None
 
 
 def trials_from_ab(ab):
-    """Per side: [{'goodput99_rps', 'goodput90_rps'}] in repeat order; None where unmeasured."""
+    """Per side: [{'goodput99_rps', 'goodput90_rps', 'slo_attainment'}] in repeat order; None where unmeasured."""
     sides = {'baseline': [], 'candidate': []}
+    rates = [float(r) for r in ab['sweep']['rates']]
     for t in sorted(ab['trials'], key=lambda t: t['repeat']):
         g = t.get('goodput') or {}
         measured = bool(g) and not g.get('token_counts_missing')
         sides[t['side']].append({'goodput99_rps': g.get('goodput99_rps') if measured else None,
-                                 'goodput90_rps': g.get('goodput90_rps') if measured else None})
+                                 'goodput90_rps': g.get('goodput90_rps') if measured else None,
+                                 'slo_attainment': attainment(g, rates) if measured else None})
     return sides['baseline'], sides['candidate']
 
 
@@ -117,8 +132,11 @@ class RemoteABVerifier:
     def verify(self, plan):
         job = self.job(plan)
         run = run_job(self.backend, job, self.out_root, cap_usd=self.cap_usd, approved_usd=self.approved_usd)
+        return self.conclude(plan, run.evidence_dir / 'ab.json' if run.evidence_dir else None, run), run
+
+    def conclude(self, plan, ab_path, run):
+        """Judge an ab.json (or its absence) and store the outcome. Also used to re-judge a past run."""
         baseline = self.repository.read('deployment', plan['baseline_deployment'])
-        ab_path = run.evidence_dir / 'ab.json' if run.evidence_dir else None
         if ab_path is None or not ab_path.is_file():
             verdict = {'decision': 'inconclusive', 'reasons': [f'remote run produced no ab.json '
                                                                f'(exit {run.exit_code})']}
@@ -139,7 +157,7 @@ class RemoteABVerifier:
         digest = artifact if isinstance(artifact, str) else artifact['sha256']
         verdict = {**verdict, 'evidence': {'sha256': digest}, 'gates': gates, 'cost_usd': run.cost_usd}
         self.record(plan, verdict)
-        return verdict, run
+        return verdict
 
     def record(self, plan, verdict):
         actions = self.actions(plan)
