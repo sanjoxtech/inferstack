@@ -233,3 +233,17 @@ the step looks slower than v1.35 (41.8 vs 36.9 ms at pos 200); the banked kernel
 
 Interactive 12 req/s is now at 66% good, still short of 99%. Remaining per-step cost at 48 rows: ~21 ms
 GEMMs (weight reads, near the L4 floor in BF16), ~7 ms GDN state, and packed prefills between steps.
+
+### P10b result (run 1b8ab05): admission pacing K=3 on v1.36 (rejected)
+
+| case | v1.36 (K=6) | K=3 |
+|---|---|---|
+| interactive | 8 (12 req/s: 77% good) | 8 (12 req/s: 17.5%) |
+| moderate | 3 (4 req/s: 93.8%) | 4 |
+| prefill_heavy | 2 | 2 |
+| shared_prefix | 8 | 6 (8 req/s: 98.1%) |
+
+K=3 cuts TTFT p99 below the knee (interactive 8 req/s: 155 vs 243 ms) but makes ~1.6x more packed
+prefills per request, which costs decode time near capacity: interactive collapses earlier at 12 req/s and
+shared_prefix loses a step. Kept K=6. Same-profile spread between runs: v1.36 interactive at 12 req/s was
+66% good in 6960e08 and 77% here.
