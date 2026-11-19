@@ -94,6 +94,10 @@ class QwenHybridContinuousEngine:
                 pass
         return model(**kw)
     def _maybe_patch(self):
+        lib=str(getattr(self.cfg.native,'gemm_blas_library','') or '')   # P12: cublas | cublaslt (torch default when empty)
+        if lib and str(self.device).startswith('cuda'):
+            import torch
+            torch.backends.cuda.preferred_blas_library(lib);self._static_diag['gemm_blas_library']=lib
         if self.cfg.native.custom_gdn_triton:
             try:
                 from inferstack.kernels.gdn_triton import install_qwen35_gdn_kernel
