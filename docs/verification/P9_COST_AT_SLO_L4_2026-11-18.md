@@ -165,3 +165,18 @@ idle through it. `static_decode_spec_pipeline` launches step N+1 before step N's
 compaction while N+1 is on the GPU (its row moves queue after the step; the step's results are re-ordered
 to match). Cost: tokens reach clients one step later, and a row that finished in step N runs one discarded
 step (2 more columns reserved per row). A/B: v1.33-m8 vs v1.34.
+
+### P9f result (run bdddbe3)
+
+| case | v1.33-m8 | v1.34 (pipeline) | vLLM |
+|---|---|---|---|
+| interactive | 8 (12 req/s: 27% good) | 8 (12 req/s: 38% good; TTFT p99 at 8: 251 vs 338 ms) | 12 |
+| moderate | 3 (4 req/s: 82.5%) | 3 (4 req/s: 96.3%; @90 = 4) | 4 |
+| prefill_heavy | 2 | 2 | 2 |
+| shared_prefix | 8 (99.4% at 8) | 8 (100% at 8; 12 req/s: 53% vs 22%) | 12 |
+
+Host time per step after the sync fell from 11 ms to ~0 (interactive 12 req/s: 6.4 s -> 6 ms total), and
+every curve moved right, but no case crossed its next rate step at 99%. Kept as v1.34 (equal or better in
+every cell, light-load TTFT unchanged at 46-58 ms). At 12 req/s the lane holds 27 of its 32 slots with steps
+of 35 ms (Little's law: 12 req/s x ~2.3 s per 128-token request = ~28 rows), so the pool is nearly full.
+Next, P9g: 48 slots (A/B vs v1.34).
