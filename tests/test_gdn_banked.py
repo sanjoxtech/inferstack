@@ -105,3 +105,26 @@ def test_triton_lazy_bank_and_fixup_match_reference(B, Hk, Hv, K, V):
     torch.testing.assert_close(out, ref_out, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(cur, ref_cur, atol=2e-3, rtol=2e-3)
     torch.testing.assert_close(banks[:, B:], ref_banks[:, B:])
+
+
+@pytest.mark.parametrize('backend', ['torch', pytest.param('triton', marks=needs_cuda)])
+def test_lazy_three_tokens_with_partial_accept_matches_stepwise(backend):
+    """P11: a lazy T = 3 step plus gdn_banked_fixup_n leaves each row on the state after the tokens
+    it kept (1, 2 or all 3), equal to running those tokens one by one."""
+    dev = 'cuda' if backend == 'triton' else 'cpu'
+    B, Hk, Hv, K, V = 6, 2, 4, 64, 48
+    q, k, v, gate, beta, banks, sel = data(B=B, T=3, Hk=Hk, Hv=Hv, K=K, V=V, slots=B + 1, seed=3, device=dev)
+    sel = (torch.arange(B + 1, device=dev) % 2).to(torch.int32)
+    cnt = torch.tensor([1, 2, 3, 3, 1, 2], device=dev)
+    before = banks.clone()
+    cur0 = torch.stack([before[int(sel[b]), b] for b in range(B)])
+    steps = stepwise(q.float(), k.float(), v.float(), gate, beta.float(), cur0.clone())
+    out = GB.gdn_banked(q, k, v, gate, beta, banks, sel, backend=backend, lazy=True)
+    GB.gdn_banked_fixup_n(k[:, :2], v[:, :2], gate[:, :2], beta[:, :2], banks, sel, cnt, backend=backend)
+    new = torch.where(cnt == 3, 1 - sel[:B], sel[:B])
+    tol = dict(atol=2e-3, rtol=2e-3) if backend == 'triton' else dict(atol=1e-5, rtol=1e-5)
+    for t in range(3):
+        torch.testing.assert_close(out[:, t], steps[t][0][:, 0].float(), **tol)
+    for b in range(B):
+        torch.testing.assert_close(banks[int(new[b]), b], steps[int(cnt[b]) - 1][1][b], **tol)
+    torch.testing.assert_close(banks[:, B:], before[:, B:])

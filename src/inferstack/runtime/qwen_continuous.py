@@ -141,7 +141,7 @@ class QwenHybridContinuousEngine:
             if bool(getattr(n,'static_decode_spec',False)):
                 from inferstack.runtime.qwen_spec_decode import QwenSpecDecoder,resolve_mtp
                 tensors,seed=resolve_mtp(str(getattr(n,'static_decode_spec_mtp','') or ''))
-                dec=QwenSpecDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab,mtp_tensors=tensors,mtp_seed=seed,draft_vocab=int(getattr(n,'static_decode_spec_draft_vocab',0) or 0) or None)
+                dec=QwenSpecDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab,mtp_tensors=tensors,mtp_seed=seed,draft_vocab=int(getattr(n,'static_decode_spec_draft_vocab',0) or 0) or None,drafts=int(getattr(n,'static_decode_spec_drafts',1) or 1))
             else:dec=QwenStaticDecoder(self.model,self.device,gdn_backend=gb,attn_backend=ab)
             dec.lazy_bank=bool(getattr(n,'static_decode_spec_lazy_bank',False))   # P10: 1 read + 1 write of GDN state per spec step
             ov=int(getattr(n,'static_decode_overlap_slots',0) or 0) if bool(getattr(n,'static_decode_overlap_prefill',False)) else 0

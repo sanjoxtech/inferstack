@@ -53,7 +53,10 @@ class StaticDecodeLane:
         # GPU runs while the host works. Tokens reach clients one step later; a row that finished
         # in step N runs one extra (discarded) step, so it needs 2 more columns.
         self.pipeline = bool(getattr(n, 'static_decode_spec_pipeline', False)) and spec is not None
-        self.margin = 4 if self.pipeline else 2       # columns past prompt + max_new_tokens (spec)
+        # columns a spec step may touch past a row's position (verify p..p+D, chained MTP drafts up to
+        # p+2D-1; P11), and past prompt + max_new_tokens (x2 with the pipeline's discarded step)
+        self.span = 2 * int(getattr(decoder, 'drafts', 1)) if spec is not None else 0
+        self.margin = self.span * (2 if self.pipeline else 1)
         self._pending = None                        # (tokens, accepts) of a synced step not yet accepted
         # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
         # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
@@ -377,7 +380,7 @@ class StaticDecodeLane:
         base, k = self.rows, len(go)
         for j, (src, n) in enumerate(zip(slots, res['lengths'])):
             if self.sp is not None:
-                self.dec.move_spec_row(self.st, self.sp, src, base + j, n + 2)
+                self.dec.move_spec_row(self.st, self.sp, src, base + j, n + self.span)
             else:
                 self.dec.move_row(self.st, src, base + j, n + 1)
         self.next_ids[base:base + k].copy_(res['nxt'])
@@ -515,7 +518,7 @@ class StaticDecodeLane:
     def _spec_decode(self, n):
         import time
         t0 = time.perf_counter()
-        y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + 2)
+        y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + self.span)
         if self.pipeline:
             # P9f: the step is queued on the GPU; accept/emit the previous step and compact now.
             # compact's row moves are queued after this step, so moved rows carry its update.
@@ -555,13 +558,13 @@ class StaticDecodeLane:
         self._pending = None
         e = self.e
         buf = []   # P6: one event-loop wakeup per step for all rows' tokens
-        e._accept_host(self.batch, [r[0] for r in yh], buf)
-        e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)], buf)
+        for t in range(len(yh[0]) if yh else 0):   # y_0 always, y_t when t <= accepted drafts (P11)
+            e._accept_host(self.batch, [r[t] if t <= int(a) else None for r, a in zip(yh, ah)], buf)
         e._emit_many(buf)
         if positions:
             self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
         self.stats['spec_row_steps'] += len(yh)
-        self.stats['spec_accepted'] += sum(map(bool, ah))
+        self.stats['spec_accepted'] += sum(int(a) for a in ah)
 
     def compact(self):
         """Drop finished/cancelled rows and pack survivors into slots 0..k-1 (order kept, or with

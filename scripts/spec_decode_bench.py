@@ -91,18 +91,17 @@ def spec_lane(model, dec, toks, n, max_len, window=0):
     steps = 0
     while min(map(len, out)) < n:
         torch.cuda.synchronize(); t0 = time.perf_counter()
-        y, acc = dec.spec_step(st, sp, B, length=max(pos) + 2)
+        D = int(getattr(dec, 'drafts', 1))
+        y, acc = dec.spec_step(st, sp, B, length=max(pos) + 2 * D)
         yh, ah = y.tolist(), acc.tolist()
         ms.append((time.perf_counter() - t0) * 1000)
         emitted = 0
         for r in range(B):
-            out[r].append(yh[r][0])
-            emitted += 1
-            if ah[r]:
-                out[r].append(yh[r][1])
-                emitted += 1
-                accepts += 1
-            pos[r] += 1 + int(ah[r])
+            a = int(ah[r])                          # accepted drafts (bool for D = 1)
+            out[r].extend(yh[r][:a + 1])
+            emitted += a + 1
+            accepts += a
+            pos[r] += 1 + a
         per_step.append(emitted)
         steps += 1
     dec.release(st)
@@ -136,10 +135,10 @@ def hf_greedy(model, tok, toks, n):
     return out
 
 
-def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check, windows=(0,)):
+def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check, windows=(0,), drafts=(1,)):
     import torch
     toks = [tok.encode(t, add_special_tokens=False) for t in prompts(batch, words)]
-    max_len = 256 * (-(-(max(map(len, toks)) + n + 8) // 256))
+    max_len = 256 * (-(-(max(map(len, toks)) + n + 16) // 256))
     plain, pms = plain_lane(model, dec, toks, n, max_len)
     torch.cuda.empty_cache()
     hf = hf_greedy(model, tok, toks, n) if hf_check else None
@@ -150,8 +149,9 @@ def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check, windows
            'spec': {}}
     if hf is not None:
         row['plain']['vs_transformers'] = agreement(hf, plain, n)
-    for dv, win in [(d, w) for d in draft_vocabs for w in windows]:
+    for dv, win, nd in [(d, w, k) for d in draft_vocabs for w in windows for k in drafts]:
         dec.draft_vocab = dv or None
+        dec.drafts, dec.lazy_bank = int(nd), bool(dec.lazy_bank or nd > 1)
         spec, sms, per_step, acceptance, graphs, capture_s = spec_lane(model, dec, toks, n, max_len, win)
         torch.cuda.empty_cache()
         warm_s = sms[3:] if len(sms) > 6 else sms
@@ -162,7 +162,7 @@ def bench_case(model, tok, dec, batch, words, n, draft_vocabs, hf_check, windows
              'vs_plain': agreement(plain, spec, n)}
         if hf is not None:
             r['vs_transformers'] = agreement(hf, spec, n)
-        row['spec'][f"vocab={dv or 'full'},window={win or 'full'}"] = r
+        row['spec'][f"vocab={dv or 'full'},window={win or 'full'},drafts={nd}"] = r
     return row
 
 
@@ -178,6 +178,8 @@ def main():
     ap.add_argument('--draft-vocabs', type=int, nargs='+', default=[0], help='0 = full vocabulary')
     ap.add_argument('--mtp-windows', type=int, nargs='+', default=[0],
                     help='MTP prompt history: last W prompt positions get MTP entries (0 = all)')
+    ap.add_argument('--drafts', type=int, nargs='+', default=[1], help='P11: MTP drafts per step to compare')
+    ap.add_argument('--lazy-bank', action='store_true', help='P10: lazy GDN banks for drafts = 1 too')
     ap.add_argument('--hf-check', action='store_true', help='also compare both lanes with Transformers greedy')
     ap.add_argument('--attn', default=None, help='sdpa|triton (default: the profile static_decode_attention)')
     ap.add_argument('--out', required=True)
@@ -194,11 +196,12 @@ def main():
     attn = a.attn or str(getattr(cfg.native, 'static_decode_attention', 'sdpa') or 'sdpa')
     dec = QwenSpecDecoder(model, a.device, gdn_backend='auto', attn_backend=attn,
                           mtp_tensors=load_mtp_tensors(REPO_ID, REVISION))
+    dec.lazy_bank = bool(a.lazy_bank)
     rows = []
     for words in a.words:
         for b in a.batches:
             try:
-                row = bench_case(model, tok, dec, b, words, a.new_tokens, a.draft_vocabs, a.hf_check, a.mtp_windows)
+                row = bench_case(model, tok, dec, b, words, a.new_tokens, a.draft_vocabs, a.hf_check, a.mtp_windows, a.drafts)
             except Exception as exc:
                 row = {'batch': b, 'prompt_words': words, 'error': f'{type(exc).__name__}: {str(exc)[:400]}',
                        'traceback': traceback.format_exc()[-2500:]}

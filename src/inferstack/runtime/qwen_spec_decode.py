@@ -114,14 +114,21 @@ class SpecState:
     sel: Any = None                                # [slots] int32: which recurrent bank is current
     conv_alt: dict = field(default_factory=dict)   # GDN conv state after verify token 1
     banks: dict = field(default_factory=dict)      # layer -> [2, slots, Hv, dk, dv] fp32 recurrent banks
+    nacc: Any = None                               # P11 [slots] long: drafts accepted in the last step
 
 
 class QwenSpecDecoder(QwenStaticDecoder):
     """Static decode lane plus the N6.1 MTP verify/draft step. Plain `step` still works."""
 
     def __init__(self, model, device, dtype=None, gdn_backend='auto', attn_backend='sdpa', *,
-                 mtp_tensors: dict | None = None, mtp_seed: int | None = None, draft_vocab: int | None = None):
+                 mtp_tensors: dict | None = None, mtp_seed: int | None = None, draft_vocab: int | None = None,
+                 drafts: int = 1):
         super().__init__(model, device, dtype=dtype, gdn_backend=gdn_backend, attn_backend=attn_backend)
+        # P11: drafts per step. 1 = the N6.1 step. >= 2 chains the MTP head (its own output hidden
+        # feeds the next draft), verifies drafts + 1 tokens and needs lazy GDN banks.
+        self.drafts = int(drafts)
+        if self.drafts not in (1, 2, 3):
+            raise ValueError(f'drafts must be 1..3, got {drafts}')
         self.mtp = MTPHead(self, mtp_tensors, seed=mtp_seed)
         # N6.1b: draft over the first `draft_vocab` token ids only (lossless: the verify pass
         # still takes the full-vocab argmax). Cuts the MTP lm_head read from 1 GB on Qwen3.5-2B.
@@ -136,15 +143,17 @@ class QwenSpecDecoder(QwenStaticDecoder):
         dev, n = self.device, st.batch
         a = self.mtp.layer.self_attn
         shape = (n, self.cfg.num_key_value_heads, st.max_len, a.head_dim)
-        sp = SpecState(tok=torch.zeros(n, 2, dtype=torch.long, device=dev),
+        T = self.drafts + 1
+        sp = SpecState(tok=torch.zeros(n, T, dtype=torch.long, device=dev),
                        pos=torch.zeros(n, dtype=torch.long, device=dev),
-                       y=torch.zeros(n, 2, dtype=torch.long, device=dev),
+                       y=torch.zeros(n, T, dtype=torch.long, device=dev),
                        accept=torch.zeros(n, dtype=torch.bool, device=dev),
-                       offs=torch.arange(2, device=dev),
+                       offs=torch.arange(T, device=dev),
                        sel=torch.zeros(n, dtype=torch.int32, device=dev),
                        mtp_mask=torch.zeros(n, st.max_len, dtype=torch.bool, device=dev),
                        mtp_kv=(torch.zeros(shape, dtype=self.dtype, device=dev),
                                torch.zeros(shape, dtype=self.dtype, device=dev)))
+        sp.nacc = torch.zeros(n, dtype=torch.long, device=dev)
         for i, t in st.conv.items():
             sp.conv_alt[i] = torch.zeros_like(t)
             bank = torch.zeros((2, *st.rec[i].shape), dtype=torch.float32, device=dev)
@@ -233,8 +242,11 @@ class QwenSpecDecoder(QwenStaticDecoder):
         K = conv.shape[-1]
         w = g.conv1d.weight
         full = torch.cat([conv, qkv.transpose(1, 2).to(w.dtype)], dim=-1)            # [B, C, K+T]
-        sp.conv_alt[i][:B].copy_(full[:, :, 1:K + 1])
-        conv.copy_(full[:, :, T:])
+        if T > 2:   # P11: committed after the verify, from the window after the accepted tokens
+            self._conv_full[i] = full
+        else:
+            sp.conv_alt[i][:B].copy_(full[:, :, 1:K + 1])
+            conv.copy_(full[:, :, T:])
         out = F.conv1d(full, w, g.conv1d.bias, padding=0, groups=full.shape[1])[:, :, -T:]
         out = mod.ACT2FN[g.activation](out).to(x.dtype).transpose(1, 2)            # [B, T, C]
         q, k, v = torch.split(out, [g.key_dim, g.key_dim, g.value_dim], dim=-1)
@@ -244,10 +256,12 @@ class QwenSpecDecoder(QwenStaticDecoder):
         beta = b.sigmoid()
         gate = -g.A_log.float().exp() * F.softplus(a.float() + g.dt_bias)
         from inferstack.kernels.gdn_banked import gdn_banked
-        lazy = bool(getattr(self, 'lazy_bank', False)) and T == 2
+        lazy = (bool(getattr(self, 'lazy_bank', False)) and T == 2) or T > 2
         o = gdn_banked(q, k, v, gate, beta, sp.banks[i], sp.sel,
                        backend='triton' if self.gdn_backend == 'triton' else 'torch', lazy=lazy).to(x.dtype)
-        if lazy:   # P10: token 1's inputs for the reject fix-up after the verify
+        if lazy and T > 2:   # P11: tokens 0..T-2 for the partial-accept fix-up
+            self._t1[i] = (k[:, :T - 1], v[:, :T - 1], gate[:, :T - 1], beta[:, :T - 1])
+        elif lazy:   # P10: token 1's inputs for the reject fix-up after the verify
             self._t1[i] = (k[:, 0], v[:, 0], gate[:, 0], beta[:, 0])
         o = o.reshape(-1, g.head_v_dim)
         o = g.norm(o, z.reshape(-1, g.head_v_dim)).reshape(B, T, -1)
@@ -275,6 +289,8 @@ class QwenSpecDecoder(QwenStaticDecoder):
     def _spec_step(self, st: StaticDecodeState, sp: SpecState, B: int, L: int):
         import torch
         self._t1 = {}
+        if self.drafts > 1:
+            return self._spec_step_n(st, sp, B, L)
         tok, p = sp.tok[:B], sp.pos[:B]
         cols = p[:, None] + sp.offs                                       # [B, 2]
         mask = st.mask[:B]
@@ -326,6 +342,74 @@ class QwenSpecDecoder(QwenStaticDecoder):
         sp.tok[:B].copy_(torch.stack([torch.where(acc, y[:, 1], y[:, 0]), draft], dim=1))
         sp.pos[:B].add_(1 + acc.long())
 
+    def _spec_step_n(self, st: StaticDecodeState, sp: SpecState, B: int, L: int):
+        """P11: D = self.drafts >= 2 drafts per row. Verify [x, d1..dD] at p..p+D; y_t = argmax at
+        p+t; accept the longest prefix with d_{t+1} == y_t (nacc of D); the row emits y_0..y_nacc.
+        GDN: the lazy banked kernel writes the state after all D+1 tokens into the other bank; rows
+        that kept fewer get it rebuilt from the kept bank (gdn_banked_fixup_n), and the conv state is
+        the window after the kept tokens. MTP: entries p..p+D from the main hiddens (entry q takes
+        token q+1 = y_{q-p}); the first draft comes from entry p+nacc, each further draft chains the
+        MTP layer on its own output hidden at the next position (overwritten next step)."""
+        import torch
+        from inferstack.kernels.gdn_banked import gdn_banked_fixup_n
+        D, T = self.drafts, self.drafts + 1
+        self._conv_full = {}
+        tok, p = sp.tok[:B], sp.pos[:B]
+        cols = p[:, None] + sp.offs                                       # [B, T]
+        mask = st.mask[:B]
+        mask.scatter_(1, cols, True)
+        h = self.text.embed_tokens(tok)                                   # [B, T, H]
+        cos, sin = self.text.rotary_emb(h, cols[None].expand(3, B, T))
+        skey = (id(st), 'spec', st.batch)
+        for i, kind in enumerate(self.layer_types):
+            layer = self.text.layers[i]
+            r = h
+            h = layer.input_layernorm(h)
+            if kind == 'linear_attention':
+                h = self._gdn_t(i, layer.linear_attn, h, st, sp)
+            else:
+                kc, vc = st.kv[i]
+                h = self._attn_t(layer.self_attn, h, cos, sin, kc[:B], vc[:B], mask, p, L, self.attn_backend, skey)
+            h = r + h
+            h = h + layer.mlp(layer.post_attention_layernorm(h))
+        h = self.text.norm(h)                                             # [B, T, H]
+        y = self.lm_head(h).argmax(-1)                                    # [B, T]
+        nacc = (y[:, :D] == tok[:, 1:]).long().cumprod(1).sum(1)         # [B] accepted drafts
+        cnt = nacc + 1                                                    # tokens the state keeps
+        gb = 'triton' if self.gdn_backend == 'triton' else 'torch'
+        for i, t1 in self._t1.items():
+            gdn_banked_fixup_n(*t1, sp.banks[i], sp.sel, cnt, backend=gb)
+        for i, full in self._conv_full.items():
+            conv = st.conv[i][:B]
+            K = conv.shape[-1]
+            idx = (cnt.view(B, 1, 1) + torch.arange(K, device=cnt.device)).expand(B, conv.shape[1], K)
+            conv.copy_(full.gather(2, idx))
+        self._t1, self._conv_full = {}, {}
+        sp.sel[:B].copy_(torch.where(cnt == T, 1 - sp.sel[:B], sp.sel[:B]))
+        real = sp.offs[None] <= nacc[:, None]                             # [B, T] verified columns kept
+        mask.scatter_(1, cols, real)
+        mmask = sp.mtp_mask[:B]
+        mmask.scatter_(1, cols, real)
+        hm = self._mtp_layer(self._mtp_in(y, h), cos, sin, sp, slice(0, B), mmask, p, L, self.attn_backend, skey)
+        Hd = hm.shape[-1]
+        hprev = hm.gather(1, nacc.view(B, 1, 1).expand(B, 1, Hd))[:, 0]
+        dprev = self._draft(self.mtp.norm(hprev))
+        drafts = [dprev]
+        for j in range(1, D):                     # chained drafts at p + nacc + j
+            qj = p + nacc + j
+            mmask.scatter_(1, qj[:, None], True)
+            x2 = self._mtp_in(dprev[:, None], hprev[:, None])
+            c2, s2 = self.text.rotary_emb(x2, qj.view(1, B, 1).expand(3, B, 1))
+            hprev = self._mtp_layer(x2, c2, s2, sp, slice(0, B), mmask, qj, L, self.attn_backend, skey)[:, 0]
+            dprev = self._draft(self.mtp.norm(hprev))
+            drafts.append(dprev)
+        last = y.gather(1, nacc[:, None])[:, 0]
+        sp.y[:B].copy_(y)
+        sp.nacc[:B].copy_(nacc)
+        sp.accept[:B].copy_(nacc > 0)
+        sp.tok[:B].copy_(torch.stack([last] + drafts, dim=1))
+        sp.pos[:B].add_(cnt)
+
     # ---- public API ----------------------------------------------------------------
     def load_spec_row(self, st: StaticDecodeState, sp: SpecState, slot: int, prompt_ids, hidden, first_token: int):
         """After `load_rows` put a prompt of n tokens into `slot`: fill the MTP cache and the first draft.
@@ -355,7 +439,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
             draft = self._draft(self.mtp.norm(hm[:, -1]))
             sp.sel[slot] = 0
             sp.tok[slot, 0] = int(first_token)
-            sp.tok[slot, 1] = draft[0]
+            sp.tok[slot, 1:] = draft[0]                # P11: further drafts start as copies
             sp.pos[slot] = n
         self.stats['spec_rows_loaded'] += 1
         return int(draft[0])
@@ -410,7 +494,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
             last = hm.gather(1, (w_t - 1).view(k, 1, 1).expand(k, 1, hm.shape[-1]))[:, 0]
             draft = self._draft(self.mtp.norm(last))
             sp.sel[rows].zero_()
-            sp.tok[rows].copy_(torch.stack([f, draft], dim=1))
+            sp.tok[rows].copy_(torch.stack([f] + [draft] * self.drafts, dim=1))   # P11: copies for drafts 2..
             sp.pos[rows].copy_(n_t)
         self.stats['spec_rows_loaded'] += k
         self.stats['spec_batch_loads'] = self.stats.get('spec_batch_loads', 0) + 1
@@ -463,7 +547,7 @@ class QwenSpecDecoder(QwenStaticDecoder):
         else:
             graph.replay()
             self.stats['spec_replays'] += 1
-        return sp.y[:rows], sp.accept[:rows]
+        return sp.y[:rows], (sp.nacc[:rows] if self.drafts > 1 else sp.accept[:rows])
 
     def release(self, st: StaticDecodeState):
         super().release(st)

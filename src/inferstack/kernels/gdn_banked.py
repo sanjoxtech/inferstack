@@ -68,30 +68,36 @@ try:
             tl.store(out + gi * V + vo, tl.sum(S * qv[:, None], 0), mask=vm)
             if T == 2 and t == 0 and not LAZY:
                 tl.store(oth, S, mask=vm[None, :])
-        if LAZY and T == 2:
+        if LAZY and T >= 2:
             tl.store(oth, S, mask=vm[None, :])
         else:
             tl.store(cur, S, mask=vm[None, :])
 
     @triton.jit
-    def _fixup_kernel(k, v, g, beta, banks, sel, acc, bank_stride,
+    def _fixup_kernel(k, v, g, beta, banks, sel, cnt, bank_stride,
                       Hk: tl.constexpr, Hv: tl.constexpr, K: tl.constexpr, V: tl.constexpr,
-                      GROUP: tl.constexpr, BV: tl.constexpr):
+                      GROUP: tl.constexpr, N: tl.constexpr, BV: tl.constexpr):
+        """Rows with cnt[b] <= N: apply tokens 0..cnt-1 to bank[sel] in place. Rows with cnt > N
+        (all tokens accepted) load and store nothing."""
         bhv = tl.program_id(0); vb = tl.program_id(1)
         b = bhv // Hv; hv = bhv - b * Hv; hk = hv // GROUP
-        rej = tl.load(acc + b) == 0
+        m = tl.load(cnt + b)
+        rej = m <= N
         ko = tl.arange(0, K)
         vo = vb * BV + tl.arange(0, BV); vm = (vo < V) & rej
         s = tl.load(sel + b).to(tl.int64)
         ptr = banks + s * bank_stride + bhv * K * V + ko[:, None] * V + vo[None, :]
         S = tl.load(ptr, mask=vm[None, :], other=0.0)
-        kv = tl.load(k + (b * Hk + hk) * K + ko, mask=(ko < K) & rej, other=0.0).to(tl.float32)
-        kv = kv * tl.rsqrt(tl.sum(kv * kv, 0) + 1e-6)
-        gi = b * Hv + hv
-        S = S * tl.exp(tl.load(g + gi))
-        mem = tl.sum(S * kv[:, None], 0)
-        vv = tl.load(v + gi * V + vo, mask=vm, other=0.0).to(tl.float32)
-        S = S + kv[:, None] * ((vv - mem) * tl.load(beta + gi).to(tl.float32))[None, :]
+        for t in tl.static_range(N):
+            use = rej & (t < m)
+            kv = tl.load(k + ((b * N + t) * Hk + hk) * K + ko, mask=(ko < K) & use, other=0.0).to(tl.float32)
+            kv = kv * tl.rsqrt(tl.sum(kv * kv, 0) + 1e-6)
+            gi = (b * N + t) * Hv + hv
+            Sn = S * tl.exp(tl.load(g + gi, mask=use, other=0.0))
+            mem = tl.sum(Sn * kv[:, None], 0)
+            vv = tl.load(v + gi * V + vo, mask=vm & use, other=0.0).to(tl.float32)
+            Sn = Sn + kv[:, None] * ((vv - mem) * tl.load(beta + gi, mask=use, other=0.0).to(tl.float32))[None, :]
+            S = tl.where(use, Sn, S)
         tl.store(ptr, S, mask=vm[None, :])
 
     HAS_TRITON = True
@@ -123,7 +129,7 @@ def reference(q, k, v, g, beta, banks, sel, lazy=False):
         outs.append((S * qf[:, t].unsqueeze(-1)).sum(-2))
         if t == 0:
             first = S
-    if T == 2 and lazy:                  # token 2's state into the other bank, current kept
+    if T >= 2 and lazy:                  # the last token's state into the other bank, current kept
         banks[0, :B].copy_(torch.where(s == 0, banks[0, :B], S))
         banks[1, :B].copy_(torch.where(s == 0, S, banks[1, :B]))
     elif T == 2:
@@ -135,42 +141,55 @@ def reference(q, k, v, g, beta, banks, sel, lazy=False):
     return torch.stack(outs, dim=1)
 
 
-def fixup_reference(k, v, g, beta, banks, sel, acc):
-    """Torch oracle for `gdn_banked_fixup`: k [B, Hk, K], v [B, Hv, V], g/beta [B, Hv]."""
+def fixup_reference(k, v, g, beta, banks, sel, cnt):
+    """Torch oracle for `gdn_banked_fixup_n`: k [B, N, Hk, K], v [B, N, Hv, V], g/beta [B, N, Hv],
+    cnt [B]: rows with cnt <= N get tokens 0..cnt-1 applied to bank[sel] in place."""
     import torch
-    B, Hk, K = k.shape
-    Hv = v.shape[1]
-    kf = _l2(k.float()).repeat_interleave(Hv // Hk, dim=1)
+    B, N, Hk, K = k.shape
+    Hv = v.shape[2]
+    kf = _l2(k.float()).repeat_interleave(Hv // Hk, dim=2)
     s = sel[:B].long().view(B, 1, 1, 1)
     S = torch.where(s == 0, banks[0, :B], banks[1, :B])
-    S = S * g.float().exp()[..., None, None]
-    mem = (S * kf.unsqueeze(-1)).sum(-2)
-    S = S + kf.unsqueeze(-1) * ((v.float() - mem) * beta.float().unsqueeze(-1)).unsqueeze(-2)
-    rej = (~acc[:B].bool()).view(B, 1, 1, 1)
+    c = cnt[:B].long().view(B, 1, 1, 1)
+    for t in range(N):
+        Sn = S * g[:, t].float().exp()[..., None, None]
+        mem = (Sn * kf[:, t].unsqueeze(-1)).sum(-2)
+        Sn = Sn + kf[:, t].unsqueeze(-1) * ((v[:, t].float() - mem) * beta[:, t].float().unsqueeze(-1)).unsqueeze(-2)
+        S = torch.where(t < c, Sn, S)
+    rej = c <= N
     banks[0, :B].copy_(torch.where(rej & (s == 0), S, banks[0, :B]))
     banks[1, :B].copy_(torch.where(rej & (s == 1), S, banks[1, :B]))
 
 
-def gdn_banked_fixup(k, v, g, beta, banks, sel, acc, *, backend='triton'):
-    """P10 lazy mode: for rows with acc == False, apply token 1 (k, v, g, beta) to bank[sel] in place."""
+def gdn_banked_fixup_n(k, v, g, beta, banks, sel, cnt, *, backend='triton'):
+    """P11 lazy mode, N drafts: after a lazy T = N + 1 step, rows that kept cnt <= N tokens get the
+    state after those tokens rebuilt in bank[sel] from the kept state (k/v/g/beta of tokens 0..N-1)."""
     import torch
-    B, Hk, K = k.shape
-    Hv, V = v.shape[1], v.shape[2]
+    B, N, Hk, K = k.shape
+    Hv, V = v.shape[2], v.shape[3]
     if backend == 'torch' or not (HAS_TRITON and k.is_cuda):
-        return fixup_reference(k, v, g, beta, banks, sel, acc)
+        return fixup_reference(k, v, g, beta, banks, sel, cnt)
     k, v = k.contiguous(), v.contiguous()
     g, beta = g.float().contiguous(), beta.contiguous()
-    a = acc[:B].to(torch.int32)
+    c = cnt[:B].to(torch.int32)
     BV = 32
-    _fixup_kernel[(B * Hv, triton.cdiv(V, BV))](k, v, g, beta, banks, sel, a, banks.stride(0),
-                                               Hk=Hk, Hv=Hv, K=K, V=V, GROUP=Hv // Hk, BV=BV, num_warps=4)
+    _fixup_kernel[(B * Hv, triton.cdiv(V, BV))](k, v, g, beta, banks, sel, c, banks.stride(0),
+                                               Hk=Hk, Hv=Hv, K=K, V=V, GROUP=Hv // Hk, N=N, BV=BV, num_warps=4)
+
+
+def gdn_banked_fixup(k, v, g, beta, banks, sel, acc, *, backend='triton'):
+    """P10 lazy mode (one draft): for rows with acc == False, apply token 1 (k [B, Hk, K], v [B, Hv, V],
+    g/beta [B, Hv]) to bank[sel] in place."""
+    import torch
+    cnt = torch.where(acc.bool(), 2, 1)
+    return gdn_banked_fixup_n(k[:, None], v[:, None], g[:, None], beta[:, None], banks, sel, cnt, backend=backend)
 
 
 def gdn_banked(q, k, v, g, beta, banks, sel, *, backend='triton', lazy=False):
     import torch
     B, T, Hk, K = q.shape
     Hv, V = v.shape[2], v.shape[3]
-    if T not in (1, 2) or Hv % Hk or banks.shape[0] != 2 or banks.dtype != torch.float32:
+    if not (T in (1, 2) or (lazy and T <= 4)) or Hv % Hk or banks.shape[0] != 2 or banks.dtype != torch.float32:
         raise ValueError(f'bad banked GDN inputs q={tuple(q.shape)} v={tuple(v.shape)} banks={tuple(banks.shape)}')
     if backend == 'torch':
         return reference(q, k, v, g, beta, banks, sel, lazy)

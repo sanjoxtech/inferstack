@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False, tail=False, overlap=0, pipe=False, lazy=False):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False, tail=False, overlap=0, pipe=False, lazy=False, drafts=1):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -51,6 +51,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=F
     n.static_decode_overlap_min_tokens = 8
     n.static_decode_spec_pipeline = pipe
     n.static_decode_spec_lazy_bank = lazy
+    n.static_decode_spec_drafts = drafts
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -68,11 +69,11 @@ async def drain(q, timeout=60):
 
 
 def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False,
-        single=False, emit=False, tail=False, overlap=0, pipe=False, lazy=False):
+        single=False, emit=False, tail=False, overlap=0, pipe=False, lazy=False, drafts=1):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit, tail, overlap, pipe, lazy), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit, tail, overlap, pipe, lazy, drafts), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -400,3 +401,28 @@ def test_spec_lazy_bank_keeps_outputs(pipe):
     got, d = run(True, plan, packed=True, spec=True, budget=64, tail=True, pipe=pipe, lazy=True)
     assert got == ref
     assert d['static_decode']['spec_steps'] > 0
+
+
+@pytest.mark.parametrize('pipe', [False, True])
+def test_spec_two_drafts_keep_outputs(pipe):
+    """P11: two chained MTP drafts per step (verify 3 tokens, accept 0..2). The random MTP head makes
+    most drafts wrong, so partial accepts and the fix-up run; outputs must equal the Transformers
+    path, with row moves and mid-decode arrivals."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'r1', shared + [1, 2], 2), (0.0, 'r2', [3, 3, 3], 9), (0.0, 'r3', shared + [7], 3),
+            (0.0, 'r4', [5, 1, 4], 11), (0.15, 'r5', [2, 6, 2, 6], 4), (0.2, 'r6', shared[:9], 7)]
+    ref, _ = run(False, plan)
+    got, d = run(True, plan, packed=True, spec=True, budget=64, tail=True, pipe=pipe, lazy=True, drafts=2)
+    assert got == ref
+    assert d['static_decode']['spec_steps'] > 0
+
+
+def test_spec_two_drafts_accept_when_drafts_are_right():
+    """P11: repetitive prompts, where the random head drafts right more often; outputs stay greedy-equal
+    and the counters stay consistent (0..2 accepted drafts per row-step)."""
+    plan = [(0.0, 'a', [4, 4, 4, 4], 10), (0.0, 'b', [7, 7], 8)]
+    ref, _ = run(False, plan)
+    got, d = run(True, plan, packed=True, spec=True, budget=64, lazy=True, drafts=2)
+    assert got == ref
+    sd = d['static_decode']
+    assert 0 <= sd['spec_accepted'] <= 2 * sd['spec_row_steps'], sd
