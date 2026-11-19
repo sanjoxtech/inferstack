@@ -265,3 +265,25 @@ rows split at bf16-level ties, as with one draft). The chained second draft is r
 (the MTP head was trained for one step ahead), while the 3-token verify plus the second MTP pass costs
 +5-7 ms per step. Goodput: interactive 12 req/s 40% good vs 72% for v1.36 (lane: 2.32 tokens per row-step
 but 46.4 ms steps vs 37.4 ms). Kept v1.36 (one draft); the drafts>1 code stays, off by default.
+
+## P12 (run 9ccb8f0): GEMM back ends for the spec step (no win)
+
+`scripts/gemm_bw_bench.py` recorded every F.linear of one spec step (4.15 GB of weights per step) and timed
+each shape by graph replay under cuBLAS, cuBLASLt and torch.compile max-autotune. Summed per step:
+
+| rows | cuBLAS | cuBLASLt | autotune | best per shape |
+|---|---|---|---|---|
+| 1 | 8.50 | 8.62 | 8.22 | 8.22 ms |
+| 32 | 12.74 | 11.76 | 12.54 | 11.53 ms |
+| 48 | 14.26 | 14.27 | 14.17 | 13.45 ms |
+
+No back end is better by more than ~1 ms at 32-48 rows, so the BLAS choice is not the lever. Caveat: weights
+under 48 MB stay in the L4's L2 cache when one shape is replayed (some show > 300 GB/s), so these sums
+understate serving, where every weight is cold (eager profile: ~21 ms of GEMM kernels at 48 rows). The one
+weight larger than L2 is honest: the 1 GB lm_head runs at ~220 GB/s, 4.6 ms per step on every back end.
+
+Where the remaining gap to vLLM sits: our per-token decode time is already comparable or lower (one MTP
+draft, ~20 ms per token at 34-38 rows), but every arrival costs a separate prefill pass and admission waits
+for it to be batched. vLLM serves 12 req/s by mixing chunked prefill tokens into decode batches under
+piecewise CUDA graphs (dense layers graphed per token count, attention outside). Our engine graphs whole
+steps, so a mixed step would run eager and lose more to host overhead than it saves (P11 analysis).
