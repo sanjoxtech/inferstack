@@ -53,6 +53,16 @@ PROFILES = {
         'max_prefill_chunk_tokens': Option(int, section='scheduler', minimum=1, maximum=1 << 16),
         'decode_priority': Option(bool, section='scheduler'),
         'forward_fusion': Option(bool, section='native'),
+        # P9-P12 serving knobs (static decode lane); measured effects in docs/verification/P9_COST_AT_SLO_L4_2026-11-18.md
+        'max_requests_per_batch': Option(int, section='native', minimum=1, maximum=512),
+        'static_decode_slots': Option(int, section='native', minimum=1, maximum=256),
+        'static_decode_wait_for_slot': Option(bool, section='native'),
+        'static_decode_admit_every_steps': Option(int, section='native', minimum=0, maximum=64),
+        'static_decode_admit_pace_min_rows': Option(int, section='native', minimum=0, maximum=256),
+        'static_decode_spec_pipeline': Option(bool, section='native'),
+        'static_decode_spec_lazy_bank': Option(bool, section='native'),
+        'static_decode_spec_drafts': Option(int, section='native', minimum=1, maximum=3),
+        'gemm_blas_library': Option(str, section='native', values=frozenset({'', 'cublas', 'cublaslt'})),
     },
 }
 DEFAULT_NATIVE_PROFILE = 'configs/profiles/production-v1.6.0.toml'
