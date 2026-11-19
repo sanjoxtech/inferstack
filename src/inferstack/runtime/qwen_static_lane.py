@@ -37,7 +37,7 @@ class StaticDecodeLane:
                       'decode_steps': 0, 'max_live_rows': 0, 'rows_rejected_sampling': 0,
                       'spec_steps': 0, 'spec_row_steps': 0, 'spec_accepted': 0, 'spec_step_ms': 0.0,
                       'packed_prefills': 0, 'packed_rows': 0, 'packed_prefix_hits': 0,
-                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_prefix_single_pass': 0, 'spec_host_ms': 0.0, 'gpu_thread_ms': 0.0, 'gpu_thread_calls': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0}
+                      'packed_prefix_groups': 0, 'packed_prefix_shared_rows': 0, 'packed_prefix_single_pass': 0, 'spec_host_ms': 0.0, 'gpu_thread_ms': 0.0, 'gpu_thread_calls': 0, 'packed_tokens_saved': 0, 'packed_ms': 0.0, 'spec_flush_ms': 0.0, 'spec_pipelined_steps': 0}
         n = engine.cfg.native
         self.packed_graphs = bool(getattr(n, 'static_decode_packed_graphs', False))
         self.store_first_sight = bool(getattr(n, 'prefix_cache_store_first_sight', False))
@@ -49,6 +49,12 @@ class StaticDecodeLane:
         # running on the Transformers path beside the lane (open-loop goodput: that side cohort
         # slowed every decode step from ~12 to ~190 ms per token at 6 req/s)
         self.wait_for_slot = bool(getattr(n, 'static_decode_wait_for_slot', False))
+        # P9f: launch spec step N+1 before the host work (accept, emit, compact) of step N, so the
+        # GPU runs while the host works. Tokens reach clients one step later; a row that finished
+        # in step N runs one extra (discarded) step, so it needs 2 more columns.
+        self.pipeline = bool(getattr(n, 'static_decode_spec_pipeline', False)) and spec is not None
+        self.margin = 4 if self.pipeline else 2       # columns past prompt + max_new_tokens (spec)
+        self._pending = None                        # (tokens, accepts) of a synced step not yet accepted
         # P7: overlap long packed prefills with decode. New rows prefill into spare top slots
         # (>= self.top, never touched by decode graphs) on a low-priority stream from a second
         # thread while decode keeps replaying on a high-priority stream; finished rows move down.
@@ -88,7 +94,7 @@ class StaticDecodeLane:
         spec = self.sp is not None
         if spec and state.prompt_hidden is None:
             return False
-        extra = 2 if spec else 0                   # the spec lane also writes the draft column
+        extra = self.margin if spec else 0         # the spec lane also writes the draft column
         fit = [i for i, r in enumerate(state.requests)
                if len(r.prompt_token_ids) + r.sampling.max_new_tokens + extra <= self.st.max_len]
         self.stats['rows_rejected_length'] += len(state.requests) - len(fit)
@@ -162,7 +168,7 @@ class StaticDecodeLane:
         import torch
         e = self.e
         spec = self.sp is not None
-        extra = 2 if spec else 0
+        extra = self.margin if spec else 0
         budget = int(getattr(e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
         pc = e._prefix_cache
         free = self.top - self.rows - self.reserved
@@ -292,7 +298,7 @@ class StaticDecodeLane:
         spare = self.st.batch - self.top
         budget = int(getattr(self.e.cfg.native, 'static_decode_packed_max_tokens', 8192) or 8192)
         room = self.top - self.rows
-        extra = 2 if self.sp is not None else 0
+        extra = self.margin if self.sp is not None else 0
         go, keep, T = [], [], 0
         for r, q in self.long_queue:
             n = len(r.prompt_token_ids)
@@ -488,7 +494,8 @@ class StaticDecodeLane:
         if self.overlap and not self.rows and self._job is None and self.long_queue:
             self._start_overlap()                        # P7 v2: queued long prompts, nothing decoding
         self.poll_overlap(wait=not self.rows)          # P7: nothing to decode -> wait for the prefill
-        self.compact()
+        if self._pending is None:
+            self.compact()
         n = self.rows
         if not n:
             return
@@ -509,33 +516,63 @@ class StaticDecodeLane:
         import time
         t0 = time.perf_counter()
         y, acc = self.dec.spec_step(self.st, self.sp, n, length=max(self.positions) + 2)
+        if self.pipeline:
+            # P9f: the step is queued on the GPU; accept/emit the previous step and compact now.
+            # compact's row moves are queued after this step, so moved rows carry its update.
+            tf = time.perf_counter()
+            live = self.compact()                       # flushes the pending step first
+            self.stats['spec_flush_ms'] += (time.perf_counter() - tf) * 1000
+            yh, ah = y.tolist(), acc.tolist()           # the step's only host sync
+            if live is not None:                        # rows were dropped/moved: same order as batch
+                yh, ah = [yh[i] for i in live], [ah[i] for i in live]
+            t1 = time.perf_counter()
+            self.stats['spec_step_ms'] += (t1 - t0) * 1000
+            self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
+            self._pending = (yh, ah)
+            self.stats['spec_pipelined_steps'] += 1
+            self.stats['decode_steps'] += 1
+            self.stats['spec_steps'] += 1
+            self.e._stats['decode_forward_calls'] += 1
+            self.stats['spec_host_ms'] += (time.perf_counter() - t1) * 1000
+            return
         yh, ah = y.tolist(), acc.tolist()            # the step's only host sync
         t1 = time.perf_counter()
         self.stats['spec_step_ms'] += (t1 - t0) * 1000   # launch + GPU step + sync
+        self._pending = (yh, ah)
+        self._flush(positions=True)
+        self.stats['decode_steps'] += 1
+        self.stats['spec_steps'] += 1
+        self.e._stats['decode_forward_calls'] += 1
+        self.compact()
+        # P6: host work after the step's sync (accept, emit, compact); the GPU idles through it
+        self.stats['spec_host_ms'] += (time.perf_counter() - t1) * 1000
+
+    def _flush(self, positions=False):
+        """Accept and emit a synced spec step's tokens (rows 0..len-1 of the batch)."""
+        if self._pending is None:
+            return
+        yh, ah = self._pending
+        self._pending = None
         e = self.e
         buf = []   # P6: one event-loop wakeup per step for all rows' tokens
         e._accept_host(self.batch, [r[0] for r in yh], buf)
         e._accept_host(self.batch, [r[1] if a else None for r, a in zip(yh, ah)], buf)
         e._emit_many(buf)
-        self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
-        k = sum(map(bool, ah))
-        self.stats['decode_steps'] += 1
-        self.stats['spec_steps'] += 1
-        self.stats['spec_row_steps'] += n
-        self.stats['spec_accepted'] += k
-        e._stats['decode_forward_calls'] += 1
-        self.compact()
-        # P6: host work after the step's sync (accept, emit, compact); the GPU idles through it
-        self.stats['spec_host_ms'] += (time.perf_counter() - t1) * 1000
+        if positions:
+            self.positions = [p + 1 + int(a) for p, a in zip(self.positions, ah)]
+        self.stats['spec_row_steps'] += len(yh)
+        self.stats['spec_accepted'] += sum(map(bool, ah))
 
     def compact(self):
         """Drop finished/cancelled rows and pack survivors into slots 0..k-1 (order kept, or with
-        compact_from_tail the tail rows fill the holes)."""
+        compact_from_tail the tail rows fill the holes). Returns the new order (old row index per
+        new row), or None when nothing changed. A pending pipelined step is accepted first."""
         import torch
+        self._flush()
         b = self.batch
         live = [i for i, r in enumerate(b.requests) if r.state == RequestState.RUNNING]
         if len(live) == len(b.requests):
-            return
+            return None
         for i, r in enumerate(b.requests):
             if i not in live and r.state == RequestState.CANCELLED and r.request_id in self.e._queues:
                 self.e._emit(b.queues[i], None)
@@ -556,7 +593,7 @@ class StaticDecodeLane:
         for j, src in enumerate(live):
             if src != j:
                 if self.sp is not None:
-                    self.dec.move_spec_row(self.st, self.sp, src, j, self.positions[src] + 2)
+                    self.dec.move_spec_row(self.st, self.sp, src, j, self.positions[src] + self.margin)
                 else:
                     self.dec.move_row(self.st, src, j, self.positions[src] + 1)
         if live:
@@ -571,8 +608,10 @@ class StaticDecodeLane:
         b.generated = [b.generated[i] for i in live]
         b.stop_sets = [b.stop_sets[i] for i in live]
         self.positions = [self.positions[i] for i in live]
+        return live
 
     def clear(self):
+        self._pending = None
         b = self.batch
         b.requests, b.queues, b.generated, b.stop_sets = [], [], [], []
         self.positions = []

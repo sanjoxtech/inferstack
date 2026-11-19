@@ -156,3 +156,12 @@ late and loses shared_prefix at 8 req/s. Kept M=8 as v1.33.
 Still behind vLLM on interactive (8 vs 12) and shared_prefix (8 vs 12); at 12 req/s all three variants
 collapse (TTFT p99 10-14 s), so the next limit is raw throughput between steps. Next, P9f: vectorise the
 spec host path; then mixed prefill+decode in one forward.
+
+### P9f (v1.34): overlap the spec step with host work
+
+At interactive 12 req/s (run f9a2941, M=8) the lane ran 562 steps of 30.3 ms on the GPU plus 11 ms of
+host work each (accept, stop checks, emit to the event loop, compaction: 6.2 s of 26.2 s), with the GPU
+idle through it. `static_decode_spec_pipeline` launches step N+1 before step N's host work, and runs
+compaction while N+1 is on the GPU (its row moves queue after the step; the step's results are re-ordered
+to match). Cost: tokens reach clients one step later, and a row that finished in step N runs one discarded
+step (2 more columns reserved per row). A/B: v1.33-m8 vs v1.34.

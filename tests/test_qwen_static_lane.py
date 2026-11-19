@@ -23,7 +23,7 @@ class Tok:
     pad_token_id = 0
 
 
-def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False, tail=False, overlap=0):
+def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=False, single=False, emit=False, tail=False, overlap=0, pipe=False):
     c = load_profile('configs/profiles/production-v1.6.0-baseline.toml')
     n = c.native
     n.custom_gdn_triton = False
@@ -49,6 +49,7 @@ def cfg(static, prefix=False, spec=False, packed=False, budget=24, first_sight=F
     n.static_decode_overlap_prefill = bool(overlap)
     n.static_decode_overlap_slots = overlap
     n.static_decode_overlap_min_tokens = 8
+    n.static_decode_spec_pipeline = pipe
     c.kernels.torch_compile = False
     n.compile_model = False
     return c
@@ -66,11 +67,11 @@ async def drain(q, timeout=60):
 
 
 def run(static, plan, prefix=False, spec=False, temps=None, packed=False, budget=24, first_sight=False,
-        single=False, emit=False, tail=False, overlap=0):
+        single=False, emit=False, tail=False, overlap=0, pipe=False):
     """plan: list of (delay_s, request_id, prompt, max_new)."""
     async def go():
         model = tiny_model(seed=11).to(torch.float32)
-        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit, tail, overlap), 'cpu')
+        e = QwenHybridContinuousEngine(model, Tok(), cfg(static, prefix, spec, packed, budget, first_sight, single, emit, tail, overlap, pipe), 'cpu')
         await e.start()
 
         async def one(delay, rid, prompt, max_new):
@@ -368,3 +369,19 @@ def test_admission_pacing_keeps_outputs_and_batches_arrivals():
     got, d = asyncio.run(go())
     assert got == ref
     assert d['static_decode']['packed_rows'] == 4, d['static_decode']
+
+
+@pytest.mark.parametrize('tail', [False, True])
+def test_spec_pipeline_keeps_outputs(tail):
+    """P9f: with static_decode_spec_pipeline, spec step N+1 is launched before step N's tokens are
+    accepted, and compaction happens while it runs. Rows finish at different steps (holes, moves),
+    others arrive mid-decode; every greedy output must equal the Transformers path."""
+    shared = [9, 8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+    plan = [(0.0, 'r1', shared + [1, 2], 2), (0.0, 'r2', [3, 3, 3], 9), (0.0, 'r3', shared + [7], 3),
+            (0.0, 'r4', [5, 1, 4], 11), (0.15, 'r5', [2, 6, 2, 6], 4), (0.2, 'r6', shared[:9], 7),
+            (0.25, 'r7', [4, 4], 1)]
+    ref, _ = run(False, plan)
+    got, d = run(True, plan, packed=True, spec=True, budget=64, tail=tail, pipe=True)
+    assert got == ref
+    sd = d['static_decode']
+    assert sd['spec_pipelined_steps'] > 0 and sd['decoder'].get('row_moves', 0) >= 1, sd
