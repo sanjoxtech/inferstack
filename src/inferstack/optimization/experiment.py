@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import dataclasses
 import hashlib
 import math
 import json
@@ -216,7 +217,8 @@ VERIFIER_CODE_SHA256=_code_sha256()
 MAX_REPEATS=20
 MEASURED_METRICS=frozenset({'e2e_ms','exact_match_rate','quality_score','ttft_client_ms','chunk_gap_client_ms',
                             'ttft_client_p95_ms','output_tokens_per_s','ttft_engine_ms','tpot_engine_ms',
-                            'engine_queue_ms','engine_prefill_ms','engine_decode_ms','logprob_divergence'})
+                            'engine_queue_ms','engine_prefill_ms','engine_decode_ms','logprob_divergence',
+                            'goodput99_rps'})
 # Gates this verifier can execute. Anything else a plan requests is reported as
 # unsupported (None), which makes the verdict inconclusive, never a silent pass.
 SERVING_GATES=frozenset({'cancellation','overload'})
@@ -276,7 +278,7 @@ class EndpointVerifier:
     """
     def __init__(self, repository, executor, baseline_id, cases, objectives, *, repeats=3, workload_ref=None,
                  objective_ref=None, overload_concurrency=8, phase_timing=True, phase_max_chunks=8,
-                 quality_budget=0.0, max_logprob_divergence=0.05, engine_telemetry=True):
+                 quality_budget=0.0, max_logprob_divergence=0.05, engine_telemetry=True, goodput=None):
         if repeats<3 or not cases:raise ValueError('three repeats and nonempty workload required')
         for case in cases:
             keys=set(case)
@@ -291,6 +293,9 @@ class EndpointVerifier:
         self.phase_timing,self.phase_max_chunks=phase_timing,phase_max_chunks
         self.quality_budget,self.max_logprob_divergence=quality_budget,max_logprob_divergence
         self.engine_telemetry=engine_telemetry
+        # G1: open-loop goodput per repeat ({'cases': [GoodputCase], 'rates', 'seconds_per_rate', 'min_requests',
+        # 'seed'}); its sum over cases becomes the trial metric goodput99_rps, judged like any objective.
+        self.goodput=goodput
         self.repository,self.executor=repository,executor
         self.baseline_id,self.cases,self.repeats=baseline_id,cases,repeats
         self.objectives=[Objective(**o) for o in objectives]
@@ -324,6 +329,8 @@ class EndpointVerifier:
                 'objectives':objectives,'quality_budget':self.quality_budget,
                 'max_logprob_divergence':self.max_logprob_divergence,
                 'fixture_sha256':hashlib.sha256(self.repository.encode(self.cases).encode()).hexdigest(),
+                'goodput':None if not self.goodput else {k:v for k,v in self.goodput.items() if k!='cases'}|
+                          {'cases':[dataclasses.asdict(c) for c in self.goodput['cases']]},
                 'unsupported':sorted(set(required)-{'correctness','quality','health','comparable','complete'}-SERVING_GATES)}
 
     def comparability(self,baseline_record,candidate_record,stable):
@@ -533,7 +540,7 @@ class EndpointVerifier:
         try:
             healthy=await baseline.ready() and await target.ready()
             policy=self.policy(plan)
-            trials=[[],[]];correct=True;outputs=[[],[]]
+            trials=[[],[]];correct=True;outputs=[[],[]];goodput=[[],[]]
             # Warmup excluded from scored trials.
             await self.trial(baseline);await self.trial(target)
             specs=(baseline_spec,candidate_spec)
@@ -544,6 +551,12 @@ class EndpointVerifier:
                     metrics,valid,texts=await self.trial(engine)
                     metrics={**metrics,**await self.phases(engine),
                              **self.engine_phases(specs[index],before,await self.scrape(engine,specs[index]))}
+                    if self.goodput and hasattr(engine,'stream'):
+                        from inferstack.evaluation.goodput import sweep
+                        g=await sweep(engine.stream,**self.goodput)
+                        goodput[index].append(g)
+                        # without engine token counts the per-token SLO is unverifiable: leave it unobserved
+                        metrics['goodput99_rps']=g['goodput99_rps'] if not g['token_counts_missing'] else None
                     trials[index].append(metrics);outputs[index].append(texts);correct &= valid
             healthy &= await baseline.ready() and await target.ready()
             stable=self.repository.read('deployment',self.baseline_id)['revision']==baseline_record['revision']
@@ -602,7 +615,7 @@ class EndpointVerifier:
                                   'repeats':policy['repeats'],'order':'interleaved, warmup excluded'},
                       'policy':{**policy,'sha256':hashlib.sha256(self.repository.encode(policy).encode()).hexdigest()},
                       'gate_notes':gate_notes,'comparability':comparability,'identity':identity,
-                      'quality':quality,'logprob_divergence':logit,
+                      'quality':quality,'logprob_divergence':logit,'goodput':goodput if self.goodput else None,
                       'metric_sources':{m:METRICS_SOURCE.get(m) for m in sorted({k for side in trials for t in side for k in t})},
                       'scope':'completion suite: exact-match and graded (F1/contains) quality with a declared budget; '
                                'client E2E, streaming TTFT and chunk gaps; engine phase histograms when exported'}

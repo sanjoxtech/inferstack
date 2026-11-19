@@ -34,6 +34,7 @@ METRICS: dict[str, MetricDefinition] = {m.name: m for m in [
     MetricDefinition('e2e_ms', 'ms', 'Request send to terminal event or full response at the client', 'client', 'min', 'mean'),
     MetricDefinition('output_tokens_per_s', 'tokens/s', 'Authoritative engine completion tokens divided by wall time of the trial', 'engine', 'max', 'sum_over_wall'),
     MetricDefinition('goodput_rps', 'requests/s', 'Completed requests meeting every declared SLO per second of trial wall time', 'evaluator', 'max', 'sum_over_wall'),
+    MetricDefinition('goodput99_rps', 'requests/s', 'Open-loop goodput (evaluation/goodput.py): per workload case the highest Poisson arrival rate with >= 99% of requests meeting TTFT and per-token limits at once, summed over cases', 'evaluator', 'max', 'sum_over_cases'),
     MetricDefinition('failure_rate', 'ratio', 'Failed or incomplete requests divided by requests issued', 'client', 'min', 'ratio'),
     MetricDefinition('gpu_memory_peak_bytes', 'bytes', 'Peak allocated device memory reported by the engine or allocator; sampled nvidia-smi is labeled separately', 'gpu', 'min', 'max'),
     MetricDefinition('gpu_memory_sampled_peak_bytes', 'bytes', 'Peak of periodic nvidia-smi samples per GPU UUID; not an exact allocation maximum', 'gpu', 'min', 'max'),
