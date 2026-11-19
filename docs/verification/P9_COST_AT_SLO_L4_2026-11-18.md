@@ -214,3 +214,22 @@ P10a (v1.36, `static_decode_spec_lazy_bank`): write only token 2's state, into t
 current bank, and for rejected rows (~4%) rebuild token 1's state in place after the verify from the kept
 state and token 1's k, v, gate, beta (masked loads: accepted rows cost no state traffic). 1 read + 1 write.
 A/B: v1.35-s48 vs v1.36, plus the profile of v1.36.
+
+### P10a result (run 6960e08)
+
+GPU tests passed (Triton lazy kernel + fix-up vs torch oracle; lane greedy-equal with pipeline and row moves).
+
+| case | v1.35-s48 | v1.36 (lazy banks) | vLLM |
+|---|---|---|---|
+| interactive | 8 (12 req/s: 33% good) | 8 (**12 req/s: 66% good**, TTFT p99 1.2 s vs 2.1 s) | 12 |
+| moderate | 3 (4 req/s: 93.8%; 4 in run e42c441) | 4 (100% at 4; 6 req/s: 62% vs 37%) | 4 |
+| prefill_heavy | 2 | 2 | 2 |
+| shared_prefix | 8 | 8 | 12 |
+
+Kept as v1.36. In serving (acceptance 96.7%) the lane at 16 req/s ran 38 rows per step in 41.3 ms. The
+profiler's random states give ~0% acceptance, so there the fix-up runs on every row (6.0 ms at 48 rows) and
+the step looks slower than v1.35 (41.8 vs 36.9 ms at pos 200); the banked kernel itself fell from 10.9 to
+6.9 ms. The profiler's step times are therefore a worst case for v1.36, not the serving cost.
+
+Interactive 12 req/s is now at 66% good, still short of 99%. Remaining per-step cost at 48 rows: ~21 ms
+GEMMs (weight reads, near the L4 floor in BF16), ~7 ms GDN state, and packed prefills between steps.
