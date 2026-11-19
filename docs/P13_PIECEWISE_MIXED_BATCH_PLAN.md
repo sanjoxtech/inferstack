@@ -87,3 +87,31 @@ Each run stays under the $10 campaign gate; S0 to S4 together are expected near 
 
 FP8 or other weight formats (changes numerics; a separate, labelled result), multi-GPU, sampling (the
 spec lane is greedy-only), new models.
+
+## S0 result (run 2e5c80c, L4): gate failed, P13 stopped in this form
+
+| piece | measured |
+|---|---|
+| today's decode step (graph), 16 / 32 / 48 rows | 27.0 / 33.9 / 41.4 ms |
+| same step eager (host time to launch) | ~39-40 ms host at any row count |
+| today's separate prefill (graphed), 64 / 128 / 256 / 512 tokens | 24.1 / 27.9 / 39.8 / 64.9 ms |
+| dense ops of a step on N tokens, 25 piece graphs vs one graph | N=64: 13.6 vs 13.4; N=320: 26.1 vs 25.3; N=576: 44.9 vs 43.1 ms |
+| prefill mixers eager (FLA varlen conv + chunk, SDPA), 64..512 tokens | 29.9-32.6 ms, equal to their host time |
+
+Projected mixed step vs today's two steps: slower by 3-10 ms for 64-256 prefill tokens at every row count,
+about even at 512; the gate (save >= 40% of the separate prefill) fails in all 12 cells.
+
+What it shows:
+- Piecewise graphs themselves are cheap: 25 pieces cost 0-2 ms over one graph, with ~0.2 ms host.
+- Eager mixers are host-bound: the FLA varlen calls take ~30 ms of Python per step whatever the size (the
+  GPU waits on the host), and an eager spec step takes ~39 ms of host launches. A mixed step only pays if
+  every mixer is graphed too (prefill mixers per chunk shape, decode mixers per batch x length bucket),
+  hundreds to over a thousand graphs.
+- Sharing the weight read helps less than assumed on L4: dense cost is flat to ~128 tokens (12.9-14.6 ms)
+  and then grows with tokens (24.7 ms at 288, 42 ms at 544): past ~128 tokens the step is compute-bound,
+  so prefill tokens are not free riders on a decode step's weight read.
+- Even with all mixers graphed, the best case (32 rows + 64 prefill tokens: ~46 vs 58 ms separate) saves
+  ~12 ms per prefill, about 4% of GPU time at interactive 12 req/s (69 prefills in 20 s), plus shorter
+  admission waits.
+
+Decision: do not build P13 as planned. v1.36 stays the served profile.
