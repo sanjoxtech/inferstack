@@ -20,6 +20,7 @@ Rules every backend obeys:
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -128,7 +129,8 @@ class ColabBackend:
         return name
 
     def driver_argv(self, job, session, out_root):
-        step = ' '.join(str(a).replace('{OUT}', '{OUT}/job') for a in job.argv)
+        # the driver shlex-splits the step: quote each argument (a JSON patch must survive intact)
+        step = shlex.join(str(a).replace('{OUT}', '{OUT}/job') for a in job.argv)
         return [self.python, str(self.driver), '--session', session, '--gpu', job.gpu, '--out', str(out_root),
                 '--poll-s', str(self.poll_s), '--step-timeout', str(int(job.expected_hours * 3600 * 2)), *job.setup,
                 '--step', step]
@@ -139,9 +141,11 @@ class ColabBackend:
         attempt, code, tail, session = 0, 1, '', ''
         while True:
             session = self.session_for(job, attempt)
-            r = self.runner(self.driver_argv(job, session, out_root), cwd=ROOT, capture_output=True, text=True,
-                            timeout=max(3600, job.expected_hours * 3600 * 3))
-            code, tail = r.returncode, (r.stdout or '')[-1500:]
+            log_path = Path(out_root) / f'{session}.driver.log'   # live progress: tail -f this file
+            with open(log_path, 'w') as log:
+                r = self.runner(self.driver_argv(job, session, out_root), cwd=ROOT, stdout=log,
+                                stderr=subprocess.STDOUT, text=True, timeout=max(3600, job.expected_hours * 3600 * 3))
+            code, tail = r.returncode, log_path.read_text()[-1500:]
             if code == 3 and attempt < self.retries_on_reclaim:
                 attempt += 1
                 continue

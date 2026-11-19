@@ -1,5 +1,6 @@
 """G2: GPU-host A/B runs judged by the harness, spend-gated, own sessions only, stored in memory."""
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +96,9 @@ def test_colab_owns_only_its_sessions_and_retries_a_reclaimed_vm(tmp_path):
     assert calls == ['ifs-p14-try', 'ifs-p14-try-1'] and all(not c.startswith('mf-') for c in calls)
     assert res.ok and res.evidence_dir.name == 'job' and res.estimate_usd == 0.8
     argv = backend.driver_argv(job, 'ifs-p14-try', tmp_path)
-    assert argv[argv.index('--step') + 1] == 'scripts/remote_ab.py --out {OUT}/job'
+    assert shlex.split(argv[argv.index('--step') + 1]) == ['scripts/remote_ab.py', '--out', '{OUT}/job']
+    patched = RemoteJob('p', ('scripts/remote_ab.py', '--patch', '{"k": 3}'), expected_hours=1)
+    step = backend.driver_argv(patched, 'ifs-p', tmp_path)[-1]
+    assert json.loads(shlex.split(step)[2]) == {'k': 3}            # JSON survives the driver's shlex.split
     with pytest.raises(ValueError):
         RemoteJob('MF_session', ('x.py',), expected_hours=1)
