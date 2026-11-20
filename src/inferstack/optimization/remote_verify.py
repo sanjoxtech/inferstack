@@ -20,6 +20,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from inferstack.evaluation.bottleneck import diagnose_trials, record_measurement
 from inferstack.evaluation.judge import Objective, evaluate
 from inferstack.execution.gpu_backend import RemoteJob, run_job
 
@@ -78,10 +79,18 @@ def gates_from_ab(ab, *, min_agreement=0.75):
             'comparable': comparable}, notes
 
 
+def knees_from_ab(ab):
+    """G4: majority knee diagnosis per side (which SLO broke first, and the engine counters there)."""
+    return {side: diagnose_trials([t.get('goodput') for t in sorted(ab['trials'], key=lambda t: t['repeat'])
+                                   if t['side'] == side and t.get('goodput')])
+            for side in ('baseline', 'candidate')}
+
+
 def judge(ab, objectives=DEFAULT_OBJECTIVES, *, min_agreement=0.75):
     base, cand = trials_from_ab(ab)
     gates, notes = gates_from_ab(ab, min_agreement=min_agreement)
     verdict = evaluate(base, cand, list(objectives), gates=gates)
+    verdict['knee'] = knees_from_ab(ab)
     return verdict, gates, notes, (base, cand)
 
 
@@ -156,6 +165,11 @@ class RemoteABVerifier:
         artifact = self.repository.artifact(self.repository.encode(evidence).encode())
         digest = artifact if isinstance(artifact, str) else artifact['sha256']
         verdict = {**verdict, 'evidence': {'sha256': digest}, 'gates': gates, 'cost_usd': run.cost_usd}
+        knee = (verdict.get('knee') or {}).get('baseline')
+        if knee and gates.get('health') and gates.get('complete'):
+            # every A/B run also measures the baseline: keep its knee as the deployment's latest measurement
+            record_measurement(self.repository, plan['baseline_deployment'], 'knee', knee,
+                               source={'remote_ab': plan['id'], 'evidence_sha256': digest})
         self.record(plan, verdict)
         return verdict
 

@@ -89,6 +89,12 @@ def relative_gain(verdict, metrics=None):
 
 def _bottleneck(verdict):
     """Attribute the remaining time from the candidate's measured phases (no model, no text)."""
+    knee = ((verdict or {}).get('knee') or {}).get('candidate')
+    if knee and knee.get('bottleneck') not in (None, 'none'):
+        # G4: open-loop goodput knee (first SLO to break, engine counters there) beats closed-loop phases
+        case = knee['cases'][knee['binding_case']]
+        return {'bottleneck': case['bottleneck'], 'confidence': case['confidence'],
+                'signal': {'binding_case': knee['binding_case'], **case['signal']}}
     medians = {name: candidate_value(verdict, name) for name, _ in PHASES}
     measured = {label: medians[name] for name, label in PHASES if medians[name] is not None}
     if len(measured) >= 2 and sum(measured.values()) > 0:

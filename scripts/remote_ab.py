@@ -77,7 +77,9 @@ async def trial(profile, side, repeat, sweep_args, out, ready_timeout):
         engine = ManagedEngine(DeploymentSpec(id=f'{side}-{repeat}', engine='generic_openai',
                                               model=profile['model'], base_url=base))
         try:
-            row['goodput'] = await sweep(engine.stream, **sweep_args)
+            # G4: native engines expose cumulative counters; the sweep stores their change per rate step
+            probe = (lambda: es.ttft_breakdown(base)) if profile.get('engine') == 'inferstack_native' else None
+            row['goodput'] = await sweep(engine.stream, **sweep_args, probe=probe)
         finally:
             await engine.client.aclose()
     finally:

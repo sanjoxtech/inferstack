@@ -60,15 +60,23 @@ def prompts(case: GoodputCase, n: int, seed: int, step: int):
             for i in range(n)]
 
 
-def is_good(row, case: GoodputCase) -> bool:
-    if not row.get('success') or row.get('ttft_ms') is None or row['ttft_ms'] > case.ttft_ms:
-        return False
+def miss(row, case: GoodputCase):
+    """Why a request is not good: 'error', 'ttft', 'tpot', 'no_tokens', or None when it is good (G4: the
+    first failing SLO is what a planner needs to know about the knee)."""
+    if not row.get('success') or row.get('ttft_ms') is None:
+        return 'error'
+    if row['ttft_ms'] > case.ttft_ms:
+        return 'ttft'
     tokens = row.get('output_tokens')
     if tokens is None:
-        return False
-    if tokens <= 1:
-        return True
-    return (row['e2e_ms'] - row['ttft_ms']) / (tokens - 1) <= case.tpot_ms
+        return 'no_tokens'
+    if tokens > 1 and (row['e2e_ms'] - row['ttft_ms']) / (tokens - 1) > case.tpot_ms:
+        return 'tpot'
+    return None
+
+
+def is_good(row, case: GoodputCase) -> bool:
+    return miss(row, case) is None
 
 
 def summarize(steps):
@@ -117,9 +125,29 @@ async def run_rate(stream, texts, max_tokens, rate, seed, timeout):
     return rows, time.perf_counter() - start
 
 
+def _pct(values, q):
+    if not values:
+        return None
+    values = sorted(values)
+    return values[min(len(values) - 1, int(q * len(values)))]
+
+
+async def _read_probe(probe):
+    if probe is None:
+        return None
+    try:
+        return await probe()
+    except Exception:  # noqa: BLE001 - counters are diagnostic; a failed read never fails the sweep
+        return None
+
+
 async def sweep(stream, cases, *, rates=DEFAULT_RATES, seconds_per_rate=20.0, min_requests=20, seed=20261119,
-                timeout=300.0, stop_below=0.5, warmup=2):
-    """Per case: rate steps and goodput@99/@90. Returns {'cases': {...}, 'goodput99_rps': sum over cases}."""
+                timeout=300.0, stop_below=0.5, warmup=2, probe=None):
+    """Per case: rate steps and goodput@99/@90. Returns {'cases': {...}, 'goodput99_rps': sum over cases}.
+
+    Each step records why requests missed (`misses`: ttft/tpot/error/no_tokens counts). `probe` (G4) is an
+    optional async () -> {counter: cumulative number} read before and after every step (engine counters such
+    as the native /v1/native/status TTFT split); the step stores the difference as `counters`."""
     out = {}
     for case in cases:
         if warmup:
@@ -127,12 +155,21 @@ async def sweep(stream, cases, *, rates=DEFAULT_RATES, seconds_per_rate=20.0, mi
         steps = []
         for k, rate in enumerate(rates):
             n = max(min_requests, int(rate * seconds_per_rate))
+            before = await _read_probe(probe)
             rows, wall = await run_rate(stream, prompts(case, n, seed, k), case.max_tokens, rate,
                                         1000 * k + sum(map(ord, case.name)), timeout)
-            good = sum(is_good(r, case) for r in rows)
-            steps.append({'rate': rate, 'requests': n, 'good': good, 'good_frac': good / n, 'wall_s': wall,
-                          'success': sum(bool(r['success']) for r in rows) / n,
-                          'token_counts_missing': sum(r['success'] and r['output_tokens'] is None for r in rows)})
+            after = await _read_probe(probe)
+            reasons = [miss(r, case) for r in rows]
+            good = reasons.count(None)
+            step = {'rate': rate, 'requests': n, 'good': good, 'good_frac': good / n, 'wall_s': wall,
+                    'success': sum(bool(r['success']) for r in rows) / n,
+                    'token_counts_missing': sum(r['success'] and r['output_tokens'] is None for r in rows),
+                    'misses': {m: reasons.count(m) for m in ('ttft', 'tpot', 'error', 'no_tokens') if reasons.count(m)},
+                    'ttft_ms_p50': _pct([r['ttft_ms'] for r in rows if r.get('ttft_ms') is not None], 0.5)}
+            if before is not None and after is not None:
+                step['counters'] = {k: after[k] - before.get(k, 0) for k in after
+                                    if isinstance(after[k], (int, float)) and not isinstance(after[k], bool)}
+            steps.append(step)
             if good / n < stop_below:
                 break
         out[case.name] = {'case': asdict(case), 'steps': steps, **summarize(steps)}

@@ -92,6 +92,10 @@ def context_snapshot(repository, deployment_id, *, workload=None, objectives=Non
     if live is None:
         missing.append('live serving evidence: none recorded for this deployment in the window')
     prior = experience(repository, deployment_id, limit=experience_limit, exclude_jobs=exclude_jobs)
+    from inferstack.evaluation.bottleneck import latest_measurements
+    measurements = latest_measurements(repository, deployment_id)
+    if not measurements:
+        missing.append('measurements: no knee or kernel profile recorded (bottleneck unknown)')
     snapshot = {
         'version': CONTEXT_VERSION, 'deployment_ref': f"{deployment_id}@{record['revision']}",
         'deployment': {k: body.get(k) for k in ('engine', 'model', 'engine_version', 'image_digest', 'plugin_refs',
@@ -103,6 +107,8 @@ def context_snapshot(repository, deployment_id, *, workload=None, objectives=Non
         'live_evidence': live, 'techniques': techniques,
         'experience': {'summary': prior['summary'], 'failed_here_signatures': prior['failed_here_signatures'],
                        'items': prior['items'], 'excluded': prior['excluded'], 'truncated': prior['truncated']},
+        'measurements': {kind: {k: m.get(k) for k in ('summary', 'stale', 'measured_at', 'raw_sha256', 'source')}
+                         for kind, m in measurements.items()},
         'missing': missing,
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(',', ':'), default=str, allow_nan=False)

@@ -80,6 +80,10 @@ class PlannerTools:
                                 'Registered techniques that are not incompatible with the baseline.'),
             'check_compatibility': (TechniqueArgs, self.check_compatibility,
                                     'Claim-vs-proof compatibility of one technique with the baseline.'),
+            'get_measurements': (DeploymentArgs, self.get_measurements,
+                                 'Latest measured bottleneck of a deployment: goodput knee per case (which SLO '
+                                 'broke first, TTFT split and lane counters there) and kernel-family GPU time '
+                                 'shares from a decode-step profile; stale when made on another revision.'),
             'search_experience': (ExperienceArgs, self.search_experience,
                                   'Outcomes of earlier campaigns for this model: applicable (same setup: real '
                                   'evidence) vs transferable (different setup: hypothesis only), with evidence '
@@ -166,6 +170,13 @@ class PlannerTools:
                 hits.append({'evidence_id': identifier,
                              'snippet': untrusted_block({**snapshot, 'content': excerpt}, max_chars=1200)})
         return {'hits': hits[:10]}
+
+    async def get_measurements(self, deployment_id):
+        from inferstack.evaluation.bottleneck import latest_measurements
+        self._deployment(deployment_id)
+        found = latest_measurements(self.repository, deployment_id)
+        return {kind: {k: m.get(k) for k in ('summary', 'stale', 'measured_at', 'raw_sha256')}
+                for kind, m in found.items()} or {'available': False, 'reason': 'no measurement recorded'}
 
     async def search_experience(self, treatment_signature=None, limit=10):
         from inferstack.memory.experience import experience

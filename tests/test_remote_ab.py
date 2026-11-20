@@ -66,6 +66,10 @@ def test_slower_candidate_is_rejected(setup):
     verdict, run = verifier(repo, profiles, workload, tmp_path).verify(plan)
     assert verdict['decision'] == 'reject'
     assert verdict['metrics']['goodput99_rps']['candidate']['median'] == 0
+    knee = verdict['knee']['candidate']                          # G4: why it missed, not only that it did
+    assert knee['bottleneck'] == 'uncertain' and knee['cases']['chat']['signal']['dominant_miss'] == 'ttft'
+    from inferstack.evaluation.bottleneck import latest_measurements
+    assert latest_measurements(repo, 'base')['knee']['summary']['bottleneck'] == 'none'   # baseline met every rate
 
 
 def test_spend_gate():
