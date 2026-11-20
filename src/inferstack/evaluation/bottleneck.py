@@ -25,6 +25,8 @@ import time
 
 GOOD = 0.99
 MIN_SHARE = 0.6          # a phase owning at least this share of the TTFT is the bottleneck (evidenced)
+SATURATED = 0.95         # GPU busy fraction at the knee above which the engine is compute-bound
+MIXED = 0.8              # below this share of one SLO miss reason (TTFT vs per-token), the misses are mixed
 
 # This repository's own Triton kernels have short generic names; map them exactly (src/inferstack/kernels).
 REPO_KERNELS = {'_banked_kernel': 'gdn', '_fixup_kernel': 'gdn', '_beta_g_kernel': 'gdn',     # gdn_banked, fusion
@@ -102,6 +104,14 @@ def diagnose_case(case_result):
         return {**result, 'bottleneck': 'capacity', 'confidence': 'evidenced'}
     if dominant == 'no_tokens':
         return {**result, 'bottleneck': 'uncertain', 'confidence': 'unknown'}
+    slo = {r: misses.get(r, 0) for r in ('ttft', 'tpot')}
+    busy = lane.get('gpu_busy_frac')
+    if busy is not None and busy >= SATURATED and min(slo.values()) > 0 \
+            and max(slo.values()) / sum(slo.values()) < MIXED:
+        # saturated GPU with both SLOs breaking: queue wait and slow tokens are two symptoms of one full GPU
+        # (L4 v1.36 proof: repeats flipped between decode and queue_admission at 98% busy)
+        signal['saturated'] = True
+        return {**result, 'bottleneck': 'capacity', 'confidence': 'evidenced'}
     if dominant == 'tpot':
         return {**result, 'bottleneck': 'decode', 'confidence': 'evidenced'}
     # TTFT misses: which part of the time to first token grew

@@ -70,6 +70,13 @@ def test_knee_labels():
     assert pf['bottleneck'] == 'prefill' and pf['signal']['lane'] == {
         'rows_per_step': 24.0, 'spec_step_ms': 15.0, 'spec_acceptance': 0.5, 'gpu_busy_frac': 0.9}
     assert diagnose_case(_case({}, fracs=(1.0, 1.0, 1.0)))['bottleneck'] == 'none'
+    # L4 v1.36 shape: 98% busy GPU, TTFT and per-token misses mixed -> capacity, not a decode/queue flip
+    hot = {'requests': 40, 'queue_ms': 11000, 'wait_ms': 0, 'prefill_ms': 1700, 'lane_gpu_thread_ms': 9840}
+    sat = diagnose_case(_case({'ttft': 39, 'tpot': 45}, hot))
+    assert sat['bottleneck'] == 'capacity' and sat['signal']['saturated']
+    assert diagnose_case(_case({'ttft': 2, 'tpot': 45}, hot))['bottleneck'] == 'decode'      # one SLO dominates
+    cool = dict(hot, lane_gpu_thread_ms=5000)
+    assert diagnose_case(_case({'ttft': 39, 'tpot': 45}, cool))['bottleneck'] == 'decode'    # not saturated
     many = diagnose_trials([{'cases': {'c': _case({'tpot': 9})}}, {'cases': {'c': _case({'tpot': 9})}},
                             {'cases': {'c': _case({'error': 9})}}])
     assert many['bottleneck'] == 'decode' and many['cases']['c']['agreement'] == 0.67
