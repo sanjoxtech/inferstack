@@ -220,7 +220,7 @@ def latest_measurements(repository, deployment_id):
     except KeyError:
         return {}
     out = {}
-    for kind in ('knee', 'kernels'):
+    for kind in ('knee', 'kernels', 'tune'):
         try:
             body = repository.read('measurement', f'{deployment_id}--{kind}')['body']
         except KeyError:
