@@ -131,3 +131,17 @@ def test_search_starts_one_knob_at_a_time_from_the_baseline():
     assert set(s.ask()) == {p['name'] for p in space}               # then explore the whole space
     assert with_baseline([{'name': 'max_prefill_chunk_tokens', 'choices': [64, 256]}],
                          {'max_prefill_chunk_tokens': 128})[0]['choices'] == [64, 128, 256]
+
+
+def test_combine_keeps_the_best_move_per_knob():
+    """L4 rerun (2026-11-21): batch 32 and batch 64 both beat the baseline; the combine took 64 only because
+    it came last. It must take the higher-scoring value per knob, whatever the order."""
+    from inferstack.optimization.tune import Sampler
+    space = [{'name': 'b', 'choices': [32, 48, 64]}, {'name': 'g', 'choices': ['', 'cublas']}]
+    s = Sampler(space, seed=0, start={'b': 48, 'g': ''})
+    s.base_value = 0.5
+    scores = {('b', 32): 0.60, ('b', 64): 0.55, ('g', 'cublas'): 0.58}
+    for _ in range(3):
+        p = s.ask()
+        s.tell(scores[next((k, v) for k, v in p.items() if v != {'b': 48, 'g': ''}[k])])
+    assert s.ask() == {'b': 32, 'g': 'cublas'}

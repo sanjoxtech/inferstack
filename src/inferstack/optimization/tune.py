@@ -228,12 +228,15 @@ class Sampler:
             self._pending = ('single', self.queue.pop(0))
             return dict(self._pending[1])
         if not self.combined and self.base_value is not None:
-            better = [p for p, v in self.singles if v > self.base_value]
-            if len(better) >= 2:
+            best = {}                       # knob -> (score, value): the best winning move per knob
+            for p, v in self.singles:
+                if v > self.base_value:
+                    for k, x in p.items():
+                        if self.start.get(k) != x and (k not in best or v > best[k][0]):
+                            best[k] = (v, x)
+            if len(best) >= 2:
                 self.combined = True
-                point = dict(self.start)
-                for p in better:
-                    point.update({k: v for k, v in p.items() if self.start.get(k) != v})
+                point = {**self.start, **{k: x for k, (_, x) in best.items()}}
                 self._pending = ('combined', point)
                 return dict(point)
         self._pending = None
