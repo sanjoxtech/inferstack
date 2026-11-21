@@ -145,3 +145,14 @@ def test_combine_keeps_the_best_move_per_knob():
         p = s.ask()
         s.tell(scores[next((k, v) for k, v in p.items() if v != {'b': 48, 'g': ''}[k])])
     assert s.ask() == {'b': 32, 'g': 'cublas'}
+
+
+def test_a_run_that_never_measured_is_infra_failed_not_inconclusive(setup, tmp_path):
+    """A100 2026-11-21: Colab never created the VM; calling that 'inconclusive' would read as 'no effect'."""
+    from inferstack.optimization.remote_verify import RemoteABVerifier
+    repo, _, workload, _ = setup
+    v = RemoteABVerifier(repo, LocalBackend(price_per_hour=0.0), tmp_path / 'runs',
+                         profiles=str(tmp_path / 'missing.json'), workload=str(workload), slo='', repeats=3,
+                         rates=(5,), seconds_per_rate=0.2, min_requests=2, hours_per_trial=0.01)
+    out = TuneAction(v, trials=1, hours_per_trial=0.01).run('base', 'nat', name='tune-nothing')
+    assert out['decision'] == 'infra_failed' and out['cost_usd'] == 0.0

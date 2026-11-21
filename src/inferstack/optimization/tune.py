@@ -332,7 +332,7 @@ class TuneAction:
                       approved_usd=v.approved_usd)
         path = run.evidence_dir / 'tune.json' if run.evidence_dir else None
         if path is None or not path.is_file():
-            return {'decision': 'inconclusive', 'reason': f'tune produced no tune.json (exit {run.exit_code})',
+            return {'decision': 'infra_failed', 'reason': f'tune produced no tune.json (exit {run.exit_code})',
                     'cost_usd': run.cost_usd, 'log_tail': run.log_tail[-300:]}
         tune = json.loads(path.read_text())
         summary = summarize(tune)
