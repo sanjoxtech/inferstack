@@ -15,7 +15,7 @@ Rules every backend obeys:
     is refused the same way; spend is never guessed.
   - Ownership: Colab sessions this harness creates are named `ifs-<job>`; the backend only ever starts,
     polls and stops that one session. Any other session (e.g. the principal's `mf-*`) is never touched.
-  - Cost is recorded from measured wall time x price, next to the evidence.
+  - Cost is recorded from measured time x price, next to the evidence (Colab: only while the VM exists).
 """
 from __future__ import annotations
 
@@ -112,6 +112,22 @@ class LocalBackend:
         return code, (evidence if code == 0 else None), tail, f'local-{job.name}'
 
 
+def billed_seconds(log_text, ended_at):
+    """Seconds a VM existed, from the driver's `BILLING start|stop <epoch>` markers. No start = no VM
+    (create failed): 0. A start with no stop (reclaimed, or left running) is billed until `ended_at`."""
+    start = stop = None
+    for line in log_text.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == 'BILLING':
+            if parts[1] == 'start' and start is None:
+                start = float(parts[2])
+            elif parts[1] == 'stop':
+                stop = float(parts[2])
+    if start is None:
+        return 0.0
+    return max(0.0, (stop if stop is not None else ended_at) - start)
+
+
 class ColabBackend:
     """Google Colab through the `colab` CLI, via scripts/colab_fast_check.py. Own sessions only."""
     name = 'colab'
@@ -139,13 +155,16 @@ class ColabBackend:
         """Driver exit codes: 0 evidence fetched (VM stopped), 2 not fetched (VM left running, says how to
         fetch), 3 VM reclaimed (nothing to fetch). Only a reclaim is retried, under a new session name."""
         attempt, code, tail, session = 0, 1, '', ''
+        self.last_billed_s = 0.0
         while True:
             session = self.session_for(job, attempt)
             log_path = Path(out_root) / f'{session}.driver.log'   # live progress: tail -f this file
             with open(log_path, 'w') as log:
                 r = self.runner(self.driver_argv(job, session, out_root), cwd=ROOT, stdout=log,
                                 stderr=subprocess.STDOUT, text=True, timeout=max(3600, job.expected_hours * 3600 * 3))
-            code, tail = r.returncode, log_path.read_text()[-1500:]
+            text = log_path.read_text()
+            code, tail = r.returncode, text[-1500:]
+            self.last_billed_s += billed_seconds(text, time.time())
             if code == 3 and attempt < self.retries_on_reclaim:
                 attempt += 1
                 continue
@@ -166,6 +185,7 @@ def run_job(backend, job, out_root, *, cap_usd=DEFAULT_CAP_USD, approved_usd=Non
     code, evidence, tail, session = backend.run(job, out_root)
     wall = time.monotonic() - t0
     price = backend.price_per_hour
-    cost = None if price is None else round(wall / 3600 * price, 4)
+    billed = getattr(backend, 'last_billed_s', None)     # Colab: VM lifetime only; local: the whole wall
+    cost = None if price is None else round((wall if billed is None else billed) / 3600 * price, 4)
     return RunResult(backend.name, session, code, evidence, wall, price, cost, estimate, tail)
 

@@ -125,3 +125,27 @@ def test_attainment_sees_a_regression_between_grid_points():
     verdict, gates, _, _ = judge(ab)
     assert all(gates.values()) and verdict['decision'] == 'reject'
     assert verdict['metrics']['goodput99_rps']['gain'] == 0 and verdict['metrics']['slo_attainment']['gain'] < 0
+
+
+def test_colab_cost_counts_only_while_the_vm_exists(tmp_path):
+    """A100 2026-11-20: five failed `colab new` attempts were billed $1.44 of wall time. Waiting for a VM
+    that never came is free; only the driver's BILLING start..stop window costs money."""
+    from inferstack.execution.gpu_backend import billed_seconds
+    assert billed_seconds('retry 5/5 after failure\nfailed after 5 tries', 1000.0) == 0.0
+    assert billed_seconds('BILLING start 100.0\nx\nBILLING stop 460.0', 9999.0) == 360.0
+    assert billed_seconds('BILLING start 100.0\nreclaimed', 400.0) == 300.0      # no stop: billed to the end
+
+    def failed_create(argv, **kw):
+        kw['stdout'].write('+ colab new\nretry 5/5 after failure\n')
+        return subprocess.CompletedProcess(argv, 1, '', '')
+    job = RemoteJob('a100-try', ('scripts/remote_ab.py', '--out', '{OUT}'), expected_hours=1)
+    res = run_job(ColabBackend(price_per_hour=1.80, runner=failed_create), job, tmp_path)
+    assert not res.ok and res.cost_usd == 0.0
+
+    def one_hour(argv, **kw):
+        session = argv[argv.index('--session') + 1]
+        kw['stdout'].write('BILLING start 0.0\nBILLING stop 3600.0\n')
+        (tmp_path / f'{session}-abc1234' / 'out-x' / 'job').mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(argv, 0, '', '')
+    res = run_job(ColabBackend(price_per_hour=1.80, runner=one_hour), job, tmp_path)
+    assert res.ok and res.cost_usd == 1.8

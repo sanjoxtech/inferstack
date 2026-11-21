@@ -139,6 +139,12 @@ print('POLL ' + json.dumps({{'alive': alive, 'archive': os.path.exists({ARCHIVE!
 '''
 
 
+def billing(event, at=None):
+    """Billed-window marker read by ColabBackend: GPU cost counts from `start` (VM exists) to `stop`
+    (VM stopped). Time spent waiting for `colab new` is not GPU time. No `stop` = billed to driver exit."""
+    print(f'BILLING {event} {time.time() if at is None else at:.1f}', flush=True)
+
+
 def retry(*argv, tries=5, wait=20, timeout=900):
     """colab CLI steps are idempotent here; retry them through network drops and hangs. A dropped
     connection can leave `colab exec` hanging, so the quick steps get short timeouts."""
@@ -203,7 +209,19 @@ def main():
     (out / 'job.py').write_text(job.read_text())
     have = sh(colab, 'sessions', capture=True, check=False, timeout=120).stdout
     if f'[{args.session}]' not in have:
-        retry(colab, 'new', '--gpu', args.gpu, '-s', args.session)
+        asked = time.time()
+        try:
+            retry(colab, 'new', '--gpu', args.gpu, '-s', args.session)
+        except SystemExit:
+            # `new` failed, but a VM may exist anyway (CLI timed out after allocation): bill it from the
+            # first ask and stop it, so a failed create never leaves a paid runtime behind
+            listing = sh(colab, 'sessions', capture=True, check=False, timeout=120).stdout or ''
+            if f'[{args.session}]' in listing:
+                billing('start', asked)
+                sh(colab, 'stop', '-s', args.session, check=False)
+                billing('stop')
+            raise
+    billing('start')
     retry(colab, 'upload', '-s', args.session, bundle, '/content/inferstack.bundle')
     retry(colab, 'upload', '-s', args.session, job, '/content/job.py')
     retry(colab, 'exec', '-s', args.session, '-f', prep, '--timeout', '300', timeout=240)
@@ -244,6 +262,7 @@ def main():
             print(md.read_text())
         if not args.keep:
             sh(colab, 'stop', '-s', args.session, check=False)
+            billing('stop')
     else:
         print(f'NO EVIDENCE DOWNLOADED: runtime {args.session!r} left running. Fetch with\n'
               f'  colab download -s {args.session} {ARCHIVE} {out / "evidence.zip"}\n'
