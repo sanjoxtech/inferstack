@@ -103,3 +103,31 @@ def test_crash_region_skips_predicted_crashes_on_the_host(setup):
     assert pruned and crashed and not any(t.get('ready') for t in trials if t['patch']['static_decode_slots'] >= 64)
     first = min(c['trial'] for c in crashed)
     assert all(p['trial'] > first for p in pruned)
+
+
+def test_search_starts_one_knob_at_a_time_from_the_baseline():
+    """L4 G5 run (2026-11-20): random jumps from v1.36 all landed worse. The sampler now reads what the
+    baseline really runs (TOML, else engine default), steps one knob at a time, then combines the winners."""
+    from inferstack.optimization.tune import Sampler, baseline_point, neighbours, with_baseline
+    space, _ = space_for({'memory_gb': 22.0}, knobs=['static_decode_slots', 'max_requests_per_batch',
+                                                     'static_decode_spec_drafts', 'gemm_blas_library'])
+    start = baseline_point(['inferstack', 'serve', '--profile', 'configs/profiles/production-v1.36.0.toml'],
+                           space, source_root=ROOT)
+    assert start == {'static_decode_slots': 48, 'max_requests_per_batch': 48, 'static_decode_spec_drafts': 1,
+                     'gemm_blas_library': ''}                       # last two: engine defaults, not in the TOML
+    space = with_baseline(space, start)
+    moves = [{k: v for k, v in p.items() if start[k] != v} for p in neighbours(space, start)]
+    assert moves == [{'static_decode_slots': 32}, {'static_decode_slots': 64}, {'max_requests_per_batch': 32},
+                     {'max_requests_per_batch': 64}, {'static_decode_spec_drafts': 2}, {'gemm_blas_library': 'cublas'}]
+    s = Sampler(space, seed=0, start=start)
+    s.base_value = 8.5
+    wins = {('static_decode_slots', 64): 9.0, ('gemm_blas_library', 'cublas'): 8.6}
+    for _ in moves:
+        p = s.ask()
+        (k, v), = ((k, v) for k, v in p.items() if start[k] != v)
+        s.tell(wins.get((k, v), 8.0))
+    assert s.ask() == {**start, 'static_decode_slots': 64, 'gemm_blas_library': 'cublas'}   # winners combined
+    s.tell(9.2)
+    assert set(s.ask()) == {p['name'] for p in space}               # then explore the whole space
+    assert with_baseline([{'name': 'max_prefill_chunk_tokens', 'choices': [64, 256]}],
+                         {'max_prefill_chunk_tokens': 128})[0]['choices'] == [64, 128, 256]

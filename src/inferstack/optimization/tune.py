@@ -138,30 +138,128 @@ def agreement(reference, check):
     return sum(a == b for a, b in zip(reference, check)) / len(reference)
 
 
-class Sampler:
-    """Optuna TPE when installed (seeded), else seeded random over the same space; ask/tell either way."""
+def baseline_point(argv, space, *, source_root='.'):
+    """The value each knob in the space really runs with in the baseline profile: its TOML value, else the
+    engine default (config.py dataclasses). Knobs with neither are left out."""
+    import dataclasses
+    from pathlib import Path
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover
+        import tomli as tomllib
+    from inferstack import config
+    argv = list(argv)
+    data = {}
+    if '--profile' in argv:
+        path = Path(argv[argv.index('--profile') + 1])
+        path = path if path.is_absolute() else Path(source_root) / path
+        data = tomllib.loads(path.read_text()) if path.is_file() else {}
+    sections = {'scheduler': config.SchedulerConfig, 'kernels': config.KernelConfig, 'native': config.NativeConfig}
+    schema = PROFILES['inferstack_native']
+    point = {}
+    for p in space:
+        name = p['name']
+        section = schema[name].section
+        if name in data.get(section, {}):
+            point[name] = data[section][name]
+        elif section in sections:
+            field = {f.name: f for f in dataclasses.fields(sections[section])}.get(name)
+            if field is not None and field.default is not dataclasses.MISSING:
+                point[name] = field.default
+    return point
 
-    def __init__(self, space, seed=0):
-        self.space, self.rng = space, random.Random(seed)
+
+def with_baseline(space, start):
+    """Make sure each knob's baseline value is one of its choices (numbers stay sorted)."""
+    out = []
+    for p in space:
+        choices, v = list(p['choices']), start.get(p['name'])
+        if v is not None and v not in choices:
+            choices.append(v)
+            if all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in choices):
+                choices.sort()
+        out.append({**p, 'choices': choices})
+    return out
+
+
+def neighbours(space, start):
+    """One knob at a time, one step either side of the baseline value (bools flip)."""
+    out, seen = [], set()
+    for p in space:
+        v = start.get(p['name'])
+        if v is None or v not in p['choices']:
+            continue
+        i = p['choices'].index(v)
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(p['choices']) and p['choices'][j] != v:
+                point = {**start, p['name']: p['choices'][j]}
+                key = json.dumps(point, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(point)
+    return out
+
+
+class Sampler:
+    """Three phases, ask/tell throughout:
+      1. neighbours: from a baseline point, change one knob one step (a hand-tuned profile is usually near
+         the best; random jumps far from it mostly land worse, as the L4 G5 run showed);
+      2. combine: if two or more single moves beat the baseline, try them all together once;
+      3. explore: Optuna TPE when installed (seeded, warm-started with phases 1-2), else seeded random.
+    Without a baseline point it is phase 3 only."""
+
+    def __init__(self, space, seed=0, start=None):
+        self.space, self.rng, self.start = space, random.Random(seed), dict(start or {})
+        self.queue = neighbours(space, self.start) if self.start else []
+        self.base_value, self.singles, self.combined = None, [], False
         try:
             import optuna
             optuna.logging.set_verbosity(optuna.logging.WARNING)
+            self.optuna = optuna
             self.study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(seed=seed))
-            self.method = f'optuna {optuna.__version__} TPE'
+            method = f'optuna {optuna.__version__} TPE'
         except ImportError:
-            self.study, self.method = None, 'seeded random'
-        self._open = None
+            self.optuna, self.study, method = None, None, 'seeded random'
+        self.method = (f'baseline neighbours ({len(self.queue)}) then {method}' if self.queue else method)
+        self._open = self._pending = None
 
     def ask(self):
+        if self.queue:
+            self._pending = ('single', self.queue.pop(0))
+            return dict(self._pending[1])
+        if not self.combined and self.base_value is not None:
+            better = [p for p, v in self.singles if v > self.base_value]
+            if len(better) >= 2:
+                self.combined = True
+                point = dict(self.start)
+                for p in better:
+                    point.update({k: v for k, v in p.items() if self.start.get(k) != v})
+                self._pending = ('combined', point)
+                return dict(point)
+        self._pending = None
         if self.study is not None:
             self._open = self.study.ask()
             return {p['name']: self._open.suggest_categorical(p['name'], p['choices']) for p in self.space}
         return {p['name']: self.rng.choice(p['choices']) for p in self.space}
 
     def tell(self, value):
+        if self._pending is not None:
+            kind, point = self._pending
+            self._pending = None
+            if kind == 'single':
+                self.singles.append((point, value))
+            self._warm(point, value)
+            return
         if self.study is not None and self._open is not None:
             self.study.tell(self._open, value)
             self._open = None
+
+    def _warm(self, point, value):
+        """Feed a phase-1/2 result to TPE so phase 3 starts from what was learned."""
+        if self.study is None or set(point) != {p['name'] for p in self.space}:
+            return
+        dists = {p['name']: self.optuna.distributions.CategoricalDistribution(p['choices']) for p in self.space}
+        self.study.add_trial(self.optuna.trial.create_trial(params=point, distributions=dists, value=value))
 
 
 def best_from_tune(tune, *, min_agreement=0.75):
@@ -198,8 +296,9 @@ class TuneAction:
     confirmation is an ordinary RemoteABVerifier experiment, so memory and the planner see it like any other.
     """
 
-    def __init__(self, verifier, *, trials=8, seed=0, hours_per_trial=0.1, knobs=None, confirm=True):
-        self.verifier, self.trials, self.seed = verifier, trials, seed
+    def __init__(self, verifier, *, trials=8, seed=0, hours_per_trial=0.1, knobs=None, confirm=True,
+                 install_optuna=False):
+        self.verifier, self.trials, self.seed, self.install_optuna = verifier, trials, seed, install_optuna
         self.hours_per_trial, self.knobs, self.confirm = hours_per_trial, knobs, confirm
 
     def job(self, name, baseline_profile, target):
@@ -209,6 +308,8 @@ class TuneAction:
                 '--workload', v.workload, '--slo', v.slo, '--trials', str(self.trials), '--seed', str(self.seed),
                 '--rates', *map(str, v.rates), '--seconds-per-rate', str(v.seconds_per_rate),
                 '--min-requests', str(v.min_requests), '--out', '{OUT}']
+        if self.install_optuna:
+            argv.append('--install-optuna')
         if target:
             argv += ['--target', *target]
         if self.knobs:

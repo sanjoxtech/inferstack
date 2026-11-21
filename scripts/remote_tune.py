@@ -30,10 +30,21 @@ sys.path.insert(0, str(ROOT / 'src'))
 import remote_ab  # noqa: E402
 
 from inferstack.evaluation.goodput import GoodputCase, cases_from_slo  # noqa: E402
-from inferstack.optimization.tune import (CrashRegion, Sampler, agreement, objective, probe_hardware,  # noqa: E402
-                                          score, space_for)
+from inferstack.optimization.tune import (CrashRegion, Sampler, agreement, baseline_point, objective,  # noqa: E402
+                                          probe_hardware, score, space_for, with_baseline)
 
 MIN_AGREEMENT = 0.75
+OPTUNA = 'optuna==4.1.0'
+
+
+def install_optuna():
+    try:
+        import optuna  # noqa: F401
+        return
+    except ImportError:
+        pass
+    code = subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', OPTUNA]).returncode
+    print('optuna install exit:', code, flush=True)       # failure is fine: the sampler falls back to random
 
 
 async def run(a):
@@ -47,9 +58,15 @@ async def run(a):
                   'min_requests': a.min_requests, 'warmup': a.warmup}
     hardware = json.loads(a.hardware) if a.hardware else probe_hardware()
     space, why = space_for(hardware, target=a.target or (), knobs=a.knobs)
-    sampler, region = Sampler(space, a.seed), CrashRegion()
+    if a.install_optuna:
+        install_optuna()
+    base_argv = next(x for x in profiles if x['name'] == a.baseline)['argv']
+    start = {} if a.no_neighbours else baseline_point(base_argv, space, source_root=ROOT)
+    space = with_baseline(space, start)
+    sampler, region = Sampler(space, a.seed, start=start), CrashRegion()
     result = {'version': 1, 'host': platform.node(), 'hardware': hardware, 'target': a.target or [],
               'space': space, 'why': why, 'method': sampler.method, 'baseline_profile': a.baseline,
+              'baseline_point': start,
               'sweep': {**sweep_args, 'cases': [c.__dict__ for c in cases]}, 'trials': []}
     print(json.dumps({'hardware': hardware, 'space': space}), flush=True)
 
@@ -74,22 +91,24 @@ async def run(a):
         result['error'] = 'baseline did not start or was unmeasured; nothing to tune against'
         save()
         return
-    seen, asks = set(), 0
+    sampler.base_value = objective(base['score'])
+    known = {json.dumps(start, sort_keys=True): base['score']} if start else {}   # the baseline's own point
+    asks = 0
     i = 1
     while i <= a.trials and asks < 4 * a.trials and space:
         asks += 1
         patch = sampler.ask()
         key = json.dumps(patch, sort_keys=True)
-        if key in seen:
-            sampler.tell(objective(next(t['score'] for t in result['trials'] if
-                                        json.dumps(t['patch'], sort_keys=True) == key) or None))
+        if key in known:
+            sampler.tell(objective(known[key]) if known[key] is not None else -1.0)
             continue
-        seen.add(key)
+        known[key] = None
+        changed = sorted(k for k in patch if start.get(k, object()) != patch[k])
         hit = region.covers(patch)
         if hit is not None:
             sampler.tell(-1.0)
-            result['trials'].append({'trial': i, 'patch': patch, 'pruned': True, 'feasible': False,
-                                     'predicted_by': hit, 'score': None})
+            result['trials'].append({'trial': i, 'patch': patch, 'changed': changed, 'pruned': True,
+                                     'feasible': False, 'predicted_by': hit, 'score': None})
             save()
             continue
         row = await measure(i, patch)
@@ -100,10 +119,12 @@ async def run(a):
         if crashed:
             region.add(patch)
         sampler.tell(objective(s) if feasible else -1.0)
-        result['trials'].append({'trial': i, 'patch': patch, 'ready': row.get('ready'), 'crashed': crashed,
+        known[key] = s if feasible else None
+        result['trials'].append({'trial': i, 'patch': patch, 'changed': changed, 'ready': row.get('ready'), 'crashed': crashed,
                                  'error': row.get('error'), 'score': s, 'agreement': round(agree, 2),
                                  'feasible': feasible, 'knee': (row.get('goodput') or {}).get('goodput99_rps')})
-        print(json.dumps({'trial': i, 'patch': patch, 'score': s, 'feasible': feasible}), flush=True)
+        print(json.dumps({'trial': i, 'changed': {k: patch[k] for k in changed}, 'score': s,
+                          'feasible': feasible}), flush=True)
         save()
         i += 1
     result['commit'] = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True,
@@ -123,6 +144,8 @@ def main():
     ap.add_argument('--target', nargs='*', help='measured bottleneck labels / kernel families (G4)')
     ap.add_argument('--knobs', nargs='*', help='restrict to these knobs')
     ap.add_argument('--hardware', help='JSON hardware facts instead of probing (tests)')
+    ap.add_argument('--no-neighbours', action='store_true', help='skip the one-knob-at-a-time phase')
+    ap.add_argument('--install-optuna', action='store_true', help=f'pip install {OPTUNA} first (GPU host)')
     ap.add_argument('--trials', type=int, default=8)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--rates', type=float, nargs='+', default=[1, 2, 4, 6, 8, 12, 16])
