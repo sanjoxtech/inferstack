@@ -253,5 +253,12 @@ class Watchdog:
         watch['status'] = 'escalated'
 
 
-__all__ = ['ServingSLO', 'Watchdog', 'fix_from', 'judge_window', 'probe_observer', 'telemetry_observer',
-           'GoodputCase']
+__all__ = [
+    'GoodputCase',
+    'ServingSLO',
+    'Watchdog',
+    'fix_from',
+    'judge_window',
+    'probe_observer',
+    'telemetry_observer',
+]

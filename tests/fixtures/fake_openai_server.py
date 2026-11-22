@@ -6,6 +6,7 @@ chunks slowly and record a client disconnect to --events.
 """
 import argparse
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,6 +40,7 @@ def main():
     parser.add_argument('--stream-tokens', type=int, default=200)
     parser.add_argument('--chunk-delay', type=float, default=0.02)
     parser.add_argument('--first-delay', type=float, default=0.0)
+    parser.add_argument('--slots', type=int, default=0, help='concurrent streams served; more queue (0 = no limit)')
     parser.add_argument('--usage', action='store_true', help='report usage in the final stream chunk')
     args, unknown = parser.parse_known_args()  # engine flags (e.g. --max-num-seqs) are accepted and recorded
     if args.dump_env:
@@ -48,6 +50,8 @@ def main():
         path = os.path.join(os.environ['HOME'], args.dump_env[2:]) if args.dump_env.startswith('~/') else args.dump_env
         with open(path, 'w') as f:
             json.dump({'env': dict(os.environ), 'argv': sys.argv, 'executable': sys.executable, 'unknown': unknown}, f)
+
+    lane = threading.BoundedSemaphore(args.slots) if args.slots else None
 
     def note(text):
         if args.events:
@@ -103,6 +107,8 @@ def main():
             self.send_header('Transfer-Encoding', 'chunked')
             self.end_headers()
             try:
+                if lane:
+                    lane.acquire()
                 if args.first_delay:
                     time.sleep(args.first_delay)
                 count = args.stream_tokens
@@ -123,6 +129,9 @@ def main():
                 note('stream completed')
             except (BrokenPipeError, ConnectionResetError):
                 note('stream disconnected')
+            finally:
+                if lane:
+                    lane.release()
 
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
 

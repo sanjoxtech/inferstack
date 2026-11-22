@@ -7,8 +7,10 @@ goodput sweep (inferstack.evaluation.goodput), and stops the server. Order alter
 AB, ...), so drift on the host hits both sides alike. The harness judges ab.json with its own rules
 (optimization/remote_verify.py); this script only measures.
 
-The candidate is a named profile, or the baseline plus an allowlisted native profile patch
-(engines.profiles.native_overlay). Prompts and seeds are fixed, so both sides get identical traffic.
+The candidate is a named profile, the baseline plus an allowlisted native profile patch
+(engines.profiles.native_overlay), or the baseline run on patched source (G7: `--candidate-diff-b64`, a
+unified diff confined to the patchable roots, applied to a pristine export of `--source-revision` with tests
+and the evaluator restored; the candidate server gets that tree first on PYTHONPATH). Prompts and seeds are fixed, so both sides get identical traffic.
 
   python scripts/remote_ab.py --profiles configs/scorecard/a100-qwen3.5-2b.json --baseline native_lazy \\
       --patch '{"static_decode_admit_every_steps": 3}' --repeats 3 --out OUT/ab
@@ -17,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
 import platform
 import subprocess
@@ -44,6 +48,19 @@ def side_profile(profiles, name, patch, workdir):
         argv, path = native_overlay(p['argv'], patch, workdir, source_root=ROOT)
         p = {**p, 'name': f'{name}+patch', 'argv': argv, 'overlay': str(path)}
     return p
+
+
+def source_side(profile, diff, source_root, revision, workdir):
+    """The baseline profile served from a patched export of the pinned source (G7)."""
+    import os
+
+    from inferstack.execution.patches import check_patch, materialize_source, touched_paths
+    check_patch(diff, touched_paths(diff))                    # confined to the patchable roots, again, on the host
+    tree = materialize_source(source_root, revision, diff, Path(workdir) / 'candidate-src')
+    env = dict(profile.get('env') or {})
+    env['PYTHONPATH'] = os.pathsep.join(x for x in (str(tree / 'src'), env.get('PYTHONPATH')
+                                                    or os.environ.get('PYTHONPATH')) if x)
+    return {**profile, 'name': f"{profile['name']}+source", 'env': env, 'source_tree': str(tree)}
 
 
 async def greedy_check(base, model):
@@ -103,10 +120,16 @@ async def run(a):
     out.mkdir(parents=True, exist_ok=True)
     profiles = json.loads(Path(a.profiles).read_text())['profiles']
     patch = json.loads(a.patch) if a.patch else None
-    if bool(a.candidate) == bool(patch):
-        raise SystemExit('give exactly one of --candidate or --patch')
-    sides = {'baseline': side_profile(profiles, a.baseline, None, out),
-             'candidate': side_profile(profiles, a.candidate or a.baseline, patch, out)}
+    diff = base64.b64decode(a.candidate_diff_b64).decode() if a.candidate_diff_b64 else None
+    if sum(map(bool, (a.candidate, patch, diff))) != 1:
+        raise SystemExit('give exactly one of --candidate, --patch or --candidate-diff-b64')
+    sides = {'baseline': side_profile(profiles, a.baseline, None, out)}
+    if diff:
+        revision = a.source_revision or subprocess.run(['git', '-C', a.source_root, 'rev-parse', 'HEAD'],
+                                                       capture_output=True, text=True).stdout.strip()
+        sides['candidate'] = source_side(sides['baseline'], diff, a.source_root, revision, out)
+    else:
+        sides['candidate'] = side_profile(profiles, a.candidate or a.baseline, patch, out)
     workload = json.loads(Path(a.workload).read_text())
     cases = [c for c in workload['cases'] if not a.cases or c['name'] in a.cases]
     cases = cases_from_slo(cases, json.loads(Path(a.slo).read_text())) if a.slo else \
@@ -119,7 +142,9 @@ async def run(a):
             rows.append(await trial(sides[side], side, repeat, sweep_args, out, a.ready_timeout))
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, cwd=ROOT).stdout.strip()
     result = {'version': 1, 'commit': commit or None, 'host': platform.node(), 'gpu': gpu_name(),
-              'patch': patch, 'sides': sides, 'repeats': a.repeats, 'order': 'alternating AB/BA per repeat',
+              'patch': patch, 'sides': sides,
+              'source_diff_sha256': hashlib.sha256(diff.encode()).hexdigest() if diff else None,
+              'repeats': a.repeats, 'order': 'alternating AB/BA per repeat',
               'sweep': {**sweep_args, 'cases': [c.__dict__ for c in cases]}, 'trials': rows}
     (out / 'ab.json').write_text(json.dumps(result, indent=2, default=str))
     print('ab.json written:', out / 'ab.json', flush=True)
@@ -131,6 +156,9 @@ def main():
     ap.add_argument('--baseline', required=True)
     ap.add_argument('--candidate', help='candidate profile name')
     ap.add_argument('--patch', help='JSON native profile patch applied to the baseline')
+    ap.add_argument('--candidate-diff-b64', help='base64 unified diff: candidate = baseline on patched source')
+    ap.add_argument('--source-root', default=str(ROOT), help='git checkout the diff applies to')
+    ap.add_argument('--source-revision', help='pinned revision of --source-root (default HEAD)')
     ap.add_argument('--workload', default=str(ROOT / 'configs/scorecard/workload-fast.json'))
     ap.add_argument('--cases', nargs='*', help='workload case names (default: all)')
     ap.add_argument('--slo', default=str(ROOT / 'configs/tune/slo-v2-l4.json'),

@@ -104,37 +104,54 @@ class RemoteABVerifier:
     """Plan -> RemoteJob on a backend -> ab.json -> verdict + evidence + stored outcome.
 
     plan: {'id', 'hypothesis', 'baseline_deployment' (record id), 'baseline_profile' (scorecard name),
-           and one of 'candidate_profile' or 'patch'}.
+           and one of 'candidate_profile', 'patch' (native profile patch) or 'source_diff' (G7: unified diff
+           to the patchable roots; the candidate is the baseline profile on patched source)}.
     """
 
     def __init__(self, repository, backend, out_root, *, profiles='configs/scorecard/a100-qwen3.5-2b.json',
                  workload='configs/scorecard/workload-fast.json', slo='configs/tune/slo-v2-l4.json', cases=(),
                  repeats=3, rates=(1, 2, 4, 6, 8, 12, 16), seconds_per_rate=20.0, min_requests=20,
                  objectives=DEFAULT_OBJECTIVES, min_agreement=0.75, hours_per_trial=0.2, gpu='L4', setup=(),
-                 cap_usd=10.0, approved_usd=None):
+                 cap_usd=10.0, approved_usd=None, source_root=None, source_revision=None):
         self.repository, self.backend, self.out_root = repository, backend, Path(out_root)
         self.profiles, self.workload, self.slo, self.cases = profiles, workload, slo, tuple(cases)
         self.repeats, self.rates, self.seconds_per_rate, self.min_requests = repeats, rates, seconds_per_rate, min_requests
         self.objectives, self.min_agreement, self.hours_per_trial = tuple(objectives), min_agreement, hours_per_trial
         self.gpu, self.setup, self.cap_usd, self.approved_usd = gpu, tuple(setup), cap_usd, approved_usd
+        self.source_root, self.source_revision = source_root, source_revision
 
     def job(self, plan):
-        if bool(plan.get('candidate_profile')) == bool(plan.get('patch')):
-            raise ValueError('plan needs exactly one of candidate_profile or patch')
+        if sum(bool(plan.get(k)) for k in ('candidate_profile', 'patch', 'source_diff')) != 1:
+            raise ValueError('plan needs exactly one of candidate_profile, patch or source_diff')
         argv = ['scripts/remote_ab.py', '--profiles', self.profiles, '--baseline', plan['baseline_profile'],
                 '--workload', self.workload, '--slo', self.slo, '--repeats', str(self.repeats),
                 '--rates', *map(str, self.rates), '--seconds-per-rate', str(self.seconds_per_rate),
                 '--min-requests', str(self.min_requests), '--out', '{OUT}']
-        argv += ['--candidate', plan['candidate_profile']] if plan.get('candidate_profile') else \
-            ['--patch', json.dumps(plan['patch'], sort_keys=True, separators=(',', ':'))]
+        if plan.get('source_diff'):
+            import base64
+            argv += ['--candidate-diff-b64', base64.b64encode(plan['source_diff'].encode()).decode()]
+            if self.source_root:
+                argv += ['--source-root', str(self.source_root)]
+            if self.source_revision:
+                argv += ['--source-revision', self.source_revision]
+        elif plan.get('candidate_profile'):
+            argv += ['--candidate', plan['candidate_profile']]
+        else:
+            argv += ['--patch', json.dumps(plan['patch'], sort_keys=True, separators=(',', ':'))]
         if self.cases:
             argv += ['--cases', *self.cases]
         return RemoteJob(plan['id'], tuple(argv), expected_hours=2 * self.repeats * self.hours_per_trial,
                          gpu=self.gpu, setup=self.setup)
 
     def actions(self, plan):
-        change = {'profile_patch': plan['patch']} if plan.get('patch') else {'candidate_profile': plan['candidate_profile']}
-        actions = [{'id': 'change', 'type': 'config_change', 'params': change},
+        if plan.get('source_diff'):
+            change = {'id': 'change', 'type': 'source_patch',
+                      'params': {'patch_sha256': hashlib.sha256(plan['source_diff'].encode()).hexdigest()}}
+        else:
+            change = {'id': 'change', 'type': 'config_change',
+                      'params': {'profile_patch': plan['patch']} if plan.get('patch')
+                      else {'candidate_profile': plan['candidate_profile']}}
+        actions = [change,
                    {'id': 'measure', 'type': 'measure', 'depends_on': ['change'], 'params': {}}]
         return actions
 
@@ -155,7 +172,9 @@ class RemoteABVerifier:
             verdict, gates, notes, trials = judge(ab, self.objectives, min_agreement=self.min_agreement)
         identity = {'model_ref': [baseline['body'].get('model_ref')] * 2,
                     'hardware_ref': [baseline['body'].get('hardware_ref')] * 2}
-        evidence = {'baseline': baseline, 'candidate': {'profile': plan.get('candidate_profile'), 'patch': plan.get('patch')},
+        evidence = {'baseline': baseline, 'candidate': {'profile': plan.get('candidate_profile'), 'patch': plan.get('patch'),
+                                  'source_diff_sha256': hashlib.sha256(plan['source_diff'].encode()).hexdigest()
+                                  if plan.get('source_diff') else None},
                     'identity': identity, 'trials': list(trials), 'gates': gates, 'gate_notes': notes,
                     'verdict': verdict, 'ab': ab, 'run': run.record(),
                     'verifier': {'kind': 'remote_open_loop_goodput', 'code_sha256': CODE_SHA256,

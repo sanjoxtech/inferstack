@@ -5,10 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from inferstack.evaluation.goodput import GoodputCase
-from inferstack.optimization.watchdog import ServingSLO, Watchdog, fix_from, judge_window
+from inferstack.optimization.watchdog import (
+    ServingSLO,
+    Watchdog,
+    fix_from,
+    judge_window,
+)
 from inferstack.storage.repository import Repository
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +115,7 @@ def test_planted_regression_opens_and_closes_a_campaign_unattended(tmp_path):
     patch, re-measures the live endpoint and closes the incident as resolved. No human step, $0."""
     sys.path.insert(0, str(ROOT / 'scripts'))
     import engine_scorecard as es
+
     from inferstack.engines.profiles import native_overlay
     from inferstack.execution.gpu_backend import LocalBackend
     from inferstack.optimization.remote_verify import RemoteABVerifier
