@@ -134,6 +134,8 @@ class RemoteABVerifier:
                 argv += ['--source-root', str(self.source_root)]
             if self.source_revision:
                 argv += ['--source-revision', self.source_revision]
+            if plan.get('source_tests'):
+                argv += ['--source-tests', *plan['source_tests']]
         elif plan.get('candidate_profile'):
             argv += ['--candidate', plan['candidate_profile']]
         else:
@@ -164,12 +166,22 @@ class RemoteABVerifier:
         """Judge an ab.json (or its absence) and store the outcome. Also used to re-judge a past run."""
         baseline = self.repository.read('deployment', plan['baseline_deployment'])
         if ab_path is None or not ab_path.is_file():
-            verdict = {'decision': 'inconclusive', 'reasons': [f'remote run produced no ab.json '
-                                                               f'(exit {run.exit_code})']}
+            # nothing was measured (VM refused, reclaimed, driver died): an infrastructure failure, never
+            # 'inconclusive', which would read as 'measured, no effect'
+            verdict = {'decision': 'infra_failed', 'reasons': [f'remote run produced no ab.json (exit {run.exit_code})']}
             ab, gates, notes, trials = None, {}, {'run': run.log_tail[-500:]}, ([], [])
         else:
             ab = json.loads(ab_path.read_text())
-            verdict, gates, notes, trials = judge(ab, self.objectives, min_agreement=self.min_agreement)
+            tests = ab.get('source_tests')
+            if tests is not None and not tests.get('passed'):
+                # G7: the controller's tests failed on the GPU against the patched source; no A/B was run
+                verdict = {'decision': 'reject', 'reasons': [
+                    f"independent tests failed on the GPU host against the patched source (exit {tests.get('exit_code')})"]}
+                gates, notes, trials = {'source_tests': False}, {'source_tests': tests}, ([], [])
+            else:
+                verdict, gates, notes, trials = judge(ab, self.objectives, min_agreement=self.min_agreement)
+                if tests is not None:
+                    gates, notes = {**gates, 'source_tests': True}, {**notes, 'source_tests': tests}
         identity = {'model_ref': [baseline['body'].get('model_ref')] * 2,
                     'hardware_ref': [baseline['body'].get('hardware_ref')] * 2}
         evidence = {'baseline': baseline, 'candidate': {'profile': plan.get('candidate_profile'), 'patch': plan.get('patch'),

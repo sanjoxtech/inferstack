@@ -99,11 +99,12 @@ class CodeChange:
     async def run(self, proposal, plan, *, baseline_id, baseline_profile, source_revision, name, tests,
                   job_id=None):
         fingerprint = self._fingerprint(self.expected_fingerprint)
-        impl_id = self.desk.request(proposal, plan, baseline_id=baseline_id, source_revision=source_revision,
-                                    job_id=job_id, independent_tests=tests)['id']
+        impl = self.desk.request(proposal, plan, baseline_id=baseline_id, source_revision=source_revision,
+                                 job_id=job_id, independent_tests=tests)
+        impl_id, record = impl['id'], impl['body']
         out = {'implementation_id': impl_id, 'evaluator_fingerprint': fingerprint}
         feedback = None
-        while True:
+        while record['state'] != 'validated':   # a rerun of a validated change goes straight to the GPU
             try:
                 record = (await self.implementer.run(self.desk, impl_id, feedback))['body']
             except AttemptLimit:
@@ -123,7 +124,8 @@ class CodeChange:
         if attempt.get('logs_sha256'):
             summary = self.desk.repository.read_artifact(attempt['logs_sha256']).decode(errors='replace')[:2000]
         ab_plan = {'id': name, 'baseline_deployment': baseline_id, 'baseline_profile': baseline_profile,
-                   'source_diff': diff, 'hypothesis': record['handoff']['hypothesis']}
+                   'source_diff': diff, 'hypothesis': record['handoff']['hypothesis'],
+                   'source_tests': record['handoff']['acceptance']['independent_tests']}   # again, on the GPU
         verdict, _ = self.verifier.verify(ab_plan)
         self._fingerprint(fingerprint)                      # nothing changed the judge while the A/B ran
         out.update(candidate_id=record['candidate']['candidate_id'], verdict=verdict,

@@ -46,7 +46,8 @@ class ScriptedModel:
 
     async def chat(self, messages, **_):
         self.seen.append(json.loads(messages[1]['content']))
-        return Reply(json.dumps(self.answers.pop(0)) if not isinstance(self.answers[0], str) else self.answers.pop(0))
+        answer = self.answers.pop(0)
+        return Reply(answer if isinstance(answer, str) else json.dumps(answer))
 
 
 def edit(text, summary='more lanes', path=LANE):
@@ -60,7 +61,11 @@ def project(tmp_path):
                        'src/inferstack/runtime/__init__.py': '',
                        'src/inferstack/evaluation/judge.py': 'THRESHOLD = 0.05\n',
                        'tests/test_lane.py': 'from inferstack.runtime import fake_lane\n\n'
-                                             'def test_lane_is_configured():\n    assert fake_lane.SLOTS >= 0\n'}.items():
+                                             'def test_lane_is_configured():\n    assert fake_lane.SLOTS >= 0\n',
+                       # stands in for a CUDA test: skipped where the desk validates, run on the GPU host
+                       'tests/test_lane_gpu.py': 'import os\n\nimport pytest\n\nfrom inferstack.runtime import fake_lane\n\n'
+                                                 "@pytest.mark.skipif(not os.environ.get('FAKE_GPU'), reason='needs the GPU')\n"
+                                                 "def test_lane_answers_right():\n    assert fake_lane.ANSWER == 'four'\n"}.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
     git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
@@ -168,3 +173,35 @@ def test_planted_cheats_are_caught_and_an_honest_change_becomes_a_pr(repo, proje
 
     fast = run(setup(repo, project, tmp_path, ScriptedModel(edit(lane(0, 0.0))), max_gain=4.0), project, 'g7-fast')
     assert fast['decision'] == 'suspicious' and 'breaker' in fast['reason'] and 'bundle' not in fast, fast
+
+
+@needs_sandbox
+def test_a_bug_only_the_gpu_tests_see_is_rejected_before_the_ab(repo, project, tmp_path, monkeypatch):
+    """Real run 2026-11-23: the coder swapped k for v in a CUDA kernel; the desk's CUDA tests skipped on the
+    Mac and the change was validated. The same tests now run on the GPU host against the patched source first:
+    the change is rejected with no A/B time. A rerun of the validated change goes straight to the GPU."""
+    monkeypatch.setenv('FAKE_GPU', '1')                       # reaches the GPU host, not the desk's sandbox
+    gpu_tests = ['tests/test_lane.py', 'tests/test_lane_gpu.py']
+    model = ScriptedModel(edit(lane(2, 0.2, answer='five')))
+    cc = setup(repo, project, tmp_path, model)
+    proposal, plan = proposal_plan()
+    kw = {'baseline_id': 'base', 'baseline_profile': 'lane', 'source_revision': project[1], 'name': 'g7-gpu',
+          'tests': gpu_tests, 'job_id': 'g7-gpu'}
+    out = asyncio.run(cc.run(proposal, plan, **kw))
+    assert out['decision'] == 'reject' and out['verdict']['gates'] == {'source_tests': False}, out['verdict']
+    assert out['attempts'] == 1 and 'bundle' not in out
+    ab = json.loads(next((tmp_path / 'runs').rglob('ab.json')).read_text())
+    assert ab['trials'] == [] and ab['source_tests']['exit_code'] != 0          # no server was started
+    again = asyncio.run(cc.run(proposal, plan, **kw))
+    assert again['decision'] == 'reject' and len(model.seen) == 1               # no new model call
+
+
+def test_no_evidence_is_an_infrastructure_failure(repo, tmp_path):
+    from inferstack.execution.gpu_backend import LocalBackend, RunResult
+    from inferstack.optimization.remote_verify import RemoteABVerifier
+    v = RemoteABVerifier(repo, LocalBackend(price_per_hour=0.0), tmp_path / 'runs')
+    refused = RunResult('colab', 'ifs-x', 1, None, 120.0, 0.8, 0.0, 0.96,
+                        '[colab] Allocation refused (precondition failed).')
+    verdict = v.conclude({'id': 'x', 'baseline_deployment': 'base', 'baseline_profile': 'lane',
+                          'source_diff': 'diff'}, None, refused)
+    assert verdict['decision'] == 'infra_failed' and verdict['cost_usd'] == 0.0

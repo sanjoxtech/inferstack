@@ -53,14 +53,38 @@ def side_profile(profiles, name, patch, workdir):
 def source_side(profile, diff, source_root, revision, workdir):
     """The baseline profile served from a patched export of the pinned source (G7)."""
     import os
+    import shutil
 
     from inferstack.execution.patches import check_patch, materialize_source, touched_paths
     check_patch(diff, touched_paths(diff))                    # confined to the patchable roots, again, on the host
-    tree = materialize_source(source_root, revision, diff, Path(workdir) / 'candidate-src')
+    target = Path(workdir) / 'candidate-src'
+    shutil.rmtree(target, ignore_errors=True)        # one diff per A/B: a rerun in the same dir starts pristine
+    tree = materialize_source(source_root, revision, diff, target)
     env = dict(profile.get('env') or {})
     env['PYTHONPATH'] = os.pathsep.join(x for x in (str(tree / 'src'), env.get('PYTHONPATH')
                                                     or os.environ.get('PYTHONPATH')) if x)
     return {**profile, 'name': f"{profile['name']}+source", 'env': env, 'source_tree': str(tree)}
+
+
+def source_tests(profile, tests, timeout=1800):
+    """G7: the controller's tests (restored from the pinned revision) against the patched tree, on the GPU host,
+    before any A/B time. A kernel bug that CPU-only validation skipped fails here in seconds."""
+    import importlib.util
+    import os
+    tree = Path(profile['source_tree'])
+    if importlib.util.find_spec('pytest') is None:
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'pytest>=8', 'pytest-asyncio>=0.24'],
+                       check=False)
+    env = {**os.environ, **(profile.get('env') or {})}
+    try:
+        r = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider', *tests], cwd=tree,
+                           env=env, capture_output=True, text=True, timeout=timeout, check=False)
+        code, text = r.returncode, (r.stdout + r.stderr)
+    except subprocess.TimeoutExpired:
+        code, text = 124, f'timed out after {timeout}s'
+    result = {'tests': list(tests), 'exit_code': code, 'passed': code == 0, 'tail': text[-3000:]}
+    print(json.dumps({k: result[k] for k in ('tests', 'exit_code', 'passed')}), flush=True)
+    return result
 
 
 async def greedy_check(base, model):
@@ -130,6 +154,7 @@ async def run(a):
         sides['candidate'] = source_side(sides['baseline'], diff, a.source_root, revision, out)
     else:
         sides['candidate'] = side_profile(profiles, a.candidate or a.baseline, patch, out)
+    tested = source_tests(sides['candidate'], a.source_tests) if diff and a.source_tests else None
     workload = json.loads(Path(a.workload).read_text())
     cases = [c for c in workload['cases'] if not a.cases or c['name'] in a.cases]
     cases = cases_from_slo(cases, json.loads(Path(a.slo).read_text())) if a.slo else \
@@ -137,13 +162,14 @@ async def run(a):
     sweep_args = {'cases': cases, 'rates': tuple(a.rates), 'seconds_per_rate': a.seconds_per_rate,
                   'min_requests': a.min_requests, 'warmup': a.warmup}
     rows = []
-    for repeat in range(a.repeats):
+    for repeat in range(a.repeats if tested is None or tested['passed'] else 0):   # failed tests: no A/B time
         for side in (('baseline', 'candidate') if repeat % 2 == 0 else ('candidate', 'baseline')):
             rows.append(await trial(sides[side], side, repeat, sweep_args, out, a.ready_timeout))
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, cwd=ROOT).stdout.strip()
     result = {'version': 1, 'commit': commit or None, 'host': platform.node(), 'gpu': gpu_name(),
               'patch': patch, 'sides': sides,
               'source_diff_sha256': hashlib.sha256(diff.encode()).hexdigest() if diff else None,
+              'source_tests': tested,
               'repeats': a.repeats, 'order': 'alternating AB/BA per repeat',
               'sweep': {**sweep_args, 'cases': [c.__dict__ for c in cases]}, 'trials': rows}
     (out / 'ab.json').write_text(json.dumps(result, indent=2, default=str))
@@ -159,6 +185,8 @@ def main():
     ap.add_argument('--candidate-diff-b64', help='base64 unified diff: candidate = baseline on patched source')
     ap.add_argument('--source-root', default=str(ROOT), help='git checkout the diff applies to')
     ap.add_argument('--source-revision', help='pinned revision of --source-root (default HEAD)')
+    ap.add_argument('--source-tests', nargs='+', default=(),
+                    help='pytest selectors run against the patched tree before the A/B (with --candidate-diff-b64)')
     ap.add_argument('--workload', default=str(ROOT / 'configs/scorecard/workload-fast.json'))
     ap.add_argument('--cases', nargs='*', help='workload case names (default: all)')
     ap.add_argument('--slo', default=str(ROOT / 'configs/tune/slo-v2-l4.json'),
